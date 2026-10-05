@@ -193,8 +193,9 @@ public sealed class GenerateRecoveryCodesHandler(
                     // table owner's privileges rather than this role's.
                     //
                     // That DELETE no longer fails: the role holds DELETE on sessions, because
-                    // establishing a session deletes the account's ended ones, so EF taking the tracked
-                    // copies itself succeeds and leaves the same rows gone. What keeps this line is
+                    // establishing a session deletes the account's ended ones and displaces the one
+                    // the browser's old cookie named, so EF taking the tracked copies itself succeeds
+                    // and leaves the same rows gone. What keeps this line is
                     // everything below the sessions — any tracked dependent the role cannot delete
                     // still dies with 42501, session_tokens among them — and the statements past this
                     // point are written to an empty tracker. No integration test reddens if it goes;

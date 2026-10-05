@@ -297,7 +297,8 @@ response body is a value in a log.
   - **A second `DiscardTrackedEntities()` sits between the sweep and the save.** The sweep loads the
     retired credential's sessions into the change tracker; removing the credential with them tracked
     makes EF emit its own `DELETE FROM sessions`. The role holds `DELETE` there for the
-    ended-session sweep — a different act from this rule's sweep, which revokes; see
+    ended-session sweep and for displacement — acts different from this rule's sweep, which
+    revokes; see
     [sessions.md](sessions.md#must-not) — so that statement succeeds and removes the rows the
     database's cascade would have taken, and nothing raises. The discard stays, because the save
     past it is written to an empty tracker, and because a `SessionToken` tracked under one of those
@@ -566,9 +567,10 @@ The rules from here down are the web client's.
     second time through the registration leg.
   - **The locked sign-in's return takes the same position, with the opposite drop.** It is read
     before the probe too, for the nonce's reason, and its hand-off is dropped when the probe finds
-    a session already open — `authenticated` or `locked-session` — because posting that token
-    replaces whatever session cookie the tab holds. Each return has its own drop, and neither drops
-    the other's answer. See [sessions.md](sessions.md).
+    a session already open — `authenticated` or `locked-session` — because posting that token over
+    a live locked or an ended session replaces its cookie and displaces that session, and over a
+    live full session is refused `409` `full_session`. Each return has its own drop, and neither
+    drops the other's answer. See [sessions.md](sessions.md).
 - **Enforced in**: `core.providers.spec.ts`, in *an email change coming back from the provider*:
   `is read before the server is asked who the visitor is`, `holds the probe back until the answer has
   been read`, `is not read on a signed-in boot the provider is not answering`, `is dropped once the

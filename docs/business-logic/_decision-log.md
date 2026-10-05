@@ -8,6 +8,44 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-10-05 — Signing in deletes the session the browser's old cookie named
+
+**Context:** every sign-in writes its cookie over whatever cookie the browser held, and overwriting
+a cookie ends nothing. The old session stayed live until it expired, held by no browser — a
+standing record that this browser was signed in to that account. The ended-session sweep could not
+reach it: it takes only ended rows, and only the signing-in account's, while the old cookie can
+name a live session or another account's.
+
+**Decision:**
+- **Once a session is established, the session the browser's incoming cookie names is deleted**,
+  live or ended, on whichever account owns it, and only then is the new cookie written. Its handle
+  leaves by the database's cascade. [sessions.md](sessions.md) owns the rule.
+- **Only after the sign-in succeeded.** A refused sign-in leaves the session the browser presented
+  untouched.
+- **Registration displaces too**, after its one save. The account is still one act and one save.
+
+[ADR 0030](../decisions/0030-displace-the-session-an-overwritten-cookie-names.md) owns the
+mechanism.
+
+**Alternatives considered:**
+- *Keep the old session* — rejected: it is a sign-in record nobody holds.
+- *Displace before the sign-in is judged* — rejected: a refused sign-in would sign the browser out.
+- *Revoke instead of delete* — rejected: a revoked row stays until its own account signs in again,
+  which may never happen when the cookie named another account.
+- *Delete after the response is sent* — rejected: a failure would reach the log, not the person.
+
+**Consequences:** a live session is normally held by a browser. When the response carrying the new
+cookie is lost, the old cookie now names nothing and is answered `401`, where before it kept its
+session. A recovery-code regeneration that re-establishes a session moves the caller's browser onto
+it and deletes the session that browser held.
+
+**Affected areas:** [sessions.md](sessions.md), [registration.md](registration.md),
+[recovery-codes.md](recovery-codes.md), [users-and-ownership.md](users-and-ownership.md),
+[erasure.md](erasure.md), [email-change.md](email-change.md), [passkeys.md](passkeys.md),
+[adversarial-properties.md](../engineering/adversarial-properties.md).
+
+---
+
 ## 2026-10-05 — An account's ended sessions leave when it next signs in
 
 **Context:** revocation stamps a session row and keeps it, and the app role held no `DELETE` on

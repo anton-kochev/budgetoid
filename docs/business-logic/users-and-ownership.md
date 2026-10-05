@@ -307,19 +307,27 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
       measured one would refuse the security feature along with the surveillance. The **columns** of
       `sessions` stay inside what the rule permits — `id`, `user_id`, `credential_id`,
       `credential_type`, `kind`, `created_at_utc`, `expires_at_utc`, `revoked_at_utc`, and nothing
-      else. Its rows are held to the rule by a sweep, and the sweep leaves something behind.
+      else. Its rows are held to the rule by a sweep and by displacement, and the two leave something
+      behind.
     - **`sessions` keeps an ended row only until the account's next sign-in.** Revocation stamps
       `revoked_at_utc` and the row stays, because the row is what says access ended and when; an
       expired row stays too. Establishing a session deletes the account's ended rows in the save
-      that stores it, so ended rows no longer pile up past the next sign-in. What stands is the
-      sessions that were live when the account's most recent session was established, whether or
-      not they have ended since. Rows also leave by the cascade, when their credential is deleted or
-      the account is erased. **What still remains** is a record this rule has to keep weighing: an
-      account that never signs in again keeps its last batch of ended rows, live rows record recent
-      sign-ins, and PostgreSQL's own delete counter on the table counts swept rows, as one total
-      naming no account. The mechanism is the ended-session sweep in
-      [sessions.md](sessions.md#must-not); whoever changes it re-argues that rule rather than going
-      around it.
+      that stores it, so ended rows no longer pile up past the next sign-in. What stands is at most
+      the sessions that were live when the account's most recent session was established, whether
+      or not they have ended since. Rows also leave by the cascade, when their credential is deleted
+      or the account is erased.
+    - **Establishing a session also deletes the session the browser's old cookie named**, live or
+      ended, on whichever account owns it — displacement — so a session whose cookie a later
+      sign-in overwrote is not left behind as a record that this browser was signed in to it.
+    - **What still remains** is a record this rule has to keep weighing: an account that never signs
+      in again keeps its last batch of ended rows, and live rows record recent sign-ins. A live row
+      is normally held by a browser, and can be held by none: a sign-in's new session when its
+      displacement failed or its response was lost, and the session of a browser that dropped its
+      cookie without signing out, which tells the server nothing — [Guessing] reasoned, not run.
+      And PostgreSQL's own delete counter on the table counts swept and
+      displaced rows, as one total naming no account. The mechanisms are the ended-session sweep in
+      [sessions.md](sessions.md#must-not) and the displacement rule beside it; whoever changes either
+      re-argues that rule rather than going around it.
     - **`passkey_signature_counters.signature_counter` is not that kind of record.** On an
       authenticator that implements the counter it rises with each assertion, but it is a value the
       authenticator reports, kept for clone detection, and one number per passkey rather than a row

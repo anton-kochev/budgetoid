@@ -5,7 +5,9 @@ using System.Text;
 using System.Text.Json.Nodes;
 using Api.Infrastructure;
 using Application.Passkeys;
+using Domain.Sessions;
 using Domain.Users;
+using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
 using TestSupport;
 
@@ -131,6 +133,276 @@ public sealed class PasskeyCeremonyTests
                 .Select(row => labels.TryGetValue(row.Id, out string? label) ? label : $"unlabelled {row.Id}")
                 .Order(StringComparer.Ordinal));
         await Assert.That(held).IsEqualTo("another device, signed in again");
+    }
+
+    /// <summary>
+    /// A passkey sign-in from a browser holding the account's own live session deletes the session the
+    /// overwritten cookie named, and keeps the account's session on another device.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The sweep takes ended rows only, and this one is live.</b> The response overwrites the cookie,
+    /// so no browser will present that session again, yet its row would stay live until it expires.
+    /// </para>
+    /// <para>
+    /// The other device is the control: a displacement keyed on the account rather than on the cookie's
+    /// session would take it too [reasoned].
+    /// </para>
+    /// <para>
+    /// <b>Same-account only, so it cannot tell where the delete runs.</b> Deleting in the request scope
+    /// with the cookie scheme's session id passes here, measured; the cross-account case,
+    /// <see cref="PasskeySignIn_WithAnotherAccountsEndedCookie_DeletesThatSession" />, catches it. What
+    /// this holds is the account's own case: a sign-in that left the presented session live fails on
+    /// its count.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task PasskeySignIn_OverItsOwnLiveSession_DeletesTheSessionTheCookieNamed()
+    {
+        // Arrange — this browser signed in over the recovery codes, a passkey, and another device's
+        // session over that passkey.
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+        ApiFactory.SignedInClient owner = await factory.CreateSignedInClientAsync(
+            OwnerSubject, OwnerEmail, opensWith: CredentialType.RecoveryCodes);
+        SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        await RegisterAsync(owner.Client, authenticator);
+        string presentedCookie = PresentedCookieOf(owner.Client);
+        Guid presentedSessionId = await SessionIdOfCookieAsync(host, presentedCookie);
+        Guid otherDeviceSessionId = await SeedAnotherDevicesSessionAsync(
+            host, await FindPasskeyCredentialIdAsync(host, authenticator.CredentialId));
+        IReadOnlyList<SessionRow> before = await ReadSessionsAsync(host);
+
+        // Act — the sign-in, from the browser holding the live cookie.
+        HttpResponseMessage response = await PostAssertionAsync(
+            owner.Client, await BuildAssertionAsync(owner.Client, authenticator, owner.UserId));
+
+        // Assert — one session opened, the presented one and its handle gone, the other device kept.
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
+        await Assert.That((await SessionsOpenedSinceAsync(host, before)).Count).IsEqualTo(1);
+        await Assert.That(await CountSessionsByIdAsync(host, presentedSessionId)).IsEqualTo(0L);
+        await Assert.That(await CountHandlesOfCookieAsync(host, presentedCookie)).IsEqualTo(0L);
+        await Assert.That(await CountSessionsByIdAsync(host, otherDeviceSessionId)).IsEqualTo(1L);
+    }
+
+    /// <summary>
+    /// A second sign-in from a browser whose previous cookie was already displaced succeeds, and its
+    /// cookie opens a live session.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The real-life dead cookie.</b> This client pins its first cookie as a header, so after the first
+    /// sign-in displaced that session it goes on presenting a handle whose row is gone — what a browser
+    /// that lost the first response would send. Displacement authenticates it, finds nothing, and has
+    /// nothing to delete.
+    /// </para>
+    /// <para>
+    /// <b>The mutation it exists to catch:</b> removing <c>DisplaceSessionHandler</c>'s
+    /// <c>if (presented is null) return false;</c>, which throws a null reference after the second
+    /// session committed and answers 500. Measured: with the guard removed this test failed with
+    /// "Expected to be equal to OK but received InternalServerError", from a
+    /// <c>NullReferenceException</c> in the handler.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task PasskeySignIn_AgainFromABrowserWhoseCookieWasDisplaced_EstablishesALiveSession()
+    {
+        // Arrange — one sign-in that displaced the session this client still presents.
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+        ApiFactory.SignedInClient owner = await factory.CreateSignedInClientAsync(
+            OwnerSubject, OwnerEmail, opensWith: CredentialType.RecoveryCodes);
+        SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        await RegisterAsync(owner.Client, authenticator);
+        Guid presentedSessionId = await SessionIdOfCookieAsync(host, PresentedCookieOf(owner.Client));
+        HttpResponseMessage first = await PostAssertionAsync(
+            owner.Client, await BuildAssertionAsync(owner.Client, authenticator, owner.UserId));
+        await Assert.That(first.StatusCode).IsEqualTo(HttpStatusCode.OK);
+        await Assert.That(await CountSessionsByIdAsync(host, presentedSessionId)).IsEqualTo(0L);
+
+        // Act — the same client again, still presenting the displaced handle. The counter moves past the
+        // first sign-in's, or the assertion is refused as a clone.
+        AssertionResult second = authenticator.Authenticate(
+            await BeginCeremonyAsync(owner.Client, AssertionOptionsPath),
+            ApiFactory.PasskeyOrigin,
+            PasskeyEncoding.ToUserHandle(owner.UserId),
+            signCount: 2);
+        HttpResponseMessage response = await PostAssertionAsync(owner.Client, second);
+
+        // Assert — established, and the new cookie opens a live session.
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
+        HttpClient signedIn = factory.CreateClient();
+        signedIn.DefaultRequestHeaders.Add(
+            "Cookie", $"{SessionCookieAuthenticationTests.CookieName}={RegistrationCeremony.SessionCookieValueOf(response)}");
+        HttpResponseMessage session = await signedIn.GetAsync("/api/me/session");
+        await Assert.That(session.StatusCode).IsEqualTo(HttpStatusCode.OK);
+    }
+
+    /// <summary>
+    /// When displacing the presented session fails, the sign-in answers 500, writes no cookie, and the
+    /// presented session stays where it was.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Loud on purpose.</b> The new session has committed by the time displacement runs, so this is
+    /// the one failure window: the account holds a session nobody has a cookie for, and the browser keeps
+    /// the cookie it had, whose session the failed delete left in place. A 500 says so. The new session is
+    /// counted so the window is visible rather than assumed.
+    /// </para>
+    /// <para>
+    /// <b>The mutation it exists to catch:</b> swallowing the displacement error. The sign-in would answer
+    /// 200 and write the new cookie, and the session the old cookie named would stay live with no browser
+    /// holding it — the residue displacement exists to remove, now silent. Measured: with the error
+    /// swallowed this test failed with "Expected to be equal to InternalServerError but received OK".
+    /// </para>
+    /// <para>
+    /// The repository is wrapped rather than replaced, so the sign-in's own writes — the session, its
+    /// handle and the sweep — run on the real one and only the removal fails.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task PasskeySignIn_WhenDisplacementFails_Answers500AndWritesNoCookie()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = new(
+            host.AppConnectionString,
+            adminConnectionString: host.ConnectionString,
+            usesApplicationAuthentication: true,
+            configureServices: RefuseSessionRemovals);
+        ApiFactory.SignedInClient owner = await factory.CreateSignedInClientAsync(
+            OwnerSubject, OwnerEmail, opensWith: CredentialType.RecoveryCodes);
+        SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        await RegisterAsync(owner.Client, authenticator);
+        Guid presentedSessionId = await SessionIdOfCookieAsync(host, PresentedCookieOf(owner.Client));
+        IReadOnlyList<SessionRow> before = await ReadSessionsAsync(host);
+
+        // Act
+        HttpResponseMessage response = await PostAssertionAsync(
+            owner.Client, await BuildAssertionAsync(owner.Client, authenticator, owner.UserId));
+
+        // Assert — the failure is reported, no session cookie rides on it, and the presented session
+        // stands. The new session committed before displacement ran, which is the window this pins.
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.InternalServerError);
+        string[] cookies = response.Headers.TryGetValues("Set-Cookie", out IEnumerable<string>? values)
+            ? [.. values.Where(value => value.StartsWith(
+                $"{SessionCookieAuthenticationTests.CookieName}=", StringComparison.Ordinal))]
+            : [];
+        await Assert.That(cookies).IsEmpty();
+        await Assert.That(await CountSessionsByIdAsync(host, presentedSessionId)).IsEqualTo(1L);
+        await Assert.That((await SessionsOpenedSinceAsync(host, before)).Count).IsEqualTo(1);
+    }
+
+    /// <summary>
+    /// A passkey sign-in from a browser holding another account's <b>ended</b> session deletes that
+    /// session.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The sweep cannot reach this row, and that is the point of the test.</b> The sweep runs as the
+    /// account signing in, and <c>user_isolation</c> hides the cookie account's rows from it. The cookie
+    /// account may never sign in again, so its own sweep may never come. Signed out through the real
+    /// route, so the row is revoked and kept, which is what an ended session looks like.
+    /// </para>
+    /// <para>
+    /// The cookie account's live session on another device is the control: a displacement that took the
+    /// cookie's whole account would pass the first half [reasoned].
+    /// </para>
+    /// <para>
+    /// <b>What reddens it, measured.</b> A displacement that skips ended sessions fails here on the ended
+    /// session's count, and so does one that deletes in the request scope with the session id the cookie
+    /// scheme put on the request. Two causes could each do that there, and which one bites was not
+    /// measured: the scope runs as the passkey's owner, so the policy hides the row, and the cookie
+    /// scheme puts no identity on the request for an ended session on this route.
+    /// </para>
+    /// <para>
+    /// <b>What it does not catch.</b> Resolving the displacement handler from the request's services
+    /// instead of a scope of its own re-authenticates the cookie as its own account before deleting, so
+    /// the row is still found and goes. That was measured to leave the locked cross-account test green,
+    /// and this one is expected to stay green the same way [reasoned]. <c>SessionCookieWriterTests</c>
+    /// catches it.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task PasskeySignIn_WithAnotherAccountsEndedCookie_DeletesThatSession()
+    {
+        // Arrange — the passkey's owner, and a bystander who signed this browser out.
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+        RepositoryTestHost.SeededOwner passkeyOwner = await host.SeedOwnerAsync(OwnerSubject, OwnerEmail);
+        SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        await host.SeedPasskeyAsync(
+            passkeyOwner.UserId,
+            authenticator.CredentialId,
+            authenticator.CoseKey,
+            authenticator.Algorithm);
+        ApiFactory.SignedInClient bystander = await factory.CreateSignedInClientAsync(
+            OtherSubject, OtherEmail, opensWith: CredentialType.RecoveryCodes);
+        string endedCookie = PresentedCookieOf(bystander.Client);
+        Guid endedSessionId = await SessionIdOfCookieAsync(host, endedCookie);
+        Guid bystandersOtherDevice = await SeedAnotherDevicesSessionAsync(
+            host, await CredentialOfSessionAsync(host, endedSessionId));
+        HttpResponseMessage signOut = await SignOutAsync(bystander.Client, endedCookie);
+        await Assert.That(signOut.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
+
+        // Act — the owner's sign-in, from the browser still holding the bystander's ended cookie.
+        HttpResponseMessage response = await PostAssertionAsync(
+            bystander.Client, await BuildAssertionAsync(bystander.Client, authenticator, passkeyOwner.UserId));
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
+        await Assert.That(await CountSessionsByIdAsync(host, endedSessionId)).IsEqualTo(0L);
+        await Assert.That(await CountHandlesOfCookieAsync(host, endedCookie)).IsEqualTo(0L);
+        await Assert.That(await CountSessionsByIdAsync(host, bystandersOtherDevice)).IsEqualTo(1L);
+    }
+
+    /// <summary>
+    /// A refused assertion leaves the session the browser presented live; the same browser's next,
+    /// valid sign-in deletes it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The first half pins where displacement sits.</b> It runs only once a new session is
+    /// established. One that ran before the handler would sign the browser out because somebody's
+    /// signature failed — a refusal that costs the person their session, and one an attacker holding
+    /// nothing could trigger. Measured: displacing before the handler fails this half.
+    /// </para>
+    /// <para>
+    /// <b>The second half is the control.</b> Without it the first half passes for a product that never
+    /// displaces anything: a valid sign-in from the same browser has to take the session the refusal
+    /// left alone.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task ARefusedAssertion_LeavesThePresentedSessionLive()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+        ApiFactory.SignedInClient owner = await factory.CreateSignedInClientAsync(
+            OwnerSubject, OwnerEmail, opensWith: CredentialType.RecoveryCodes);
+        SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        await RegisterAsync(owner.Client, authenticator);
+        string presentedCookie = PresentedCookieOf(owner.Client);
+        Guid presentedSessionId = await SessionIdOfCookieAsync(host, presentedCookie);
+
+        // Act — a bad signature, from the browser holding the live cookie.
+        AssertionResult genuine = await BuildAssertionAsync(owner.Client, authenticator, owner.UserId);
+        HttpResponseMessage refused = await PostAssertionAsync(owner.Client, WithFlippedSignature(genuine));
+        HttpResponseMessage stillSignedIn = await owner.Client.GetAsync("/api/me/session");
+
+        // Assert — refused, and the presented session still answers as itself.
+        await Assert.That(refused.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
+        await Assert.That(stillSignedIn.StatusCode).IsEqualTo(HttpStatusCode.OK);
+        await Assert.That(await CountSessionsByIdAsync(host, presentedSessionId)).IsEqualTo(1L);
+
+        // Act — the control: a valid sign-in from the same browser.
+        HttpResponseMessage accepted = await PostAssertionAsync(
+            owner.Client, await BuildAssertionAsync(owner.Client, authenticator, owner.UserId));
+
+        // Assert
+        await Assert.That(accepted.StatusCode).IsEqualTo(HttpStatusCode.OK);
+        await Assert.That(await CountSessionsByIdAsync(host, presentedSessionId)).IsEqualTo(0L);
     }
 
     [Test]
@@ -2651,6 +2923,132 @@ public sealed class PasskeyCeremonyTests
 
         return rows;
     }
+
+    /// <summary>
+    /// Wraps whatever <see cref="ISessionRepository" /> the application registered so that every removal
+    /// throws, leaving the registration's lifetime and every other member alone.
+    /// </summary>
+    /// <remarks>
+    /// The implementation is rebuilt from the descriptor the application registered rather than named
+    /// here — the shape <c>LockedSignInEndpointTests</c> uses — so this cannot start decorating a
+    /// different implementation than the one the application resolves.
+    /// </remarks>
+    private static void RefuseSessionRemovals(IServiceCollection services)
+    {
+        // Last, not single: the last registration for a service type is the one that resolves.
+        ServiceDescriptor registered =
+            services.LastOrDefault(descriptor => descriptor.ServiceType == typeof(ISessionRepository))
+            ?? throw new InvalidOperationException(
+                $"Nothing registered {nameof(ISessionRepository)}, so there is nothing to wrap.");
+
+        services.Remove(registered);
+        services.Add(ServiceDescriptor.Describe(
+            typeof(ISessionRepository),
+            provider => new RemovalRefusingSessionRepository(registered switch
+            {
+                { ImplementationType: { } type } =>
+                    (ISessionRepository)ActivatorUtilities.CreateInstance(provider, type),
+                { ImplementationFactory: { } factory } => (ISessionRepository)factory(provider),
+                { ImplementationInstance: ISessionRepository instance } => instance,
+                _ => throw new InvalidOperationException(
+                    $"The {nameof(ISessionRepository)} registration has no shape this helper can rebuild."),
+            }),
+            registered.Lifetime));
+    }
+
+    /// <summary>Forwards every member to the real repository except the removal, which throws.</summary>
+    private sealed class RemovalRefusingSessionRepository(ISessionRepository inner) : ISessionRepository
+    {
+        public Task AddAsync(Session session, SessionToken token, CancellationToken cancellationToken = default) =>
+            inner.AddAsync(session, token, cancellationToken);
+
+        public Task<Session?> FindByIdAsync(Guid sessionId, CancellationToken cancellationToken = default) =>
+            inner.FindByIdAsync(sessionId, cancellationToken);
+
+        public Task<int> RevokeForCredentialAsync(
+            Guid credentialId,
+            DateTime revokedAtUtc,
+            CancellationToken cancellationToken = default) =>
+            inner.RevokeForCredentialAsync(credentialId, revokedAtUtc, cancellationToken);
+
+        public Task<bool> RevokeAsync(Guid sessionId, DateTime revokedAtUtc, CancellationToken cancellationToken = default) =>
+            inner.RevokeAsync(sessionId, revokedAtUtc, cancellationToken);
+
+        public Task<bool> RemoveAsync(Guid sessionId, CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("A test decorator refused the session removal.");
+    }
+
+    /// <summary>The session handle a signed-in client presents, read back from its own header.</summary>
+    private static string PresentedCookieOf(HttpClient client)
+    {
+        string prefix = $"{SessionCookieAuthenticationTests.CookieName}=";
+        string header = client.DefaultRequestHeaders.GetValues("Cookie").Single();
+
+        return header.StartsWith(prefix, StringComparison.Ordinal)
+            ? header[prefix.Length..]
+            : throw new InvalidOperationException("The client presents no session cookie.");
+    }
+
+    /// <summary>The id of the session a cookie opens, read through its handle on the superuser connection.</summary>
+    private static async Task<Guid> SessionIdOfCookieAsync(RepositoryTestHost host, string cookie)
+    {
+        await using NpgsqlConnection connection = new(host.ConnectionString);
+        await connection.OpenAsync();
+        await using NpgsqlCommand command = new(
+            "select session_id from session_tokens where token_hash = @digest", connection);
+        command.Parameters.AddWithValue("digest", SessionToken.HashOf(Base64UrlText.Decode(cookie)));
+
+        return await command.ExecuteScalarAsync() switch
+        {
+            Guid sessionId => sessionId,
+            var unexpected => throw new InvalidOperationException(
+                $"Expected the cookie's session id, got '{unexpected ?? "null"}'."),
+        };
+    }
+
+    /// <summary>The credential a stored session was opened over, on the superuser connection.</summary>
+    private static async Task<Guid> CredentialOfSessionAsync(RepositoryTestHost host, Guid sessionId)
+    {
+        await using NpgsqlConnection connection = new(host.ConnectionString);
+        await connection.OpenAsync();
+        await using NpgsqlCommand command = new(
+            "select credential_id from sessions where id = @id", connection);
+        command.Parameters.AddWithValue("id", sessionId);
+
+        return await command.ExecuteScalarAsync() switch
+        {
+            Guid credentialId => credentialId,
+            var unexpected => throw new InvalidOperationException(
+                $"Expected the session's credential id, got '{unexpected ?? "null"}'."),
+        };
+    }
+
+    /// <summary>
+    /// Opens one more live full session over <paramref name="credentialId" /> — the account signed in on
+    /// another device — and returns its id.
+    /// </summary>
+    /// <remarks>
+    /// Seeded on the superuser connection through <c>Session.Establish</c>, with a random handle no client
+    /// in the test presents.
+    /// </remarks>
+    private static async Task<Guid> SeedAnotherDevicesSessionAsync(RepositoryTestHost host, Guid credentialId)
+    {
+        byte[] token = RandomNumberGenerator.GetBytes(SessionToken.TokenLength);
+        DateTime now = DateTime.UtcNow;
+        await RepositoryTestHost.SeedSessionOnAsync(
+            host.ConnectionString, credentialId, token, SessionKind.Full, now.AddMinutes(-1), now.AddHours(1));
+
+        return await SessionIdOfCookieAsync(host, Base64UrlText.Encode(token));
+    }
+
+    private static Task<long> CountSessionsByIdAsync(RepositoryTestHost host, Guid sessionId) =>
+        ScalarCountAsync(host, "select count(*) from sessions where id = @id", ("id", sessionId));
+
+    private static Task<long> CountHandlesOfCookieAsync(RepositoryTestHost host, string cookie) =>
+        ScalarCountAsync(
+            host,
+            "select count(*) from session_tokens where token_hash = @digest",
+            ("digest", SessionToken.HashOf(Base64UrlText.Decode(cookie))));
 
     private static Task<long> CountUsersAsync(RepositoryTestHost host) =>
         ScalarCountAsync(host, "select count(*) from users", parameter: null);

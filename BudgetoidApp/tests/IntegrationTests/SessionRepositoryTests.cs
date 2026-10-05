@@ -320,7 +320,7 @@ public sealed partial class SessionRepositoryTests
     /// is not expired. Nothing in the schema orders the two instants, and <c>Session.IsActiveAt</c> reads
     /// any revocation as ended. A sweep that rewrote the rule as
     /// <c>RevokedAtUtc &lt;= created || ExpiresAtUtc &lt;= created</c> deletes every other ended row here
-    /// and keeps this one.
+    /// and keeps this one — measured: that rewrite fails this test.
     /// </para>
     /// <para>
     /// <b>Every instant is months in the past.</b> "Ended" is judged at the new session's own
@@ -425,7 +425,7 @@ public sealed partial class SessionRepositoryTests
     /// </para>
     /// <para>
     /// The owner's own revoked session is the control. Without it this test is green for a repository
-    /// that never deletes anything — which is the repository there is today.
+    /// that never deletes anything [reasoned].
     /// </para>
     /// </remarks>
     [Test]
@@ -478,9 +478,9 @@ public sealed partial class SessionRepositoryTests
     /// that never happened.
     /// </para>
     /// <para>
-    /// <b>The second act is the control, and without it this test proves nothing today.</b> A
-    /// repository that never deletes passes the first half. A clean establishment on the same account
-    /// afterwards has to take the ended row, which shows the row was the sweep's to take.
+    /// <b>The second act is the control.</b> A repository that never deletes passes the first half
+    /// [reasoned]. A clean establishment on the same account afterwards has to take the ended row, which
+    /// shows the row was the sweep's to take.
     /// </para>
     /// </remarks>
     [Test]
@@ -540,8 +540,9 @@ public sealed partial class SessionRepositoryTests
     /// ran.
     /// </para>
     /// <para>
-    /// Today there is no delete for the interceptor to refuse, so the act throws nothing and this fails
-    /// on the first assertion.
+    /// The first assertion is what says the delete was really attempted: a repository that sweeps
+    /// nothing gives the interceptor nothing to refuse, so the act throws nothing and this fails there
+    /// [reasoned].
     /// </para>
     /// </remarks>
     [Test]
@@ -639,7 +640,9 @@ public sealed partial class SessionRepositoryTests
     /// right answer is to read it again and delete it, not to report a failure and not to skip it.
     /// </para>
     /// <para>
-    /// The same two shapes as the test above: on its own, and inside a caller's transaction.
+    /// The same two shapes as the test above: on its own, and inside a caller's transaction. Measured,
+    /// for both race tests and both shapes: taking out the sweep's retry fails all four cases with
+    /// <c>DbUpdateConcurrencyException</c>, and so does taking out the detach of the failed deletes.
     /// </para>
     /// </remarks>
     [Test]
@@ -667,6 +670,136 @@ public sealed partial class SessionRepositoryTests
         // Assert
         await Assert.That(revoker.Revoked).IsEqualTo(1);
         await Assert.That(await RenderSessionsOfAsync(host, owner.UserId, labels)).IsEqualTo("established");
+    }
+
+    /// <summary>
+    /// Removing a session deletes that row and its handle, live or ended, and nothing else of the
+    /// account's.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Both a live and a revoked row are named, because displacement takes whatever the cookie
+    /// names.</b> A removal that only took live rows — a revocation's predicate reused — leaves a
+    /// signed-out stranger's row behind; one that only took ended rows — the sweep's predicate reused —
+    /// leaves the live one. The other live session on the same credential is the control for a
+    /// predicate wider than the id.
+    /// </para>
+    /// <para>
+    /// <b>The app role, with the owner published</b>, the connection the displacement runs on. The handle
+    /// can only leave by the cascade, since the role holds no <c>DELETE</c> on <c>session_tokens</c>.
+    /// </para>
+    /// </remarks>
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task RemoveAsync_DeletesOnlyTheNamedSessionAndItsHandle(bool namedIsRevoked)
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartHostAsync();
+        RepositoryTestHost.SeededOwner owner = await host.SeedOwnerAsync("google-1", "person@example.com");
+        Guid credentialId = await host.FederatedCredentialIdAsync(owner.UserId);
+        Guid named = await SeedEndingAsync(
+            host, credentialId, 0x11, SessionKind.Locked, ExpiryInstant, namedIsRevoked ? RevocationInstant : null);
+        Dictionary<Guid, string> labels = new()
+        {
+            [named] = "named",
+            [await SeedEndingAsync(host, credentialId, 0x22, SessionKind.Locked, ExpiryInstant)] = "kept",
+        };
+
+        // Act
+        bool removed;
+        await using (BudgetoidDbContext db = AppDb(host, owner))
+        {
+            removed = await new SessionRepository(db).RemoveAsync(named);
+        }
+
+        // Assert
+        await Assert.That(removed).IsTrue();
+        await Assert.That(await RenderSessionsOfAsync(host, owner.UserId, labels)).IsEqualTo("kept");
+        await Assert.That(await RenderHandlesOfAsync(host, owner.UserId, labels)).IsEqualTo("kept");
+    }
+
+    /// <summary>
+    /// Removing another account's session removes nothing and says so; removing one's own removes it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The member names no owner, so the policy is the only thing scoping it.</b> That is why the
+    /// displacement runs in a scope that publishes the cookie's own account: published as anybody else,
+    /// this call must find nothing rather than delete a stranger's sign-in.
+    /// </para>
+    /// <para>
+    /// <b>The owner's own removal is the control.</b> Without it this half is green for a member that
+    /// never deletes anything.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task RemoveAsync_ForAnotherAccountsSession_RemovesNothing()
+    {
+        // Arrange — the stranger first, so the owner's row is not simply the first in the table.
+        await using RepositoryTestHost host = await StartHostAsync();
+        RepositoryTestHost.SeededOwner stranger = await host.SeedOwnerAsync("google-0", "stranger@example.com");
+        RepositoryTestHost.SeededOwner owner = await host.SeedOwnerAsync("google-1", "person@example.com");
+        Guid strangers = await SeedEndingAsync(
+            host, await host.FederatedCredentialIdAsync(stranger.UserId), 0x11, SessionKind.Locked, ExpiryInstant);
+        Guid owners = await SeedEndingAsync(
+            host, await host.FederatedCredentialIdAsync(owner.UserId), 0x22, SessionKind.Locked, ExpiryInstant);
+        Dictionary<Guid, string> labels = new() { [strangers] = "stranger's", [owners] = "owner's" };
+
+        // Act — published as the owner, naming the stranger's session, then the owner's own.
+        bool removedStrangers;
+        bool removedOwners;
+        await using (BudgetoidDbContext db = AppDb(host, owner))
+        {
+            removedStrangers = await new SessionRepository(db).RemoveAsync(strangers);
+        }
+
+        await using (BudgetoidDbContext db = AppDb(host, owner))
+        {
+            removedOwners = await new SessionRepository(db).RemoveAsync(owners);
+        }
+
+        // Assert
+        await Assert.That(removedStrangers).IsFalse();
+        await Assert.That(await RenderSessionsOfAsync(host, stranger.UserId, labels)).IsEqualTo("stranger's");
+        await Assert.That(removedOwners).IsTrue();
+        await Assert.That(await RenderSessionsOfAsync(host, owner.UserId, labels)).IsEqualTo(string.Empty);
+    }
+
+    /// <summary>
+    /// When the session is revoked by another request between the removal's read and its save, the row
+    /// is still removed and the call says so.
+    /// </summary>
+    /// <remarks>
+    /// <c>revoked_at_utc</c> is a concurrency token, so the <c>DELETE</c> of a live row carries
+    /// <c>revoked_at_utc IS NULL</c>. A sign-out landing in the window stamps the row and that predicate
+    /// matches nothing. The row is still the one the cookie named, so the right answer is to read it
+    /// again and delete it — not to fail the establishment that is running the displacement with a 500,
+    /// and not to leave the row behind. Measured: taking out either the retry or the detach of the
+    /// failed delete fails this test with <c>DbUpdateConcurrencyException</c>.
+    /// </remarks>
+    [Test]
+    public async Task RemoveAsync_WhenRevokedConcurrently_StillRemovesIt()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartHostAsync();
+        RepositoryTestHost.SeededOwner owner = await host.SeedOwnerAsync("google-1", "person@example.com");
+        Guid live = await SeedEndingAsync(
+            host, await host.FederatedCredentialIdAsync(owner.UserId), 0x11, SessionKind.Locked, ExpiryInstant);
+        Dictionary<Guid, string> labels = new() { [live] = "live, then revoked" };
+        ConcurrentRevocationInterceptor revoker = new(host.ConnectionString, live, RevocationInstant);
+
+        // Act
+        bool removed;
+        await using (BudgetoidDbContext db = AppDb(host, owner, revoker))
+        {
+            removed = await new SessionRepository(db).RemoveAsync(live);
+        }
+
+        // Assert — the race really ran, and the row is gone anyway.
+        await Assert.That(revoker.Revoked).IsEqualTo(1);
+        await Assert.That(removed).IsTrue();
+        await Assert.That(await RenderSessionsOfAsync(host, owner.UserId, labels)).IsEqualTo(string.Empty);
     }
 
     /// <summary>

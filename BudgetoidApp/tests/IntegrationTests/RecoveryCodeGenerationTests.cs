@@ -1441,14 +1441,19 @@ public sealed class RecoveryCodeGenerationTests
     /// route ages a session.
     /// </para>
     /// <para>
-    /// The live session the arrangement signed in with is the control: a sweep that took every row but
-    /// the new one would pass the first half and sign out the device making the request.
+    /// <b>The control is a live session on another device, not the caller's own.</b> A sweep that took
+    /// every row but the new one would pass the first half and sign the person out of their phone. The
+    /// caller's own session cannot be that control: this response overwrites its cookie, so displacement
+    /// deletes it — <see cref="Generation_ThatReestablishes_DeletesTheCallersPasskeySession" /> pins
+    /// that. The other device's session sits on the caller's own passkey credential, so a displacement
+    /// keyed on the credential rather than on the cookie's session would take it too.
     /// </para>
     /// </remarks>
     [Test]
     public async Task Generation_ThatReestablishes_DeletesTheAccountsOtherEndedSessions()
     {
-        // Arrange — a real first set carrying one live session, and two ended federated sessions.
+        // Arrange — a real first set carrying one live session, two ended federated sessions, and a live
+        // session on another device.
         await using PostgresTestHost host = await StartHostAsync();
         (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
@@ -1462,15 +1467,27 @@ public sealed class RecoveryCodeGenerationTests
         await InsertRecoveryCodeSessionAsync(admin, userId, await ResolveSetCredentialIdAsync(admin, userId));
         Guid federatedId = await SeedEndedFederatedSessionsAsync(host, userId);
 
+        byte[] otherDeviceToken = RandomNumberGenerator.GetBytes(SessionToken.TokenLength);
+        DateTime now = DateTime.UtcNow;
+        await RepositoryTestHost.SeedSessionOnAsync(
+            host.ConnectionString,
+            caller[0].CredentialId,
+            otherDeviceToken,
+            SessionKind.Full,
+            now.AddMinutes(-1),
+            now.AddHours(1));
+        Guid otherDeviceSessionId = await SessionIdOfCookieAsync(admin, Base64UrlText.Encode(otherDeviceToken));
+
         // Act
         HttpResponseMessage response = await GenerateAsync(client, device, userId);
 
-        // Assert — it did sign back in, the ended rows went, and the caller's own session stayed.
+        // Assert — it did sign back in, the ended rows went, and the other device's session stayed.
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
         JsonObject body = await ReadJsonObjectAsync(response);
         await Assert.That(body[SessionMember] is null).IsFalse();
         await Assert.That(await CountSessionsOfCredentialAsync(admin, federatedId)).IsEqualTo(0L);
-        await Assert.That((await LiveSessionsAsync(admin, userId)).Any(row => row.Id == caller[0].Id)).IsTrue();
+        await Assert.That((await LiveSessionsAsync(admin, userId)).Any(row => row.Id == otherDeviceSessionId))
+            .IsTrue();
     }
 
     /// <summary>
@@ -1483,9 +1500,9 @@ public sealed class RecoveryCodeGenerationTests
     /// every generation, would delete these rows here.
     /// </para>
     /// <para>
-    /// <b>The second act is the control, and it is what makes this red today.</b> Alone, the first half
-    /// passes for a product that never deletes anything. A later generation that does sign back in has
-    /// to take the same two rows, which shows they were the sweep's to take.
+    /// <b>The second act is the control.</b> Alone, the first half passes for a product that never
+    /// deletes anything [reasoned]. A later generation that does sign back in has to take the same two
+    /// rows, which shows they were the sweep's to take.
     /// </para>
     /// </remarks>
     [Test]
@@ -1517,6 +1534,110 @@ public sealed class RecoveryCodeGenerationTests
         // Assert
         await Assert.That(second.StatusCode).IsEqualTo(HttpStatusCode.OK);
         await Assert.That(await CountSessionsOfCredentialAsync(admin, federatedId)).IsEqualTo(0L);
+    }
+
+    /// <summary>
+    /// A generation that signs the browser back in deletes the passkey session its cookie named.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The route writes a new cookie whenever it ended a code-set session, even one on another
+    /// device.</b> The caller here is signed in over a passkey, and the session it loses is the live
+    /// one its old cookie named: nothing will present that cookie again, so its row would stay live
+    /// until it expires with no browser holding it. The code-set session is written out of band, for the
+    /// reason <see cref="Generation_WhenTheReplacedSetHasLiveSessions_ReportsThemEndedAndAnswers200" />
+    /// gives.
+    /// </para>
+    /// <para>
+    /// <b>The new cookie is read back through the API as well.</b> Displacement runs after the new
+    /// session committed, so a displacement that named the wrong session — the one just established —
+    /// would pass every row count about the old one and leave the browser holding a cookie that opens
+    /// nothing. <c>GET /api/me/session</c> on the response's own cookie is what says the browser is
+    /// still signed in.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Generation_ThatReestablishes_DeletesTheCallersPasskeySession()
+    {
+        // Arrange — a real first set, and a live session over it on another device.
+        await using PostgresTestHost host = await StartHostAsync();
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
+        SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        await RegisterPasskeyAsync(client, device);
+        await Assert.That((await GenerateAsync(client, device, userId)).StatusCode).IsEqualTo(HttpStatusCode.OK);
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        string callersCookie = PresentedCookieOf(client);
+        Guid callersSessionId = await SessionIdOfCookieAsync(admin, callersCookie);
+        await InsertRecoveryCodeSessionAsync(admin, userId, await ResolveSetCredentialIdAsync(admin, userId));
+
+        // Act
+        HttpResponseMessage response = await GenerateAsync(client, device, userId);
+
+        // Assert — it signed the browser back in, and the session the old cookie named is gone.
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
+        JsonObject body = await ReadJsonObjectAsync(response);
+        await Assert.That(body[SessionMember] is null).IsFalse();
+        await Assert.That(await CountSessionsByIdAsync(admin, callersSessionId)).IsEqualTo(0L);
+        await Assert.That(await CountHandlesOfCookieAsync(admin, callersCookie)).IsEqualTo(0L);
+
+        // And the cookie the response set opens a live session.
+        string newCookie = RegistrationCeremony.SessionCookieValueOf(response);
+        await Assert.That(newCookie).IsNotEqualTo(callersCookie);
+        HttpClient signedInAgain = host.Factory.CreateClient();
+        signedInAgain.DefaultRequestHeaders.Add("Cookie", $"{SessionCookieAuthenticationTests.CookieName}={newCookie}");
+        HttpResponseMessage session = await signedInAgain.GetAsync("/api/me/session");
+        await Assert.That(session.StatusCode).IsEqualTo(HttpStatusCode.OK);
+    }
+
+    /// <summary>
+    /// A generation that establishes no session leaves the caller's session live; one that does
+    /// establish deletes it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The first half pins that only the established arm displaces.</b> With no new cookie, the
+    /// browser goes on presenting the old one, so displacing it would sign the person out of the screen
+    /// they just issued a card from. A displacement wired to the route rather than to the established
+    /// arm would fail this half [reasoned — not run].
+    /// </para>
+    /// <para>
+    /// <b>The second act is the control.</b> Alone, the first half passes for a product that never
+    /// displaces anything: a replacement that does establish a session has to take the caller's.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Generation_ThatEstablishesNoSession_LeavesTheCallersSessionLive()
+    {
+        // Arrange
+        await using PostgresTestHost host = await StartHostAsync();
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
+        SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        await RegisterPasskeyAsync(client, device);
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        Guid callersSessionId = await SessionIdOfCookieAsync(admin, PresentedCookieOf(client));
+
+        // Act — a first issue, which establishes no session.
+        HttpResponseMessage first = await GenerateAsync(client, device, userId);
+        HttpResponseMessage stillSignedIn = await client.GetAsync("/api/me/session");
+
+        // Assert
+        await Assert.That(first.StatusCode).IsEqualTo(HttpStatusCode.OK);
+        JsonObject body = await ReadJsonObjectAsync(first);
+        await Assert.That(body[SessionMember] is null).IsTrue();
+        await Assert.That(stillSignedIn.StatusCode).IsEqualTo(HttpStatusCode.OK);
+        await Assert.That(await CountSessionsByIdAsync(admin, callersSessionId)).IsEqualTo(1L);
+
+        // Act — the control: a replacement that does establish one.
+        await InsertRecoveryCodeSessionAsync(admin, userId, await ResolveSetCredentialIdAsync(admin, userId));
+        HttpResponseMessage second = await GenerateAsync(client, device, userId);
+
+        // Assert
+        await Assert.That(second.StatusCode).IsEqualTo(HttpStatusCode.OK);
+        await Assert.That(await CountSessionsByIdAsync(admin, callersSessionId)).IsEqualTo(0L);
     }
 
     /// <summary>
@@ -2930,6 +3051,51 @@ public sealed class RecoveryCodeGenerationTests
             "select count(*) from sessions where credential_id = @credentialId and revoked_at_utc is null",
             admin);
         command.Parameters.AddWithValue("credentialId", credentialId);
+
+        return await ReadCountAsync(command);
+    }
+
+    /// <summary>The session handle a signed-in client presents, read back from its own header.</summary>
+    private static string PresentedCookieOf(HttpClient client)
+    {
+        string prefix = $"{SessionCookieAuthenticationTests.CookieName}=";
+        string header = client.DefaultRequestHeaders.GetValues("Cookie").Single();
+
+        return header.StartsWith(prefix, StringComparison.Ordinal)
+            ? header[prefix.Length..]
+            : throw new InvalidOperationException("The client presents no session cookie.");
+    }
+
+    /// <summary>The id of the session a cookie opens, read through its handle on the superuser connection.</summary>
+    private static async Task<Guid> SessionIdOfCookieAsync(NpgsqlConnection admin, string cookie)
+    {
+        await using NpgsqlCommand command = new(
+            "select session_id from session_tokens where token_hash = @digest", admin);
+        command.Parameters.AddWithValue("digest", SessionToken.HashOf(Base64UrlText.Decode(cookie)));
+
+        return await command.ExecuteScalarAsync() switch
+        {
+            Guid sessionId => sessionId,
+            var unexpected => throw new InvalidOperationException(
+                $"Expected the cookie's session id, got '{unexpected ?? "null"}'."),
+        };
+    }
+
+    /// <summary>How many <c>sessions</c> rows carry this id, ended or not, on the superuser connection.</summary>
+    private static async Task<long> CountSessionsByIdAsync(NpgsqlConnection admin, Guid sessionId)
+    {
+        await using NpgsqlCommand command = new("select count(*) from sessions where id = @id", admin);
+        command.Parameters.AddWithValue("id", sessionId);
+
+        return await ReadCountAsync(command);
+    }
+
+    /// <summary>How many <c>session_tokens</c> rows a cookie's digest matches, on the superuser connection.</summary>
+    private static async Task<long> CountHandlesOfCookieAsync(NpgsqlConnection admin, string cookie)
+    {
+        await using NpgsqlCommand command = new(
+            "select count(*) from session_tokens where token_hash = @digest", admin);
+        command.Parameters.AddWithValue("digest", SessionToken.HashOf(Base64UrlText.Decode(cookie)));
 
         return await ReadCountAsync(command);
     }

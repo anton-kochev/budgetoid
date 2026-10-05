@@ -344,6 +344,70 @@ public sealed class RecoveryCodeRedemptionTests
     }
 
     /// <summary>
+    /// A redemption from a browser holding the account's own live session deletes the session the
+    /// overwritten cookie named, and keeps the account's session on another device.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The sweep takes ended rows only, and this one is live.</b> The response overwrites the cookie,
+    /// so no browser will present that session again, yet its row would stay live until it expires.
+    /// </para>
+    /// <para>
+    /// The other device — a live locked session on the federated credential, written out of band — is
+    /// the control: a displacement keyed on the account rather than on the cookie's session would take it
+    /// too [reasoned].
+    /// </para>
+    /// <para>
+    /// <b>Same-account only, so it cannot tell where the delete runs.</b> Deleting in the request scope
+    /// with the cookie scheme's session id passes here, measured; the cross-account endpoint tests in the
+    /// locked sign-in, passkey and registration suites catch it. What this holds is the account's own
+    /// case: a redemption that left the presented session live fails on the held set.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Redemption_OverItsOwnLiveSession_DeletesTheSessionTheCookieNamed()
+    {
+        // Arrange — a real account, passkey and set, signed in in this browser and on another device.
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
+        SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        await RegisterPasskeyAsync(client, device);
+        string[] verifiers = Verifiers();
+        await IssueSetAsync(client, device, userId, verifiers);
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        string presentedCookie = PresentedCookieOf(client);
+        Guid presentedSessionId = await SessionIdOfCookieAsync(admin, presentedCookie);
+
+        Guid federatedId = await RepositoryTestHost.FederatedCredentialIdOnAsync(host.ConnectionString, userId);
+        byte[] otherDeviceToken = RandomNumberGenerator.GetBytes(SessionToken.TokenLength);
+        DateTime now = DateTime.UtcNow;
+        await RepositoryTestHost.SeedSessionOnAsync(
+            host.ConnectionString,
+            federatedId,
+            otherDeviceToken,
+            SessionKind.Locked,
+            now.AddMinutes(-1),
+            now.AddHours(1));
+        Guid otherDeviceSessionId = await SessionIdOfCookieAsync(admin, Base64UrlText.Encode(otherDeviceToken));
+        IReadOnlyList<SessionRow> before = await ReadSessionsAsync(admin);
+
+        // Act — the redemption, from the browser holding the live cookie.
+        HttpResponseMessage response = await RedeemAsync(client, verifiers[0]);
+
+        // Assert — the account holds the other device and the new session, and nothing else.
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
+        IReadOnlyList<SessionRow> opened = await SessionsOpenedSinceAsync(admin, before);
+        await Assert.That(opened.Count).IsEqualTo(1);
+        Guid[] expected = [otherDeviceSessionId, opened[0].Id];
+        Guid[] held = [.. (await ReadSessionsAsync(admin)).Where(row => row.UserId == userId).Select(row => row.Id)];
+        await Assert.That(held).DoesNotContain(presentedSessionId);
+        await Assert.That(held).IsEquivalentTo(expected);
+        await Assert.That(await CountHandlesOfCookieAsync(admin, presentedCookie)).IsEqualTo(0L);
+    }
+
+    /// <summary>
     /// The same code presented twice is refused the second time, and the account is left with one session
     /// rather than two.
     /// </summary>
@@ -1389,6 +1453,42 @@ public sealed class RecoveryCodeRedemptionTests
         HashSet<Guid> standing = [.. before.Select(session => session.Id)];
 
         return [.. (await ReadSessionsAsync(admin)).Where(session => !standing.Contains(session.Id))];
+    }
+
+    /// <summary>The session handle a signed-in client presents, read back from its own header.</summary>
+    private static string PresentedCookieOf(HttpClient client)
+    {
+        string prefix = $"{SessionCookieAuthenticationTests.CookieName}=";
+        string header = client.DefaultRequestHeaders.GetValues("Cookie").Single();
+
+        return header.StartsWith(prefix, StringComparison.Ordinal)
+            ? header[prefix.Length..]
+            : throw new InvalidOperationException("The client presents no session cookie.");
+    }
+
+    /// <summary>The id of the session a cookie opens, read through its handle on the admin connection.</summary>
+    private static async Task<Guid> SessionIdOfCookieAsync(NpgsqlConnection admin, string cookie)
+    {
+        await using NpgsqlCommand command = new(
+            "select session_id from session_tokens where token_hash = @digest", admin);
+        command.Parameters.AddWithValue("digest", SessionToken.HashOf(Base64UrlText.Decode(cookie)));
+
+        return await command.ExecuteScalarAsync() switch
+        {
+            Guid sessionId => sessionId,
+            var unexpected => throw new InvalidOperationException(
+                $"Expected the cookie's session id, got '{unexpected ?? "null"}'."),
+        };
+    }
+
+    /// <summary>How many <c>session_tokens</c> rows a cookie's digest matches, on the admin connection.</summary>
+    private static async Task<long> CountHandlesOfCookieAsync(NpgsqlConnection admin, string cookie)
+    {
+        await using NpgsqlCommand command = new(
+            "select count(*) from session_tokens where token_hash = @digest", admin);
+        command.Parameters.AddWithValue("digest", SessionToken.HashOf(Base64UrlText.Decode(cookie)));
+
+        return await ReadCountAsync(command);
     }
 
     /// <summary>How many sessions a credential opened, ended or not, on the admin connection.</summary>

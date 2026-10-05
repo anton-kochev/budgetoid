@@ -1,8 +1,12 @@
+using System.Diagnostics.CodeAnalysis;
+using Application.Passkeys;
+using Domain.Sessions;
+
 namespace Api.Infrastructure;
 
 /// <summary>
-/// The one first-party cookie this application sets: its name, the attributes it is written with, and
-/// the only two things that may ever be done to it.
+/// The one first-party cookie this application sets: its name, the attributes it is written with, the
+/// only two writes that may ever be made to it, and its one reader.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -54,14 +58,17 @@ public static class SessionCookie
     /// </summary>
     /// <remarks>
     /// <para>
-    /// <b>Five callers, and each of them is an endpoint rather than a handler.</b> A completed
-    /// registration, a verified passkey assertion, a redeemed recovery code, a regeneration that
-    /// swept a live session, and a locked sign-in: the five paths that establish one. Each writes this
-    /// <em>after</em> its handler returned, because every refusal on the first four leaves by exception —
-    /// a cookie written before the handler ran is a cookie a refusal leaves behind on the client of
-    /// whoever was guessing. The locked sign-in's one refusal past its gates is a returned outcome
-    /// rather than an exception, so there the cookie is written on the established arm only, and the
-    /// 404 arm writes nothing.
+    /// <b>One caller, <see cref="SessionCookieWriter"/>, and never an endpoint.</b> Five paths establish a
+    /// session — a completed registration, a verified passkey assertion, a redeemed recovery code, a
+    /// regeneration that ended a live session of the replaced set, and a locked sign-in — and each
+    /// endpoint hands its handoff to that writer <em>after</em> its handler returned, because every
+    /// refusal on the first four leaves by exception: a cookie written before the handler ran is a cookie
+    /// a refusal leaves behind on the client of whoever was guessing. The locked sign-in's one refusal
+    /// past its gates is a returned outcome rather than an exception, so there the writer runs on the
+    /// established arm only, and the 404 arm writes nothing. The writer stands between the endpoints and
+    /// this method because overwriting a cookie does not, by itself, end the session it named; the writer
+    /// displaces that session first. <c>SessionCookieIssueCensusTests</c> holds the one caller. Measured:
+    /// a direct call here from an endpoint reddens it.
     /// </para>
     /// <para>
     /// <b>Neither argument may be built here.</b> <paramref name="value"/> is the handle the handler
@@ -89,6 +96,64 @@ public static class SessionCookie
         }
 
         response.Cookies.Append(Name, value, Attributes(new DateTimeOffset(expiresAtUtc)));
+    }
+
+    /// <summary>
+    /// Reads the handle the request presents and answers its digest, or <see langword="false"/> when it
+    /// presents none or one that is not a handle this application could have issued.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>One reader, because two readers are how two dialects start.</b> The session scheme authenticates
+    /// a request from this, and <see cref="SessionCookieWriter"/> displaces the session it names. If the
+    /// two decoded differently, there would be a string one of them accepts and the other refuses: a
+    /// cookie that signs a browser in and that an establishment then fails to displace, or the reverse.
+    /// </para>
+    /// <para>
+    /// <b>Every refusal is <see langword="false"/>, never an exception.</b> The value is one a caller
+    /// typed, read on anonymous routes too, so a decoder that threw would turn a hand-edited cookie into a
+    /// logged server fault.
+    /// </para>
+    /// <para>
+    /// <b>The width is refused from both sides and never truncated.</b> A short value is a prefix of a
+    /// real handle and a long one is a real handle with something appended; a decoder that padded would
+    /// find the row for the first and one that truncated would find it for the second. The ceiling handed
+    /// to the decoder bounds the work an anonymous caller can name, and the equality after it is what
+    /// bounds the value — the two are not the same check, because a 33-byte token encodes to text the
+    /// ceiling admits.
+    /// </para>
+    /// </remarks>
+    /// <param name="request">The request whose cookie is read.</param>
+    /// <param name="tokenHash">SHA-256 of the presented handle, when this answers <see langword="true"/>.</param>
+    public static bool TryReadTokenHash(HttpRequest request, [NotNullWhen(true)] out byte[]? tokenHash)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        tokenHash = null;
+
+        if (!request.Cookies.TryGetValue(Name, out string? presented))
+        {
+            return false;
+        }
+
+        // PasskeyEncoding despite the name, and borrowing it beats a second decoder. It is this
+        // codebase's one base64url reader, it judges the length before validating and decoding — the
+        // ordering an anonymous surface needs, argued in full over there — and a decoder written again
+        // here is how the two dialects start disagreeing about which strings are handles. What the
+        // ceiling cannot say is that the width is exact: it refuses 33 bytes, but a handle of 31 or of
+        // one is under every bound it owns, so the equality below is a separate check and not a
+        // restatement.
+        if (!PasskeyEncoding.TryDecode(presented, SessionToken.TokenLength, out byte[]? token)
+            || token.Length != SessionToken.TokenLength)
+        {
+            return false;
+        }
+
+        // Hashed here, at the boundary that decoded it, so the live token stops at this method and no
+        // command, port or log statement below has a member it could travel through.
+        tokenHash = SessionToken.HashOf(token);
+
+        return true;
     }
 
     /// <summary>Takes the cookie off the client, whatever it was holding.</summary>

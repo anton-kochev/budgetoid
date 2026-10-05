@@ -499,8 +499,8 @@ erDiagram
     than the first restated: the sweep loads every unrevoked `Session` into the change tracker, and
     removing the `Credential` with those dependents still tracked makes EF emit its own
     `DELETE FROM sessions`. **On `sessions` that mistake raises nothing.** The role holds
-    `DELETE` there for the ended-session sweep — a different act from this file's sweep, which
-    revokes; see [sessions.md](sessions.md#must-not) — so EF's statement succeeds and removes the
+    `DELETE` there for the ended-session sweep and for displacement — acts different from this
+    file's sweep, which revokes; see [sessions.md](sessions.md#must-not) — so EF's statement succeeds and removes the
     rows the database's cascade would have taken. Measured: with that grant, removing this second
     `DiscardTrackedEntities()` reddens no integration test, and only the handler's unit replay and
     placement tests notice. The discard stays, because the statements past it are written to an
@@ -529,7 +529,14 @@ erDiagram
     false negatives**: a live session over the replaced set is always swept, so anybody signed out
     here is signed back in. **Two false positives**: a live session on another device, and a session
     unrevoked but past its expiry — the sweep narrows on `revoked_at_utc is null` and says nothing
-    about expiry. Each costs one inert row that hands nothing to anybody.
+    about expiry. Each moves the calling browser onto a session over the new set. That browser
+    reached this route on a full session of its own — a passkey session, say — and the new cookie
+    displaces it, so it is deleted rather than left live beside the new one; see
+    [sessions.md](sessions.md).
+    Nothing is handed to anybody who did not already hold the account.
+    `RecoveryCodeGenerationTests.Generation_ThatReestablishes_DeletesTheCallersPasskeySession` holds
+    the first case: the caller's passkey session is deleted and the new cookie opens a live session.
+    [Guessing] The expired-but-unrevoked case is read from the same rules; no test drives it.
   - **So the count depends on the account's history, not only on the set's.** The ended-session
     sweep in [sessions.md](sessions.md#must-not) deletes the account's expired rows when a session
     is established on the account, so an expired session of the replaced set is in the count only
@@ -874,7 +881,7 @@ ELSE                                                               ← first iss
   `sessionsEnded`. What it adds beyond this file's validation is one rule: the passkey's factor
   identifier must differ from all ten codes'.
 - **[Sessions](sessions.md)** — this area holds **two** of the five paths that establish a session:
-  a redemption, and a regeneration that swept any. Each opens a `Full` session lasting the same 14
+  a redemption, and a regeneration that revoked any. Each opens a `Full` session lasting the same 14
   days. A redemption is one of the two establishing paths that run no WebAuthn ceremony at all, and
   the only one of those two whose session is `Full` — the other is the locked sign-in.
   Replacing a set also revokes the sessions the replaced one opened, which is why
@@ -907,7 +914,7 @@ ELSE                                                               ← first iss
   `DELETE FROM recovery_code_hashes`. The role **is** granted `DELETE` here, so the statement would
   **silently succeed**: the rows leave by the application instead of the database's cascade, the
   request answers `200`, and no SQLSTATE says so. `sessions` behaves the same way, since it holds
-  `DELETE` for the ended-session sweep; `session_tokens`, the table below it, holds none and still
+  `DELETE` for the ended-session sweep and displacement; `session_tokens`, the table below it, holds none and still
   dies loudly with `42501` — see the change-tracker bullet in the `sessionsEnded` rule above. What holds it is a comment on `IRecoveryCodeRepository.DeleteSetAsync`
   and its call site, and nothing else: no test can distinguish the two paths, because the table is
   empty afterwards either way. The way this breaks is a future reader adding a *"load the codes so

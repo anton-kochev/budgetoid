@@ -161,8 +161,9 @@ public sealed class ChangeEmailHandler(
                     // Session of the retired credential into the tracker. Remove the Credential with
                     // those dependents still tracked and EF cascades into the copies it can see, emitting
                     // its own DELETE FROM sessions — which succeeds now that the role holds DELETE there
-                    // for the ended-session sweep, and takes the rows the database's cascade from
-                    // credentials would have. Measured: without this line both email-change integration
+                    // for the ended-session sweep and for displacement, and takes the rows the
+                    // database's cascade from credentials would have. Measured: without this line both
+                    // email-change integration
                     // classes stay green, and the unit fakes have no change tracker to notice. It stays
                     // because a tracked dependent the role cannot delete still dies with 42501 —
                     // session_tokens among them. RevokePasskeyHandler states the same mechanism.

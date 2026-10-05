@@ -141,4 +141,34 @@ public interface ISessionRepository
         Guid sessionId,
         DateTime revokedAtUtc,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Deletes the session named by <paramref name="sessionId"/>, live or ended, and the handle it is
+    /// presented by, reporting whether this call is the one that removed it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>A delete, not a revocation, and that is the reason this member exists beside
+    /// <see cref="RevokeAsync"/>.</b> It is how an establishment takes away the session the overwritten
+    /// cookie named. A revoked row stays until its own account next signs in and sweeps it, and when
+    /// that account is not the one signing in, that sweep may never come — the row would stand as a
+    /// record that this browser was once signed in to it. Ended rows are taken too, for the same
+    /// reason: the sweep in <see cref="AddAsync"/> reaches only the account it runs as.
+    /// </para>
+    /// <para>
+    /// <b>No owner predicate, for the reason <see cref="RevokeAsync"/> gives.</b> <c>sessions</c> is
+    /// policed by <c>user_isolation</c>, so the caller must have published the session's own owner: under
+    /// anybody else this finds nothing and answers <see langword="false"/> rather than deleting a
+    /// stranger's sign-in. Never established, already deleted and belonging to another account all
+    /// answer the same way.
+    /// </para>
+    /// <para>
+    /// <b>A concurrent revocation is converged on, never reported.</b> A session revoked between the read
+    /// and the delete is still the one named, so it is still removed and this answers
+    /// <see langword="true"/>; one a concurrent call deleted first answers <see langword="false"/> —
+    /// reasoned, not run: no test races two removals.
+    /// The handle leaves by the database's cascade from <c>sessions</c>.
+    /// </para>
+    /// </remarks>
+    Task<bool> RemoveAsync(Guid sessionId, CancellationToken cancellationToken = default);
 }

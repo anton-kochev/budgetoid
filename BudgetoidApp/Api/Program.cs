@@ -108,6 +108,9 @@ builder.Services.AddScoped<IBudgetContext, HttpContextBudgetContext>();
 // whatever it publishes.
 builder.Services.AddScoped<IUserContext, HttpContextUserContext>();
 builder.Services.AddScoped<IUserContextWriter, CurrentUserWriter>();
+// Singleton because it holds nothing of a request's: it opens a scope of its own for each displacement,
+// and that scope — not the request's — is where the displaced session's owner is published.
+builder.Services.AddSingleton<SessionCookieWriter>();
 // Singleton, unlike the two contexts above: the relying party and the origin allow-list are
 // configuration rather than request state, and one instance per request would only add a way for the
 // two legs of one sign-in to disagree about which site they are.

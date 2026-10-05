@@ -168,13 +168,13 @@ public static class SessionEndpoints
                 HttpContext httpContext,
                 ClaimsPrincipal principal,
                 EstablishLockedSessionHandler handler,
-                HttpResponse response,
+                SessionCookieWriter cookieWriter,
                 CancellationToken cancellationToken) =>
             {
                 // FIRST, before the handler: a locked sign-in never replaces a live FULL session. The
                 // cookie the browser holds opens everything and this sign-in would open less, so the
                 // answer is a 409 that writes nothing, issues no cookie and leaves that session live. A
-                // live LOCKED session is not refused — the new cookie overwrites it — and neither is a
+                // live LOCKED session is not refused — the writer below displaces it — and neither is a
                 // request with no cookie or with an ended session: the cookie scheme answers NoResult for
                 // both, so the result does not succeed.
                 //
@@ -216,8 +216,11 @@ public static class SessionEndpoints
 
                     case LockedSignInOutcome.Established established:
                         // AFTER THE HANDLER RETURNED, from the handoff it returned, and only on this arm —
-                        // so the 404 above can never carry a cookie naming a session nobody wrote.
-                        SessionCookie.Issue(response, established.Handoff.Token, established.Handoff.ExpiresAtUtc);
+                        // so the 404 above can never carry a cookie naming a session nobody wrote, nor
+                        // delete the session the browser presented. The writer deletes that session —
+                        // a live locked one, or an ended one, of any account; the 409 above has already
+                        // refused a live full one — before it writes the new cookie.
+                        await cookieWriter.WriteEstablishedAsync(httpContext, established.Handoff, cancellationToken);
 
                         // The kind converted here, at the boundary every establishing leg converts its
                         // own, so the wire reads "locked" as the column does. The erasure member is

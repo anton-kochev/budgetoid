@@ -101,7 +101,8 @@ public static class PasskeyEndpoints
         anonymous.MapPost("/assertion", async (
             AssertionRequest request,
             CompleteAssertionHandler handler,
-            HttpResponse response,
+            SessionCookieWriter cookieWriter,
+            HttpContext httpContext,
             CancellationToken cancellationToken) =>
         {
             Issued<EstablishedSession> issued = await handler.HandleAsync(
@@ -128,6 +129,10 @@ public static class PasskeyEndpoints
             // carries the bytes whose digest was stored, and dies with the row" a property rather than
             // a habit — see SessionHandle.
             //
+            // Through the writer, which first deletes the session the browser's old cookie named — the
+            // same account's or another's — and only on this arm, past every refusal. See
+            // SessionCookieWriter.
+            //
             // The null arm is unreachable on this route: an assertion that returns has established a
             // session. It is written as a pattern anyway, uniformly with the two recovery-code legs,
             // because the alternative is a null-forgiving operator asserting a rule that lives in
@@ -135,7 +140,7 @@ public static class PasskeyEndpoints
             // has already committed.
             if (issued.Handoff is { } handoff)
             {
-                SessionCookie.Issue(response, handoff.Token, handoff.ExpiresAtUtc);
+                await cookieWriter.WriteEstablishedAsync(httpContext, handoff, cancellationToken);
             }
 
             // The kind and the expiry, and deliberately no session id. The body has to say something

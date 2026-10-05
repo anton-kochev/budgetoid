@@ -7,6 +7,7 @@ using Application.Passkeys;
 using Application.Registration;
 using Domain.Budgets;
 using Domain.Security;
+using Domain.Sessions;
 using Domain.Users;
 using Infrastructure.Persistence.Provisioning;
 using Microsoft.Extensions.DependencyInjection;
@@ -2038,6 +2039,114 @@ public sealed class AccountRegistrationTests
     }
 
     /// <summary>
+    /// Registering from a browser that holds another account's live session deletes the session that
+    /// cookie named, and its handle, and leaves that account's other sessions alone.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Registration is always the cross-account case.</b> The new account's id is derived from its own
+    /// challenge, so the cookie can only ever name somebody else. The new account's save runs as the new
+    /// account, <c>user_isolation</c> hides the cookie account's rows from it, and registration runs no
+    /// sweep — so nothing in the transaction can reach that session, and it would stay live for its whole
+    /// lifetime with no browser holding it.
+    /// </para>
+    /// <para>
+    /// The cookie account's other device is the control: a displacement keyed on the account rather than
+    /// on the cookie's session would sign a stranger out of their phone [reasoned].
+    /// </para>
+    /// <para>
+    /// <b>What reddens it, measured.</b> Deleting in the request scope, with the session id the cookie
+    /// scheme put on the request, fails here on the presented session's count. The same-account
+    /// endpoint tests stay green under it, which is why this case and its locked and passkey siblings
+    /// exist.
+    /// </para>
+    /// <para>
+    /// <b>What it does not catch.</b> Resolving the displacement handler from the request's services
+    /// instead of a scope of its own re-authenticates the cookie as its own account before deleting, so
+    /// the row is still found and goes. That was measured to leave the locked sibling green, and this one
+    /// is expected to stay green the same way [reasoned]. <c>SessionCookieWriterTests</c> catches it.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Registration_FromABrowserHoldingAnotherAccountsSession_DeletesThatSession()
+    {
+        // Arrange — another account signed in in this browser and on another device.
+        await using PostgresTestHost host = await StartHostAsync();
+        await using ApiFactory factory = CreateApiFactory(host);
+        ApiFactory.SignedInClient cookieAccount = await factory.CreateSignedInClientAsync(OtherSubject, OtherEmail);
+        string presentedCookie = PresentedCookieOf(cookieAccount.Client);
+        Guid presentedSessionId = await SessionIdOfCookieAsync(host, presentedCookie);
+        Guid otherDeviceSessionId = await SeedAnotherDevicesLockedSessionAsync(host, cookieAccount.UserId);
+
+        HttpClient browser = factory.CreateAuthenticatedClient(Subject, Email);
+        browser.DefaultRequestHeaders.Add("Cookie", $"{CookieName}={presentedCookie}");
+
+        // Act
+        RegisteredAccount registered = await RegisterAccountAsync(
+            browser, SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId));
+
+        // Assert
+        await Assert.That(registered.Response.StatusCode).IsEqualTo(HttpStatusCode.Created);
+        await Assert.That(await CountSessionsByIdAsync(host, presentedSessionId)).IsEqualTo(0L);
+        await Assert.That(await CountHandlesOfCookieAsync(host, presentedCookie)).IsEqualTo(0L);
+        await Assert.That(await CountSessionsByIdAsync(host, otherDeviceSessionId)).IsEqualTo(1L);
+    }
+
+    /// <summary>
+    /// A registration refused because its address is taken leaves the session the browser presented
+    /// live; the same browser's next, admitted registration deletes it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The first half pins where displacement sits.</b> It runs only once a new session is
+    /// established. One that ran before the handler would sign the browser out because a registration
+    /// was refused — and the refusal here is the likeliest one a signed-in person meets, trying to
+    /// register the address their own account already holds. Measured: displacing before the handler
+    /// fails this half.
+    /// </para>
+    /// <para>
+    /// <b>The second half is the control.</b> Without it the first half passes for a product that never
+    /// displaces anything: an admitted registration from the same browser has to take the session.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Registration_RefusedEmailTaken_LeavesThePresentedSessionLive()
+    {
+        // Arrange — an account signed in in this browser, holding the address the registration asserts.
+        const string freshSubject = "google-registering-over-a-session";
+        const string freshEmail = "registering-over-a-session@budgetoid.test";
+        await using PostgresTestHost host = await StartHostAsync();
+        await using ApiFactory factory = CreateApiFactory(host);
+        ApiFactory.SignedInClient cookieAccount = await factory.CreateSignedInClientAsync(OtherSubject, Email);
+        string presentedCookie = PresentedCookieOf(cookieAccount.Client);
+        Guid presentedSessionId = await SessionIdOfCookieAsync(host, presentedCookie);
+
+        HttpClient browser = factory.CreateAuthenticatedClient(Subject, Email);
+        browser.DefaultRequestHeaders.Add("Cookie", $"{CookieName}={presentedCookie}");
+
+        // Act
+        RegisteredAccount refused = await RegisterAccountAsync(
+            browser, SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId));
+        HttpResponseMessage stillSignedIn = await cookieAccount.Client.GetAsync("/api/me/session");
+
+        // Assert — refused for the address, and the presented session still answers as itself.
+        await Assert.That(refused.Response.StatusCode).IsEqualTo(HttpStatusCode.Conflict);
+        await Assert.That(await DetailOfAsync(refused.Response)).IsEqualTo(EmailConflictSentence);
+        await Assert.That(stillSignedIn.StatusCode).IsEqualTo(HttpStatusCode.OK);
+        await Assert.That(await CountSessionsByIdAsync(host, presentedSessionId)).IsEqualTo(1L);
+
+        // Act — the control: an admitted registration from the same browser.
+        HttpClient sameBrowser = factory.CreateAuthenticatedClient(freshSubject, freshEmail);
+        sameBrowser.DefaultRequestHeaders.Add("Cookie", $"{CookieName}={presentedCookie}");
+        RegisteredAccount admitted = await RegisterAccountAsync(
+            sameBrowser, SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId));
+
+        // Assert
+        await Assert.That(admitted.Response.StatusCode).IsEqualTo(HttpStatusCode.Created);
+        await Assert.That(await CountSessionsByIdAsync(host, presentedSessionId)).IsEqualTo(0L);
+    }
+
+    /// <summary>
     /// The card registration issued is a card: two of its codes redeem, and the second is not the first.
     /// </summary>
     /// <remarks>
@@ -3561,6 +3670,78 @@ public sealed class AccountRegistrationTests
         }
 
         return values;
+    }
+
+    /// <summary>The session handle a signed-in client presents, read back from its own header.</summary>
+    private static string PresentedCookieOf(HttpClient client)
+    {
+        string prefix = $"{CookieName}=";
+        string header = client.DefaultRequestHeaders.GetValues("Cookie").Single();
+
+        return header.StartsWith(prefix, StringComparison.Ordinal)
+            ? header[prefix.Length..]
+            : throw new InvalidOperationException("The client presents no session cookie.");
+    }
+
+    /// <summary>The id of the session a cookie opens, read through its handle on the admin connection.</summary>
+    private static async Task<Guid> SessionIdOfCookieAsync(PostgresTestHost host, string cookie)
+    {
+        await using NpgsqlConnection connection = new(host.ConnectionString);
+        await connection.OpenAsync();
+        await using NpgsqlCommand command = new(
+            "select session_id from session_tokens where token_hash = @digest", connection);
+        command.Parameters.AddWithValue("digest", SessionToken.HashOf(Base64UrlText.Decode(cookie)));
+
+        return await command.ExecuteScalarAsync() switch
+        {
+            Guid sessionId => sessionId,
+            var unexpected => throw new InvalidOperationException(
+                $"Expected the cookie's session id, got '{unexpected ?? "null"}'."),
+        };
+    }
+
+    /// <summary>
+    /// Opens one more live locked session on the account's federated credential — the account signed in
+    /// on another device — and returns its id.
+    /// </summary>
+    private static async Task<Guid> SeedAnotherDevicesLockedSessionAsync(PostgresTestHost host, Guid userId)
+    {
+        Guid federatedId = await RepositoryTestHost.FederatedCredentialIdOnAsync(host.ConnectionString, userId);
+        byte[] token = RandomNumberGenerator.GetBytes(SessionToken.TokenLength);
+        DateTime now = DateTime.UtcNow;
+        await RepositoryTestHost.SeedSessionOnAsync(
+            host.ConnectionString, federatedId, token, SessionKind.Locked, now.AddMinutes(-1), now.AddHours(1));
+
+        return await SessionIdOfCookieAsync(host, Base64UrlText.Encode(token));
+    }
+
+    private static async Task<long> CountSessionsByIdAsync(PostgresTestHost host, Guid sessionId)
+    {
+        await using NpgsqlConnection connection = new(host.ConnectionString);
+        await connection.OpenAsync();
+        await using NpgsqlCommand command = new("select count(*) from sessions where id = @id", connection);
+        command.Parameters.AddWithValue("id", sessionId);
+
+        return await command.ExecuteScalarAsync() switch
+        {
+            long count => count,
+            var unexpected => throw new InvalidOperationException($"Expected a count, got '{unexpected ?? "null"}'."),
+        };
+    }
+
+    private static async Task<long> CountHandlesOfCookieAsync(PostgresTestHost host, string cookie)
+    {
+        await using NpgsqlConnection connection = new(host.ConnectionString);
+        await connection.OpenAsync();
+        await using NpgsqlCommand command = new(
+            "select count(*) from session_tokens where token_hash = @digest", connection);
+        command.Parameters.AddWithValue("digest", SessionToken.HashOf(Base64UrlText.Decode(cookie)));
+
+        return await command.ExecuteScalarAsync() switch
+        {
+            long count => count,
+            var unexpected => throw new InvalidOperationException($"Expected a count, got '{unexpected ?? "null"}'."),
+        };
     }
 
     private static async Task<long> CountAsync(PostgresTestHost host, string sql)

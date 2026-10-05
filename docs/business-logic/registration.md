@@ -21,11 +21,13 @@ finishes it writes the account, its budget, its three credentials, the passkey's
 recovery-code hashes, every factor's share of the account keys, the one manifest naming all eleven
 of those factors and the session it signs the person in on — **in one save, or not at all**.
 
-**One act and two commits, and the second half of that sentence is the one a reader loses.** The
-single save covers every row the account is made of. It does not cover the ceremony's nonce: rung 4
-deletes that row through a `SaveChanges` of its own, with no transaction around it, deliberately —
-a refused ceremony must still spend the challenge it answered. So "one save, or not at all" is a
-claim about the account and never about the request.
+**One act and more than one commit, and the second half of that sentence is the one a reader
+loses.** The single save covers every row the account is made of. It does not cover the ceremony's
+nonce: rung 4 deletes that row through a `SaveChanges` of its own, with no transaction around it,
+deliberately — a refused ceremony must still spend the challenge it answered. Nor does it cover
+**displacement**: once the save has returned, the endpoint deletes the session the browser's
+incoming cookie names, when it names one, in a write of its own — see the cookie rule below. So
+"one save, or not at all" is a claim about the account and never about the request.
 
 Identity lives in [users-and-ownership.md](users-and-ownership.md); the ceremony's cryptography is
 in [passkeys.md](passkeys.md); the set is in [recovery-codes.md](recovery-codes.md); what a
@@ -188,9 +190,11 @@ the *set*, so it is authenticated once.
     buys is the other direction, that there is no window in which some are committed and the rest
     are not.
   - **What it does not cover**: the nonce. Rung 4 deletes the challenge row through a save of its
-    own, above everything here, so this request commits **twice** — and that is the design rather
-    than a leak in it, because a ceremony refused at rung 5 or rung 12 must still have spent the
-    challenge it answered. *Of the account*, in the rule above, is doing real work.
+    own, above everything here, so this request commits **at least twice** — and that is the design
+    rather than a leak in it, because a ceremony refused at rung 5 or rung 12 must still have spent
+    the challenge it answered. A third commit follows the save when the browser's incoming cookie
+    names a session: displacement deletes it, in the endpoint, after the handler returned. *Of the
+    account*, in the rule above, is doing real work.
   - **It runs no ended-session sweep, and has nothing to sweep.** The four other establishing paths
     write their session through `SessionRepository.AddAsync`, which deletes the account's ended
     sessions in the same save — see [sessions.md](sessions.md#must-not). This one writes through
@@ -285,11 +289,22 @@ the *set*, so it is authenticated once.
   - **Enforced in**: `TypedResults.Created((string?)null, …)` and the shape of
     `RegistrationResponse`.
 
-- **The cookie MUST NOT be written before the handler returns.**
+- **The cookie MUST NOT be written, and the browser's old session MUST NOT be displaced, before the
+  handler returns.**
   - **Why**: every refusal on this route leaves by exception, so a cookie written earlier is a
     cookie a refusal leaves behind, naming a session that was never written, on the client of
-    whoever was guessing.
-  - **Enforced in**: the endpoint issues the cookie from the returned handoff, after the `await`.
+    whoever was guessing. Displacement is the stronger case, because no framework undoes a delete:
+    run earlier, a refused registration would sign the browser out of the session it presented.
+    Measured: displacing before the handler reddens the `AccountRegistrationTests` case where a
+    registration whose address is taken leaves the presented session live.
+  - **Displacement is a step after the ladder, never a rung of it.** The browser registering can
+    hold a cookie, and the session it names is always another account's — this one did not exist
+    until the save committed — so nothing inside the registration's own save could reach it. The
+    endpoint deletes it after the handler returned, through `SessionCookieWriter`, and
+    `RegisterAccountHandler` knows nothing of it. See [sessions.md](sessions.md).
+  - **Enforced in**: the endpoint hands the returned handoff to
+    `SessionCookieWriter.WriteEstablishedAsync`, after the `await`, which displaces the session the
+    incoming cookie names and only then issues the new cookie.
 
 ## Business Rules & Invariants
 
@@ -600,7 +615,9 @@ the *set*, so it is authenticated once.
   `403` are refused before the handler is entered at all, and a `409` refuses this request against
   an account that already stands — so on all four the ten codes on screen open nothing, and saying
   so is a kindness. A request that got **no answer** is not evidence: it may have arrived, committed
-  all thirty-one rows and had its `201` lost on the way back. Telling that person their codes are
+  all thirty-one rows and had its `201` lost on the way back. A `500` can stand over a committed
+  account too: displacement runs after the save, and a failure there answers `500` with the account
+  written and no cookie set — see [sessions.md](sessions.md). Telling that person their codes are
   worthless tells them to discard the only key to an account they cannot make more codes for,
   because `POST /api/me/recovery-codes` has no caller in this client. It is
   [sessions.md](sessions.md)'s reading of a probe that never answered, on the one screen where collapsing it
@@ -833,6 +850,7 @@ sequenceDiagram
     H->>H: accountId = RegistrationAccountId.For(the challenge the store just spent)
     H->>H: ResolveUser(accountId) — before the insert, never after
     H->>D: ONE SaveChanges — ten relations, no transaction
+    A->>D: displace the session the incoming cookie names, if any — after the handler, own scope
     A-->>C: 201, Set-Cookie, {"session": {"kind": "full", "expiresAtUtc": …}}
 ```
 
@@ -872,6 +890,7 @@ ELSE consume the nonce — from here every outcome has burnt it
     ELSE IF it lost to a factor identifier
       THEN 409 "mint a fresh one, wrap the account keys under it, and run the ceremony again"
     ELSE
+      displace the session the incoming cookie names, if any  ← after the save, outside the ladder
       THEN 201, a Set-Cookie, and a body naming only the session
 ```
 
@@ -890,7 +909,8 @@ ELSE consume the nonce — from here every outcome has burnt it
   That chapter owns the promotion rule, the epoch, and why
   `manifest: null` survives in the read's shape without being a state anybody reaches.
 - **[Sessions](sessions.md)** — the **fourth** thing that establishes a session, and like the other
-  four it mints a handle and sets the cookie.
+  four it mints a handle and sets the cookie, through `SessionCookieWriter`, which first displaces
+  the session the browser's incoming cookie names.
 - **[Users & Ownership](users-and-ownership.md)** — the account, its credentials, and the invariant
   this path establishes, which is the invariant of every account there is.
 - **[Budgets](budgets.md)** — the nameless default budget, created in the same save.

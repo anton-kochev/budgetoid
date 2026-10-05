@@ -18,9 +18,10 @@ namespace Application.Passkeys.RevokePasskey;
 /// than this role's. The role holds no <c>DELETE</c> on the first three and must not be granted one —
 /// see <c>docs/decisions/0014-scope-the-credential-delete-in-the-application.md</c>, which is also where
 /// the argument for the delete being scoped in the application rather than by a policy lives. It does
-/// hold <c>DELETE</c> on <c>sessions</c>, for the ended-session sweep alone
-/// (<c>docs/decisions/0029-sweep-an-accounts-ended-sessions-when-a-session-is-established.md</c>); the
-/// sessions revoked here are still meant to leave by the cascade rather than by that grant.
+/// hold <c>DELETE</c> on <c>sessions</c>, for the ended-session sweep
+/// (<c>docs/decisions/0029-sweep-an-accounts-ended-sessions-when-a-session-is-established.md</c>) and
+/// for displacement (<c>docs/decisions/0030-displace-the-session-an-overwritten-cookie-names.md</c>);
+/// the sessions revoked here are still meant to leave by the cascade rather than by that grant.
 /// </para>
 /// <para>
 /// <b>The share of the account's keys is the member of that cascade this route owes a manifest for.</b>
@@ -235,8 +236,9 @@ public sealed class RevokePasskeyHandler(
                 // rather than this role's.
                 //
                 // That DELETE no longer fails: the role now holds DELETE on sessions, because
-                // establishing a session deletes the account's ended ones, so EF taking the tracked
-                // copies itself succeeds and leaves the same rows gone. What keeps this line is
+                // establishing a session deletes the account's ended ones and displaces the one the
+                // browser's old cookie named, so EF taking the tracked copies itself succeeds and
+                // leaves the same rows gone. What keeps this line is
                 // everything below the sessions — any dependent of a removed row that EF can see and
                 // the role cannot delete still dies with 42501, session_tokens among them, and the
                 // statements past this point are written to an empty tracker. No integration test

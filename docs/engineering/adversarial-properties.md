@@ -259,16 +259,22 @@ covers some of the following without saying the rows exist:
   enrolment time.
 - **Sign-in history.** Each standing session's creation, expiry and revocation time and which
   credential opened it. The ended-session sweep in [sessions.md](../business-logic/sessions.md)
-  takes only ended rows, so a live one stands — including a session whose cookie a later sign-in
-  overwrote, which stays live until it expires. An ended row, signed out or expired, stands until a
-  session is next established on the account — a sign-in, or a recovery-code regeneration that
-  re-establishes one — whose save deletes it and its handle. So the rows standing are the sessions
-  that were live when the account's most recent session began, whether or not they have ended
-  since, and an account that never signs in again keeps its last batch. A row of either kind also
-  leaves when its credential is revoked or replaced or the account is erased. A backup taken while
-  a row stood holds it for the backup's retention, and PostgreSQL's statistics counter for deletes
-  on `sessions` (`n_tup_del` in `pg_stat_user_tables`) counts swept rows, as one total for the table
-  that names no account. Beside the sessions, each passkey's signature counter, which counts its
+  takes only ended rows, so a live one stands. A live session whose cookie a later sign-in
+  overwrote does not: that sign-in deletes it, on whichever account owns it, before it writes its
+  own cookie — displacement, in the same file. So a live row is normally one some browser holds. It
+  can be held by none: the new session of an establishment whose displacement failed or whose
+  response was lost, and the session of a browser that dropped its cookie without signing out,
+  which tells the server nothing — [Guessing] reasoned, not run. Each stays live until it expires
+  or is revoked. An ended row, signed out or expired, stands until a session is next established on
+  the account — a sign-in, or a recovery-code regeneration that re-establishes one — whose save
+  deletes it and its handle, or until a browser still presenting its cookie establishes a session
+  and displaces it. So the rows standing are at most the sessions that were live when the account's
+  most recent session began, whether or not they have ended since, and an account that never signs
+  in again keeps its last batch. A row of either kind also leaves when its credential is revoked or
+  replaced or the account is erased. A backup taken while a row stood holds it for the backup's
+  retention, and PostgreSQL's statistics counter for deletes on `sessions` (`n_tup_del` in
+  `pg_stat_user_tables`) counts swept and displaced rows, as one total for the table that names no
+  account. Beside the sessions, each passkey's signature counter, which counts its
   assertions — sign-ins and re-authentications — where the authenticator keeps one. From the
   standing sessions a recovery code opened, when codes were redeemed; from the hash rows left
   against the factor rows, how many are spent. From the standing sessions the federated credential

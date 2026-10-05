@@ -418,6 +418,12 @@ public sealed class EstablishLockedSessionHandlerTests
             DateTime revokedAtUtc,
             CancellationToken cancellationToken = default) =>
             throw new InvalidOperationException("A sign-in revokes nothing.");
+
+        // The handler under test establishes; displacing the overwritten cookie's session is the
+        // Api-side writer's job, in a scope of its own. A handler reaching for this would be deleting a
+        // session under the identity it just published.
+        public Task<bool> RemoveAsync(Guid sessionId, CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("A sign-in handler displaces nothing.");
     }
 
     /// <summary>Forwards to the fake, logging the identity each schedule read was entered under.</summary>

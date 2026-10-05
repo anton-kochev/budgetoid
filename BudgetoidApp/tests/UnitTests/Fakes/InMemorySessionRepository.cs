@@ -245,4 +245,23 @@ public sealed class InMemorySessionRepository : ISessionRepository
 
         return Task.FromResult(true);
     }
+
+    public Task<bool> RemoveAsync(Guid sessionId, CancellationToken cancellationToken = default)
+    {
+        // Live or ended alike, because displacement takes whatever session the overwritten cookie
+        // named. A fake that copied RevokeAsync's "still live" predicate above would leave a signed-out
+        // session behind, and one that copied the sweep's "ended" predicate would leave the live one.
+        //
+        // The id alone, for FindByIdAsync's reason: the real delete is scoped by user_isolation rather
+        // than by an owner predicate, and this fake has no policy to model. "Another account's
+        // session" is arranged by its absence here, which is what the policy leaves behind.
+        int removed = _sessions.RemoveAll(session => session.Id == sessionId);
+
+        // The handles go with it, as the database's cascade from sessions takes them.
+        _tokens.RemoveAll(handle => handle.SessionId == sessionId);
+
+        // What THIS call removed: a second call over the same id finds nothing and says so, the
+        // reading a concurrent delete that got there first gets from the real repository.
+        return Task.FromResult(removed > 0);
+    }
 }

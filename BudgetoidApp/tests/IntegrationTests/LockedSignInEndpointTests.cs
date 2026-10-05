@@ -358,7 +358,14 @@ public sealed class LockedSignInEndpointTests
     /// cause; this pins what a person sees.
     /// </para>
     /// <para>
-    /// Today the sign-in succeeds and both rows stay, so this fails on the counts.
+    /// Measured: with <c>AsNoTracking</c> taken out of that lookup, this sign-in answered 500 with
+    /// <c>42501</c> on <c>session_tokens</c>.
+    /// </para>
+    /// <para>
+    /// <b>The counts here do not hold the sweep.</b> The request carries the ended cookie, so displacement
+    /// deletes the same row even with no sweep. What holds the locked path's sweep is
+    /// <see cref="SignedOutSession_StaysObservableUntilTheNextSignIn" />, which signs in on a fresh client
+    /// carrying no cookie.
     /// </para>
     /// </remarks>
     [Test]
@@ -399,7 +406,9 @@ public sealed class LockedSignInEndpointTests
     /// </para>
     /// <para>
     /// <b>The sign-in happens on another client</b>, carrying no cookie, so nothing but the sweep can
-    /// reach the old session. Today the row survives the sign-in and the last sign-out still answers 204.
+    /// reach the old session. A sign-in that ran no sweep leaves the row, and the last sign-out answers
+    /// 204 instead of 401 [reasoned]. One that deleted at sign-out instead fails the first half: the
+    /// second sign-out answers 401 [reasoned].
     /// </para>
     /// </remarks>
     [Test]
@@ -432,6 +441,204 @@ public sealed class LockedSignInEndpointTests
         await Assert.That(signIn.StatusCode).IsEqualTo(HttpStatusCode.OK);
         await Assert.That(lateSignOut.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
         await Assert.That(await CountSessionsAsync(host, oldSessionId)).IsEqualTo(0L);
+    }
+
+    /// <summary>
+    /// A locked sign-in from a browser holding another account's live locked cookie deletes the session
+    /// that cookie named, and its handle, and leaves that account's other sessions alone.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The cross-account case is the one the sweep cannot reach.</b> The new session's save runs as
+    /// the token's account, and <c>user_isolation</c> hides the cookie account's rows from it, so a
+    /// delete there matches nothing. Without displacement, the overwritten cookie's session stays live
+    /// for its whole lifetime with no browser holding it — a record that this browser was signed in to
+    /// that account.
+    /// </para>
+    /// <para>
+    /// <b>The cookie account's other device is the control.</b> A displacement that deleted every
+    /// session of the cookie's account passes the first half and signs a stranger out of their phone
+    /// [reasoned].
+    /// </para>
+    /// <para>
+    /// <b>What reddens it, measured.</b> Deleting in the request scope, with the session id the cookie
+    /// scheme put on the request, fails here on the cookie's session count. The cause is reasoned, not
+    /// measured: by then that scope runs as the token's account, so the policy hides the row. The
+    /// same-account case,
+    /// <see cref="LockedSignIn_OverALiveLockedSession_DeletesTheReplacedSession" />, stays green under it,
+    /// which is why this case exists beside it.
+    /// </para>
+    /// <para>
+    /// <b>What it does not catch.</b> Resolving the displacement handler from the request's services
+    /// instead of a scope of its own is a different mutation: the handler re-authenticates the cookie and
+    /// publishes its account before deleting, so the row is found and goes. Measured: this test stays
+    /// green under it. <c>SessionCookieWriterTests</c> catches it, on the request's identity.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task LockedSignIn_WithAnotherAccountsLockedCookie_DeletesThatSessionAndItsHandle()
+    {
+        // Arrange — the cookie account signed in twice, once in this browser and once elsewhere.
+        using RSA rsa = RSA.Create(2048);
+        RsaSecurityKey signingKey = new(rsa) { KeyId = "locked-sign-in" };
+        await using PostgresTestHost host = await StartHostAsync();
+        await using ApiFactory factory = CreateRealBearerFactory(host, signingKey);
+        ApiFactory.SignedInClient cookieAccount =
+            await factory.CreateSignedInClientAsync(StrangerSubject, StrangerEmail, SessionKind.Locked);
+        string presentedCookie = CookieValueOf(cookieAccount.Client);
+        Guid presentedSessionId = await SessionIdOfAsync(host, presentedCookie);
+        Guid otherDeviceSessionId = await SeedAnotherDevicesLockedSessionAsync(host, cookieAccount.UserId);
+        ApiFactory.SignedInClient tokenAccount = await factory.CreateSignedInClientAsync(Subject, Email);
+
+        // Act — the token account's sign-in, from the browser holding the cookie account's session.
+        HttpResponseMessage response = await PostLockedSessionAsync(
+            cookieAccount.Client, ProviderToken(signingKey, Claims(Subject, Email)));
+
+        // Assert — the token's account is signed in.
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
+        StoredSession stored = await StoredSessionOfAsync(host, RegistrationCeremony.SessionCookieValueOf(response));
+        await Assert.That(stored.UserId).IsEqualTo(tokenAccount.UserId);
+
+        // The session the cookie named is gone, with its handle; the cookie account's other device stays.
+        await Assert.That(await CountSessionsAsync(host, presentedSessionId)).IsEqualTo(0L);
+        await Assert.That(await CountHandlesAsync(host, presentedCookie)).IsEqualTo(0L);
+        await Assert.That(await CountSessionsAsync(host, otherDeviceSessionId)).IsEqualTo(1L);
+    }
+
+    /// <summary>
+    /// A locked sign-in over the account's own live locked session deletes the session it replaced, and
+    /// keeps the account's session on another device.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The sweep takes ended rows only, and this one is live.</b> The cookie is overwritten, so nothing
+    /// will ever present it again, yet the row would stay live until its expiry. Displacement deletes it
+    /// directly rather than revoking it, because a revoked row would sit until the account's next
+    /// sign-in.
+    /// </para>
+    /// <para>
+    /// The other device is the control: a displacement keyed on the account rather than on the cookie's
+    /// session would take it too [reasoned].
+    /// </para>
+    /// <para>
+    /// <b>Same-account only, so it cannot tell where the delete runs.</b> Deleting in the request scope
+    /// with the cookie scheme's session id passes here, measured; it is
+    /// <see cref="LockedSignIn_WithAnotherAccountsLockedCookie_DeletesThatSessionAndItsHandle" /> that
+    /// catches it. What this holds is the account's own case: a sign-in that left the replaced session
+    /// live fails on its count.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task LockedSignIn_OverALiveLockedSession_DeletesTheReplacedSession()
+    {
+        // Arrange
+        using RSA rsa = RSA.Create(2048);
+        RsaSecurityKey signingKey = new(rsa) { KeyId = "locked-sign-in" };
+        await using PostgresTestHost host = await StartHostAsync();
+        await using ApiFactory factory = CreateRealBearerFactory(host, signingKey);
+        ApiFactory.SignedInClient account = await factory.CreateSignedInClientAsync(Subject, Email, SessionKind.Locked);
+        string replacedCookie = CookieValueOf(account.Client);
+        Guid replacedSessionId = await SessionIdOfAsync(host, replacedCookie);
+        Guid otherDeviceSessionId = await SeedAnotherDevicesLockedSessionAsync(host, account.UserId);
+
+        // Act
+        HttpResponseMessage response = await PostLockedSessionAsync(
+            account.Client, ProviderToken(signingKey, Claims(Subject, Email)));
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
+        string newCookie = RegistrationCeremony.SessionCookieValueOf(response);
+        await Assert.That((await StoredSessionOfAsync(host, newCookie)).UserId).IsEqualTo(account.UserId);
+
+        await Assert.That(await CountSessionsAsync(host, replacedSessionId)).IsEqualTo(0L);
+        await Assert.That(await CountHandlesAsync(host, replacedCookie)).IsEqualTo(0L);
+        await Assert.That(await CountSessionsAsync(host, otherDeviceSessionId)).IsEqualTo(1L);
+    }
+
+    /// <summary>
+    /// A locked sign-in from a browser whose cookie names no session at all establishes, sets the cookie,
+    /// and the new cookie opens a live session.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The ordinary case after any displacement.</b> A browser that lost an establishing response, or
+    /// whose session was removed elsewhere, still presents a handle whose row is gone. Displacement
+    /// authenticates that handle, finds nothing, and has nothing to delete.
+    /// </para>
+    /// <para>
+    /// <b>The mutation it exists to catch:</b> removing <c>DisplaceSessionHandler</c>'s
+    /// <c>if (presented is null) return false;</c>. That throws a null reference after the new session
+    /// committed, so every sign-in from a browser holding a dead cookie answers 500. Measured: with the
+    /// guard removed this test failed with "Expected to be equal to OK but received
+    /// InternalServerError", from a <c>NullReferenceException</c> in the handler.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task LockedSignIn_WithACookieNamingNoSession_EstablishesALiveSession()
+    {
+        // Arrange — a well-formed handle no row was ever filed for.
+        using RSA rsa = RSA.Create(2048);
+        RsaSecurityKey signingKey = new(rsa) { KeyId = "locked-sign-in" };
+        await using PostgresTestHost host = await StartHostAsync();
+        await using ApiFactory factory = CreateRealBearerFactory(host, signingKey);
+        ApiFactory.SignedInClient account = await factory.CreateSignedInClientAsync(Subject, Email);
+        HttpClient browser = CookieClient(
+            factory, Base64UrlText.Encode(RandomNumberGenerator.GetBytes(SessionToken.TokenLength)));
+
+        // Act
+        HttpResponseMessage response = await PostLockedSessionAsync(
+            browser, ProviderToken(signingKey, Claims(Subject, Email)));
+
+        // Assert — established, with a cookie, and the cookie opens a live session on the account.
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
+        string newCookie = RegistrationCeremony.SessionCookieValueOf(response);
+        await Assert.That((await StoredSessionOfAsync(host, newCookie)).UserId).IsEqualTo(account.UserId);
+        HttpResponseMessage session = await CookieClient(factory, newCookie).GetAsync(SessionPath);
+        await Assert.That(session.StatusCode).IsEqualTo(HttpStatusCode.OK);
+    }
+
+    /// <summary>
+    /// A locked sign-in presenting a non-canonical copy of a live full session's handle — the handle
+    /// with one byte appended — establishes, and leaves that full session live.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The session scheme refuses the cookie</b>, because a handle is exactly
+    /// <see cref="SessionToken.TokenLength" /> bytes and this one is one longer. So the request carries no
+    /// session, the 409 for a live full session does not fire, and the sign-in establishes.
+    /// </para>
+    /// <para>
+    /// <b>The mutation it exists to catch:</b> a cookie writer with a lenient decoder of its own that
+    /// truncates to 32 bytes. It would find the full session's row through the appended copy and delete
+    /// it — the very session the 409 rule exists to protect — while the scheme, reading strictly, never
+    /// saw it. Measured: with that decoder in the writer, the 200 held and the full session's row count
+    /// came back 0 instead of 1.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task LockedSignIn_WithANonCanonicalCopyOfALiveFullCookie_LeavesThatSessionLive()
+    {
+        // Arrange
+        using RSA rsa = RSA.Create(2048);
+        RsaSecurityKey signingKey = new(rsa) { KeyId = "locked-sign-in" };
+        await using PostgresTestHost host = await StartHostAsync();
+        await using ApiFactory factory = CreateRealBearerFactory(host, signingKey);
+        ApiFactory.SignedInClient account = await factory.CreateSignedInClientAsync(Subject, Email);
+        string fullCookie = CookieValueOf(account.Client);
+        Guid fullSessionId = await SessionIdOfAsync(host, fullCookie);
+        byte[] appended = [.. Base64UrlText.Decode(fullCookie), 0x00];
+        HttpClient browser = CookieClient(factory, Base64UrlText.Encode(appended));
+
+        // Act
+        HttpResponseMessage response = await PostLockedSessionAsync(
+            browser, ProviderToken(signingKey, Claims(Subject, Email)));
+
+        // Assert — the sign-in went through, and the full session still answers as itself.
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
+        await Assert.That(await CountSessionsAsync(host, fullSessionId)).IsEqualTo(1L);
+        HttpResponseMessage session = await account.Client.GetAsync(SessionPath);
+        await Assert.That(session.StatusCode).IsEqualTo(HttpStatusCode.OK);
+        await Assert.That((await ReadJsonObjectAsync(session))["kind"]!.GetValue<string>()).IsEqualTo("full");
     }
 
     /// <summary>
@@ -1022,6 +1229,25 @@ public sealed class LockedSignInEndpointTests
             var unexpected => throw new InvalidOperationException(
                 $"Expected the cookie's session id, got '{unexpected ?? "null"}'."),
         };
+    }
+
+    /// <summary>
+    /// Opens one more live locked session on the account's federated credential — the account signed in
+    /// on another device — and returns its id.
+    /// </summary>
+    /// <remarks>
+    /// Seeded on the admin connection through <c>Session.Establish</c>, so the row is one the product could
+    /// write, with a random handle no client in the test presents.
+    /// </remarks>
+    private static async Task<Guid> SeedAnotherDevicesLockedSessionAsync(PostgresTestHost host, Guid userId)
+    {
+        Guid federatedId = await RepositoryTestHost.FederatedCredentialIdOnAsync(host.ConnectionString, userId);
+        byte[] token = RandomNumberGenerator.GetBytes(SessionToken.TokenLength);
+        DateTime now = DateTime.UtcNow;
+        await RepositoryTestHost.SeedSessionOnAsync(
+            host.ConnectionString, federatedId, token, SessionKind.Locked, now.AddMinutes(-1), now.AddHours(1));
+
+        return await SessionIdOfAsync(host, Base64UrlText.Encode(token));
     }
 
     /// <summary>How many <c>sessions</c> rows carry this id, on the admin connection.</summary>

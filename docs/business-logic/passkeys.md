@@ -850,7 +850,10 @@ factor, and an account identifier derived from the challenge it just spent —
   the database blinked — and re-inserts a `Session` left in `Added` state, writing two rows for one
   sign-in. The discard must be **inside** the delegate; hoisted above the executor it would not
   survive the rollback, and a unit test pins the placement rather than only the call.
-- **A credential of any other kind may accompany an anonymous assertion, and nothing reads it.** The
+- **A credential of any other kind may accompany an anonymous assertion, and nothing takes the
+  account from it.** A session cookie beside the assertion is still read: by the session scheme,
+  as on every request, and once the new session is established, to displace the session it names
+  — see [sessions.md](sessions.md). The handler never takes the account from either read. The
   rule the handler enforces is unchanged — **the account comes from the verified passkey, never from
   the request** — but it now outlives its original reason: it was written because a provisioning
   middleware had already put a *different* account on the request, and today nothing can. Keep it.

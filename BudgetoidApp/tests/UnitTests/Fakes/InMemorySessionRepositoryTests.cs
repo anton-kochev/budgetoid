@@ -165,6 +165,57 @@ public sealed class InMemorySessionRepositoryTests
             .IsEqualTo("established, own live, stranger expired, stranger revoked");
     }
 
+    /// <summary>
+    /// That removing a session takes that session and its handle, live or revoked, says it did, and
+    /// says it did nothing the second time.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Both a live and a revoked session are named</b>, because displacement takes whatever the
+    /// overwritten cookie named. A fake that borrowed <see cref="InMemorySessionRepository.RevokeAsync"/>'s
+    /// "still live" check would keep the revoked one and look reasonable doing it.
+    /// </para>
+    /// <para>
+    /// The untouched session on the same credential is the control for a removal wider than the id, and
+    /// the second call is the control for an answer that reports "it is gone" rather than "this call
+    /// removed it".
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task RemoveAsync_TakesTheNamedSessionAndItsHandle_AndReportsOnlyTheFirstRemoval()
+    {
+        // Arrange
+        var repository = new InMemorySessionRepository();
+        Credential credential = Credential.CreatePasskey(Guid.CreateVersion7(), UtcNow().AddHours(-1));
+        Session live = Session.Establish(credential, UtcNow(), UtcNow().AddDays(1));
+        Session revoked = Session.Establish(credential, UtcNow(), UtcNow().AddDays(1));
+        Session kept = Session.Establish(credential, UtcNow(), UtcNow().AddDays(1));
+        foreach (Session session in new[] { live, revoked, kept })
+        {
+            await repository.AddAsync(session);
+        }
+
+        revoked.Revoke(UtcNow().AddMinutes(30));
+        Dictionary<Guid, string> labels = new()
+        {
+            [live.Id] = "live",
+            [revoked.Id] = "revoked",
+            [kept.Id] = "kept",
+        };
+
+        // Act
+        bool removedLive = await repository.RemoveAsync(live.Id);
+        bool removedRevoked = await repository.RemoveAsync(revoked.Id);
+        bool removedAgain = await repository.RemoveAsync(live.Id);
+
+        // Assert
+        await Assert.That(removedLive).IsTrue();
+        await Assert.That(removedRevoked).IsTrue();
+        await Assert.That(removedAgain).IsFalse();
+        await Assert.That(Render(repository.Sessions.Select(session => session.Id), labels)).IsEqualTo("kept");
+        await Assert.That(Render(repository.Tokens.Select(token => token.SessionId), labels)).IsEqualTo("kept");
+    }
+
     /// <summary>The ids as their labels, sorted and joined, so a failure names the row.</summary>
     private static string Render(IEnumerable<Guid> ids, IReadOnlyDictionary<Guid, string> labels) =>
         string.Join(

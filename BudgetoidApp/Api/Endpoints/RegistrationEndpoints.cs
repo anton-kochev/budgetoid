@@ -73,7 +73,8 @@ public static class RegistrationEndpoints
             RegistrationRequest request,
             ClaimsPrincipal principal,
             RegisterAccountHandler handler,
-            HttpResponse response,
+            SessionCookieWriter cookieWriter,
+            HttpContext httpContext,
             CancellationToken cancellationToken) =>
         {
             // The two claim members are read HERE and never bound from the body, which is what keeps
@@ -105,9 +106,14 @@ public static class RegistrationEndpoints
             // The null arm is unreachable: a registration that returns has established a session. It is
             // written as a pattern anyway, uniformly with the three other establishing legs, because the
             // alternative is a null-forgiving operator asserting a rule that lives in another project.
+            //
+            // Through the writer, outside the handler and after it: the session a browser's cookie names
+            // here is always another account's — this one did not exist until the handler committed —
+            // so nothing inside the registration's own transaction could reach it, and the handler's
+            // ladder stays as it is. See SessionCookieWriter.
             if (issued.Handoff is { } handoff)
             {
-                SessionCookie.Issue(response, handoff.Token, handoff.ExpiresAtUtc);
+                await cookieWriter.WriteEstablishedAsync(httpContext, handoff, cancellationToken);
             }
 
             // 201 AND NO Location HEADER. Something was created, so 201 is the honest status; but the

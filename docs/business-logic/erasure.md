@@ -435,13 +435,15 @@ role holds no `DELETE` there of any shape.
      user, which the no-remnant rule above and the post-condition both forbid. Stamped and then
      deleted in the same transaction, it is a write nobody can read: the account it would be
      reported to is gone, and the `204` carries no body to report it in.
-  3. **The rows leave by the cascade, and the sweep's grant is not another way out.** The role
-     holds `DELETE` on `sessions` for one act, the ended-session sweep, which runs when an account
-     establishes a session and removes only the rows already ended — see
+  3. **The rows leave by the cascade, and the role's `DELETE` on `sessions` is not another way
+     out.** The role holds it for two acts, each run when a session is established: the
+     ended-session sweep, which removes the account's rows already ended, and displacement, which
+     removes the one session a browser's incoming cookie names — see
      [sessions.md](sessions.md#must-not). It holds no `DELETE` on `session_tokens`, whose rows leave
-     by the cascade from `sessions`. Revoking first would only make the rows eligible for that sweep,
-     and the sweep waits for a sign-in an erased account never has. So the rows leave as the cascade
-     of the `users` delete, and the erasure uses none of the sweep's grant. **The change-tracker cost is not a reason here**, though it is one on
+     by the cascade from `sessions`. Revoking first would only make the rows eligible for the sweep,
+     and the sweep waits for a sign-in an erased account never has; displacement waits for a browser
+     presenting one of those cookies to sign in. So the rows leave as the cascade of the `users`
+     delete, and the erasure uses neither act's grant. **The change-tracker cost is not a reason here**, though it is one on
      the credential-revocation path, where a second `DiscardTrackedEntities()` sits between the
      revocation and the delete: `EraseAccountHandler` already discards the tracker before its
      deletes, and EF maps `Session` to `Credential` rather than to `User`, so a user delete would not
@@ -772,9 +774,10 @@ role holds no `DELETE` there of any shape.
       gotcha on the request's own session row argues why — so the browser keeps it until its
       `Expires`, which is the deleted session row's own expiry. It names nothing, and it answers `401`
       everywhere, the sign-out route included: that route admits an *ended* session, and one the
-      cascade took is not ended but absent. [sessions.md](sessions.md) records it as one of two ends
-      where that route answers `401`; the other is an ended session that the ended-session sweep
-      deleted when the account next signed in.
+      cascade took is not ended but absent. [sessions.md](sessions.md) records it as one of three
+      ends where that route answers `401`; the others are an ended session that the ended-session
+      sweep deleted when the account next signed in, and a session displacement deleted when the
+      response carrying the browser's new cookie was lost.
     - **The rotation-epoch record.** `rotation-epoch-record.ts` keeps one `localStorage` key per
       budget id, and the erased budget's entry stays, keyed on a budget that no longer exists. It is
       not cleared, by decision: the record only ever rises, custody is its single writer, and the
@@ -949,7 +952,8 @@ ELSE
   - **Three of the role's other `DELETE` grants look like they belong to erasure and do not.**
     `credentials` holds one for removing a single credential — passkey revocation, replacing a
     recovery-code set, and retiring the federated credential on an email change —
-    `recovery_code_hashes` for redeeming a code, and `sessions` for the ended-session sweep.
+    `recovery_code_hashes` for redeeming a code, and `sessions` for the ended-session sweep and
+    displacement.
     Erasure uses none of them: it empties all three tables through the cascade from `users`, and
     would still work if all three grants were revoked tomorrow.
 - **Row-level security** — `user_isolation` scopes the `users` delete, `budget_isolation` scopes the

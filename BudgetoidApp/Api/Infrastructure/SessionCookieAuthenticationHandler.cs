@@ -1,6 +1,5 @@
 using System.Security.Claims;
 using System.Text.Encodings.Web;
-using Application.Passkeys;
 using Application.Sessions.AuthenticateSession;
 using Domain.Sessions;
 using Microsoft.AspNetCore.Authentication;
@@ -30,11 +29,9 @@ namespace Api.Infrastructure;
 /// failure worth surfacing, and the caller learns the same thing from the challenge that follows.
 /// </para>
 /// <para>
-/// <b>The width is refused from both sides and never truncated.</b> A short value is a prefix of a real
-/// handle and a long one is a real handle with something appended; a decoder that padded would find the
-/// row for the first and one that truncated would find it for the second. The ceiling handed to the
-/// decoder bounds the work an anonymous caller can name, and the equality below is what bounds the
-/// value — the two are not the same check, because a 33-byte token encodes to text the ceiling admits.
+/// <b>The decoding is <see cref="SessionCookie.TryReadTokenHash" />'s</b>, where the width rule is
+/// argued. It is shared with <see cref="SessionCookieWriter" />, which displaces the session a cookie
+/// names, so the scheme and the writer cannot disagree about which strings are handles.
 /// </para>
 /// <para>
 /// <b>The claims are the answer, not the evidence.</b> <c>sub</c> carries this installation's own
@@ -123,28 +120,17 @@ public sealed class SessionCookieAuthenticationHandler(
         // the arm that makes "an authenticated request can never name an account that does not exist"
         // structural — NoResult leaves the principal unauthenticated and the fallback policy challenges,
         // so nothing downstream ever runs holding an identity nobody could resolve.
-        if (!Request.Cookies.TryGetValue(SessionCookie.Name, out string? presented))
+        //
+        // A malformed cookie answers the same: the decoding and its width rule are SessionCookie's, shared
+        // with the writer that displaces the session a cookie names, so the two never disagree about
+        // which strings are handles.
+        if (!SessionCookie.TryReadTokenHash(Request, out byte[]? tokenHash))
         {
             return AuthenticateResult.NoResult();
         }
 
-        // PasskeyEncoding despite the name, and borrowing it beats a second decoder. It is this
-        // codebase's one base64url reader, it judges the length before validating and decoding — the
-        // ordering an anonymous surface needs, argued in full over there — and a decoder written again
-        // here is how the two dialects start disagreeing about which strings are handles. What the
-        // ceiling cannot say is that the width is exact: it refuses 33 bytes, but a handle of 31 or of
-        // one is under every bound it owns, so the equality below is a separate check and not a
-        // restatement.
-        if (!PasskeyEncoding.TryDecode(presented, SessionToken.TokenLength, out byte[]? token)
-            || token.Length != SessionToken.TokenLength)
-        {
-            return AuthenticateResult.NoResult();
-        }
-
-        // Hashed here, at the boundary that decoded it, so the live token stops at this method and no
-        // command, port or log statement below has a member it could travel through.
         AuthenticatedSession? session = await authenticateSession.HandleAsync(
-            new AuthenticateSessionCommand(SessionToken.HashOf(token)),
+            new AuthenticateSessionCommand(tokenHash),
             Context.RequestAborted);
 
         if (session is null)

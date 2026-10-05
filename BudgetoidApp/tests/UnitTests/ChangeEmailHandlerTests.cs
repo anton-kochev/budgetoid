@@ -643,5 +643,8 @@ public sealed class ChangeEmailHandlerTests
 
         public Task<bool> RevokeAsync(Guid sessionId, DateTime revokedAtUtc, CancellationToken cancellationToken = default) =>
             inner.RevokeAsync(sessionId, revokedAtUtc, cancellationToken);
+
+        public Task<bool> RemoveAsync(Guid sessionId, CancellationToken cancellationToken = default) =>
+            inner.RemoveAsync(sessionId, cancellationToken);
     }
 }

@@ -9,6 +9,7 @@ public sealed class SessionRepository(BudgetoidDbContext dbContext) : ISessionRe
 {
     private const int MaxRevocationAttempts = 3;
     private const int MaxSweepAttempts = 3;
+    private const int MaxRemovalAttempts = 3;
 
     /// <inheritdoc />
     public async Task AddAsync(
@@ -119,8 +120,9 @@ public sealed class SessionRepository(BudgetoidDbContext dbContext) : ISessionRe
         // would sit in the change tracker for the rest of the request and join whatever that request
         // then saves. EF cascades into session rows it happens to be holding when a credential is
         // removed and sends its own DELETE FROM sessions — which no longer fails, because the role holds
-        // DELETE there for the ended-session sweep, so the mistake is now silent: the row leaves by the
-        // application rather than by the database's cascade, and nothing says so. Every path that
+        // DELETE there for the ended-session sweep and for displacement, so the mistake is now silent:
+        // the row leaves by the application rather than by the database's cascade, and nothing says so.
+        // Every path that
         // removes a credential or an account clears the tracker immediately before the delete, so
         // nothing depends on this today; leaving this untracked is what keeps the next one from having
         // to remember.
@@ -271,5 +273,68 @@ public sealed class SessionRepository(BudgetoidDbContext dbContext) : ISessionRe
         }
 
         return true;
+    }
+
+    /// <inheritdoc />
+    public async Task<bool> RemoveAsync(Guid sessionId, CancellationToken cancellationToken = default)
+    {
+        // A concurrent sign-out can stamp the row between this read and the save. revoked_at_utc is a
+        // concurrency token, so the DELETE of a row read live carries "revoked_at_utc IS NULL", matches
+        // nothing, and EF raises DbUpdateConcurrencyException. Unlike RevokeAsync, the exception does
+        // not settle the answer here: that call wanted the row revoked and somebody else revoked it,
+        // while this one wants it GONE, and a revoked row is still standing. So it re-reads, the shape
+        // the sweep in AddAsync uses: a row revoked under us comes back revoked and is removed, and a
+        // row a concurrent removal took is not found and answers false. Measured for the revocation:
+        // without the retry, or without the detach below, RemoveAsync_WhenRevokedConcurrently_StillRemovesIt
+        // fails with DbUpdateConcurrencyException. The concurrent-removal arm is reasoned, not run.
+        //
+        // The bound is the sweep's, for the sweep's reason: the only competing writes are a revocation,
+        // which happens to a row at most once, and a delete, after which the read finds nothing — so a
+        // defect that broke that reasoning surfaces as an exception rather than a hang.
+        for (int attempt = 1; ; attempt++)
+        {
+            // The id alone, live or ended, and NO owner predicate — the rule RevokeAsync spells out.
+            // sessions is policed by user_isolation, so a session of any account but the published one
+            // is not found and cannot be deleted. Tracked, because Remove needs a tracked entity and
+            // ExecuteDelete is banned (BannedSymbols.txt).
+            Session? session = await dbContext.Sessions
+                .SingleOrDefaultAsync(candidate => candidate.Id == sessionId, cancellationToken);
+
+            if (session is null)
+            {
+                return false;
+            }
+
+            // The handle leaves by the database's ON DELETE CASCADE from sessions, never by EF: the role
+            // holds no DELETE on session_tokens, so a SessionToken tracked in this context under this
+            // session would make EF send its own DELETE and die with 42501. Nothing on the path that
+            // calls this tracks one — SessionTokenRepository.FindByTokenHashAsync reads untracked.
+            dbContext.Sessions.Remove(session);
+
+            try
+            {
+                await dbContext.SaveChangesAsync(cancellationToken);
+
+                return true;
+            }
+            // Narrowed by the entries, the shape RevokeAsync uses: SaveChangesAsync flushes everything
+            // the scoped context is tracking, so a stranger's entity conflicting on the same save must
+            // propagate rather than be retried as a raced removal. The count test stops an exception EF
+            // could not attribute to any entry from satisfying the predicate vacuously.
+            catch (DbUpdateConcurrencyException exception) when (
+                attempt < MaxRemovalAttempts
+                && exception.Entries.Count > 0
+                && exception.Entries.All(entry =>
+                    entry.Entity is Session && entry.State == EntityState.Deleted))
+            {
+                // The removed instance holds the values read before the race, and EF's identity map
+                // would hand that same instance back to the read above rather than the row as it now
+                // stands. Detaching it is what makes the next attempt observe reality.
+                foreach (EntityEntry entry in exception.Entries)
+                {
+                    entry.State = EntityState.Detached;
+                }
+            }
+        }
     }
 }

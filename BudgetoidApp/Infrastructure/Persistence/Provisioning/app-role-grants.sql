@@ -180,8 +180,8 @@ GRANT SELECT ON currencies TO budgetoid_app;
 -- does: this is a list of absent DELETEs, not a list of read-only tables and not a list of
 -- write-free ones. erasure_schedules is absent from this list because it holds DELETE —
 -- withdrawing a schedule removes the row — and its own block argues the grant. sessions is absent
--- for the same reason: the ended-session sweep removes rows, its own block argues that grant, and
--- erasure does not use it.
+-- for the same reason: the ended-session sweep and displacement remove rows, its own block argues
+-- that grant for both, and erasure does not use it.
 -- key_rotation_seals STAYED ON THIS LIST WHILE GAINING TWO WRITES, and it carries the one correction
 -- worth repeating up here: its seals were said to leave by the ON DELETE CASCADE from key_rotations
 -- when a second begin replaced the staging row, and a second begin UPDATES that row in place rather
@@ -280,37 +280,59 @@ GRANT SELECT, INSERT, DELETE ON credentials TO budgetoid_app;
 -- do not collapse it into a table-wide GRANT UPDATE ON sessions, which would take the five above
 -- with it.
 --
--- DELETE, and this is the re-argument the paragraph that stood here asked for. The act it serves is
--- the ENDED-SESSION SWEEP in SessionRepository.AddAsync: establishing a session deletes every
--- session of the account that is not Session.IsActiveAt the new session's CreatedAtUtc — revoked, or
--- expired at or before that instant — in the same SaveChanges as the new session and its handle, so
--- a sign-in that fails to store deletes nothing and a delete that fails stores no sign-in. Without
--- it a row left only by the cascade from credentials or users, and an account's ended rows became a
--- timestamped record of its sign-ins for the life of the credential that opened them; the sweep
--- bounds that record to the sessions that were live when the account's most recent session was
+-- DELETE, and this is the re-argument the paragraph that stood here asked for. It has TWO CALLERS,
+-- and each is entitled to a different set of rows.
+--
+-- The first is the ENDED-SESSION SWEEP in SessionRepository.AddAsync: establishing a session deletes
+-- every session of the account that is not Session.IsActiveAt the new session's CreatedAtUtc —
+-- revoked, or expired at or before that instant — in the same SaveChanges as the new session and its
+-- handle, so a sign-in that fails to store deletes nothing and a delete that fails stores no sign-in.
+-- Without it a row left only by the cascade from credentials or users, and an account's ended rows
+-- became a timestamped record of its sign-ins for the life of the credential that opened them; the
+-- sweep bounds that record to the sessions that were live when the account's most recent session was
 -- established. See docs/decisions/0029.
 --
+-- The second is DISPLACEMENT, SessionRepository.RemoveAsync called by DisplaceSessionHandler: once an
+-- establishing handler has committed, the one session the browser's incoming cookie names is deleted,
+-- live or ended, on whichever account owns it, and only then is the new cookie written. Overwriting a
+-- cookie ends nothing by itself, so that row would otherwise stay with no browser holding it — live
+-- until it expired or a revocation ended it — a standing record that this browser was signed in to
+-- that account. The sweep cannot take it: it takes ended rows only, and only the account signing in. Displacement's authority is the cookie's
+-- handle, the proof sign-out needs, so it takes no more than sign-out could end; an ended row it takes
+-- is one its own account's next sweep would take. See docs/decisions/0030.
+--
 -- What bounds this grant IS a policy, which is the difference from credentials' DELETE one block
--- above. user_isolation is FOR ALL, so a DELETE here reaches only the account the connection has
--- published, and a connection naming nobody is refused with 22P02. That is why the sweep names no
--- owner. Database_RefusesToDeleteAnotherUsersSession_WhileStillAllowingItsOwn pins it.
+-- above, and it bounds both callers the same way. user_isolation is FOR ALL, so a DELETE here reaches
+-- only the account the connection has published, and a connection naming nobody is refused with
+-- 22P02. That is why neither caller names an owner. The sweep runs as the account signing in.
+-- Displacement runs in a dependency scope of its own, in which AuthenticateSessionHandler has
+-- published the account the cookie names — which can be another account than the one signing in —
+-- while the request stays published as the new account. Measured: deleting under the request's own
+-- publication instead reddens the cross-account cases, because the policy hides the other account's
+-- row from it. Database_RefusesToDeleteAnotherUsersSession_WhileStillAllowingItsOwn pins the bound.
 --
 -- REVOCATION IS STILL AN UPDATE, and the grant does not change why. The row is what says access
 -- ended and when, and a second sign-out answers 204 because it still finds the row — until the
--- account's next sign-in sweeps it; deleting at revocation would take both at once. Re-revoking converges on the first instant instead of failing as a
--- second delete of nothing.
+-- account's next sign-in sweeps it, or a sign-in in the browser still presenting its cookie
+-- displaces it; deleting at revocation would take both at once. Re-revoking converges on the first
+-- instant instead of failing as a second delete of nothing.
 --
--- Four other shapes were weighed and refused. A SCHEDULED SWEEP needs a role that reaches every
--- account — the elevated reach docs/decisions/0004 keeps off this one — and the API scales to zero.
--- DELETING AT SIGN-OUT is the revocation-as-delete just refused, and leaves an expired, never-revoked
--- row accumulating. SWEEPING AT AUTHENTICATION is a write on every request, on the three-step path no
--- transaction may wrap. A restrictive FOR DELETE policy comparing against now() would put "only ended
--- rows" in the database, but it is a second clock beside the one the handlers read, it would judge
--- the suite's fixed instants differently, and it is a third input to isolation on a policy that
--- reads user_id alone.
+-- For the sweep, four other shapes were weighed and refused. A SCHEDULED SWEEP needs a role that
+-- reaches every account — the elevated reach docs/decisions/0004 keeps off this one — and the API
+-- scales to zero. DELETING AT SIGN-OUT is the revocation-as-delete just refused, and leaves an
+-- expired, never-revoked row accumulating. SWEEPING AT AUTHENTICATION is a write on every request, on
+-- the three-step path no transaction may wrap. A restrictive FOR DELETE policy comparing against
+-- now() would put "only ended rows" in the database, but it is a second clock beside the one the
+-- handlers read, it would judge the suite's fixed instants differently, and it is a third input to
+-- isolation on a policy that reads user_id alone. For displacement, the shape this file would have
+-- carried was refused too: a permissive FOR DELETE policy keyed on an app.displaced_session_id
+-- setting is a third input to isolation on the same policy, and one mis-published value deletes any
+-- session. docs/decisions/0030 weighs the rest.
 --
--- So "a DELETE here takes only an ended row" is NOT held by this grant: it is a REVIEW rule, the same
--- shape as the first leg of credentials' DELETE. Nothing confines the grant to AddAsync — any
+-- So which rows a DELETE here takes is NOT held by this grant: it is a REVIEW rule, the same shape as
+-- the first leg of credentials' DELETE. The sweep may take only the published account's ended rows;
+-- displacement may take only the one row the incoming cookie names, and only once a session has been
+-- established over that cookie. Nothing confines the grant to AddAsync and RemoveAsync — any
 -- statement on this role may delete a live session of the published account, and an EF cascade into
 -- session rows the change tracker happens to be holding now succeeds silently where it used to die
 -- with 42501. docs/business-logic/sessions.md states the rule as a MUST NOT.
@@ -450,8 +472,9 @@ GRANT UPDATE (signature_counter) ON passkey_signature_counters TO budgetoid_app;
 -- revoking a passkey removes the row rather than marking it, scoped by the application and by
 -- nothing beneath it — see ADR 0014. users, because it is the root every other owned row cascades
 -- from, so deleting it is how an account is erased — see that block for why the cascade means the
--- tables in between need no grant of their own. sessions, because the ended-session sweep removes
--- rows whose session has already ended — see its block. Contrast revocation in that same block,
+-- tables in between need no grant of their own. sessions, for two operations: the ended-session
+-- sweep removes rows whose session has already ended, and displacement removes the one session a
+-- browser's overwritten cookie named — see its block. Contrast revocation in that same block,
 -- which writes a column precisely so the row stays accountable — opposite decisions, because the
 -- rows mean opposite things.
 --

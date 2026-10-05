@@ -53,7 +53,8 @@ public static class RecoveryCodeEndpoints
         group.MapPost("/recovery-codes", async (
             RecoveryCodeGenerationRequest request,
             GenerateRecoveryCodesHandler handler,
-            HttpResponse response,
+            SessionCookieWriter cookieWriter,
+            HttpContext httpContext,
             CancellationToken cancellationToken) =>
         {
             Issued<RecoveryCodesGeneration> issued = await handler.HandleAsync(
@@ -80,9 +81,14 @@ public static class RecoveryCodeEndpoints
             // After the handler returned, for the reason the assertion leg writes out in full: every
             // refusal on this route — an unproven caller above all — leaves by exception, so a cookie
             // written earlier is a cookie a refusal leaves behind.
+            //
+            // Through the writer, which deletes the session the old cookie named before writing the new
+            // one — here the caller's own, which the new cookie replaces. Only inside this branch: with
+            // no handoff the browser goes on presenting that cookie, and deleting its session would sign
+            // the person out of the screen they just issued a card from.
             if (issued.Handoff is { } handoff)
             {
-                SessionCookie.Issue(response, handoff.Token, handoff.ExpiresAtUtc);
+                await cookieWriter.WriteEstablishedAsync(httpContext, handoff, cancellationToken);
             }
 
             // 200 with a body rather than the erasure's 204: this act leaves an account standing, and
@@ -166,7 +172,8 @@ public static class RecoveryCodeEndpoints
         anonymous.MapPost("/redemption", async (
             RedemptionRequest request,
             RedeemRecoveryCodeHandler handler,
-            HttpResponse response,
+            SessionCookieWriter cookieWriter,
+            HttpContext httpContext,
             CancellationToken cancellationToken) =>
         {
             Issued<RedeemedRecoveryCode> issued = await handler.HandleAsync(
@@ -178,10 +185,12 @@ public static class RecoveryCodeEndpoints
             // this is the one people reach for when they cannot get in, so a cookie written before the
             // verifier matched would be an anonymous caller handed a handle for whatever account the
             // arrangement resolved. Every refusal below leaves by exception, so there is no shape of
-            // this delegate in which a refused redemption reaches this line.
+            // this delegate in which a refused redemption reaches this line — which is also what keeps
+            // a refused redemption from deleting the session the browser presented. The writer deletes
+            // that session first; see SessionCookieWriter.
             if (issued.Handoff is { } handoff)
             {
-                SessionCookie.Issue(response, handoff.Token, handoff.ExpiresAtUtc);
+                await cookieWriter.WriteEstablishedAsync(httpContext, handoff, cancellationToken);
             }
 
             // The kind, the expiry and what is left — and deliberately no session id, for the reason
