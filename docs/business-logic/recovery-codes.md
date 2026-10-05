@@ -498,9 +498,15 @@ erDiagram
   - **Between the two calls the tracked sessions are discarded**, and that is a second reason rather
     than the first restated: the sweep loads every unrevoked `Session` into the change tracker, and
     removing the `Credential` with those dependents still tracked makes EF emit its own
-    `DELETE FROM sessions` on a table granted no `DELETE` at all — so the request dies with `42501`
-    having removed nothing. **The SQLSTATE names a privilege and the cause is the change tracker; do
-    not answer it with a grant on `sessions`.**
+    `DELETE FROM sessions`. **On `sessions` that mistake raises nothing.** The role holds
+    `DELETE` there for the ended-session sweep — a different act from this file's sweep, which
+    revokes; see [sessions.md](sessions.md#must-not) — so EF's statement succeeds and removes the
+    rows the database's cascade would have taken. Measured: with that grant, removing this second
+    `DiscardTrackedEntities()` reddens no integration test, and only the handler's unit replay and
+    placement tests notice. The discard stays, because the statements past it are written to an
+    empty tracker, and because a `SessionToken` tracked under one of those sessions would still die
+    with `42501`: `session_tokens` holds no `DELETE`. **That SQLSTATE names a privilege and the
+    cause is the change tracker; do not answer it with a grant on `session_tokens`.**
 - **Source**: `[SOURCE: user-story]`
 
 ---
@@ -524,6 +530,14 @@ erDiagram
     here is signed back in. **Two false positives**: a live session on another device, and a session
     unrevoked but past its expiry — the sweep narrows on `revoked_at_utc is null` and says nothing
     about expiry. Each costs one inert row that hands nothing to anybody.
+  - **So the count depends on the account's history, not only on the set's.** The ended-session
+    sweep in [sessions.md](sessions.md#must-not) deletes the account's expired rows when a session
+    is established on the account, so an expired session of the replaced set is in the count only
+    if no session was established between its expiry and this call. The second false positive needs
+    that gap. A session still live when this call reads the set is unaffected, because the
+    ended-session sweep keeps every row live at the instant it judges, so the no-false-negatives
+    half holds. None of this is a reason to narrow the revocation's predicate — the counterexample
+    below says why.
   - **The session is `Full` and lasts 14 days**, derived by `Session.Establish` from the new set's
     own `Credential` rather than named by this handler. The interval matching the other establishing
     paths is the rule rather than a coincidence: the caller cleared a passkey gate to get here,
@@ -890,10 +904,11 @@ ELSE                                                               ← first iss
 - **The most dangerous line in this area is one nobody would notice: the generation path must never
   materialise the old set's `recovery_code_hashes` rows.** If they were tracked, removing the
   `Credential` would make EF cascade into the copies it can see and emit its own
-  `DELETE FROM recovery_code_hashes`. Unlike `sessions` — where the identical mistake dies loudly
-  with `42501` — the role **is** granted `DELETE` here, so the statement would **silently succeed**:
-  the rows leave by the application instead of the database's cascade, the request answers `200`,
-  and no SQLSTATE says so. What holds it is a comment on `IRecoveryCodeRepository.DeleteSetAsync`
+  `DELETE FROM recovery_code_hashes`. The role **is** granted `DELETE` here, so the statement would
+  **silently succeed**: the rows leave by the application instead of the database's cascade, the
+  request answers `200`, and no SQLSTATE says so. `sessions` behaves the same way, since it holds
+  `DELETE` for the ended-session sweep; `session_tokens`, the table below it, holds none and still
+  dies loudly with `42501` — see the change-tracker bullet in the `sessionsEnded` rule above. What holds it is a comment on `IRecoveryCodeRepository.DeleteSetAsync`
   and its call site, and nothing else: no test can distinguish the two paths, because the table is
   empty afterwards either way. The way this breaks is a future reader adding a *"load the codes so
   we can count them"* read.

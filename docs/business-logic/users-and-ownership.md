@@ -307,13 +307,18 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
       measured one would refuse the security feature along with the surveillance. The **columns** of
       `sessions` stay inside what the rule permits — `id`, `user_id`, `credential_id`,
       `credential_type`, `kind`, `created_at_utc`, `expires_at_utc`, `revoked_at_utc`, and nothing
-      else. Its rows do not.
-    - **`sessions` keeps one row per sign-in.** Revocation stamps `revoked_at_utc` and the row
-      stays; an expired row stays too. Rows leave only by the cascade, when the credential that
-      opened them is deleted or the account is erased, and nothing sweeps an ended session. So the
-      columns are within the rule and the rows accumulate: an account's `sessions` rows are a
-      timestamped sign-in history, bounded only by the life of the credential. Whoever changes that
-      has to re-argue the `DELETE` rule in [sessions.md](sessions.md#must-not) rather than go
+      else. Its rows are held to the rule by a sweep, and the sweep leaves something behind.
+    - **`sessions` keeps an ended row only until the account's next sign-in.** Revocation stamps
+      `revoked_at_utc` and the row stays, because the row is what says access ended and when; an
+      expired row stays too. Establishing a session deletes the account's ended rows in the save
+      that stores it, so ended rows no longer pile up past the next sign-in. What stands is the
+      sessions that were live when the account's most recent session was established, whether or
+      not they have ended since. Rows also leave by the cascade, when their credential is deleted or
+      the account is erased. **What still remains** is a record this rule has to keep weighing: an
+      account that never signs in again keeps its last batch of ended rows, live rows record recent
+      sign-ins, and PostgreSQL's own delete counter on the table counts swept rows, as one total
+      naming no account. The mechanism is the ended-session sweep in
+      [sessions.md](sessions.md#must-not); whoever changes it re-argues that rule rather than going
       around it.
     - **`passkey_signature_counters.signature_counter` is not that kind of record.** On an
       authenticator that implements the counter it rises with each assertion, but it is a value the

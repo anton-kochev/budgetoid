@@ -131,11 +131,11 @@ public sealed class RedeemRecoveryCodeHandler(
                 // carries it.
                 //
                 // THERE IS NO SECOND DISCARD HERE, unlike in GenerateRecoveryCodesHandler, and the
-                // absence is a fact worth stating rather than an omission. That handler needs one
+                // absence is a fact worth stating rather than an omission. That handler has one
                 // because its revocation sweep loads the set's Sessions into the tracker, and removing
                 // the Credential with those dependents tracked makes EF cascade into the copies it can
-                // see and emit its own DELETE FROM sessions — on a table holding no DELETE grant. The
-                // row spent below is a recovery_code_hashes row, and nothing in the schema references
+                // see and emit its own DELETE FROM sessions, taking rows the database's cascade is meant
+                // to. The row spent below is a recovery_code_hashes row, and nothing in the schema references
                 // one: it is a leaf, so there is no cascade for EF to imitate and nothing to discard.
                 persistenceState.DiscardTrackedEntities();
 

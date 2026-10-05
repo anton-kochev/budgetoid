@@ -743,8 +743,28 @@ public sealed class AppRoleGrantsTests
             .IsEqualTo(RevocationInstant);
     }
 
+    /// <summary>
+    /// The application role can delete a session of the account on the connection, and the database's
+    /// cascade takes the handle with it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The grant exists so that ended sessions do not pile up as a record of every sign-in.</b>
+    /// Establishing a session deletes the account's revoked and expired rows in the same save. That
+    /// needs <c>DELETE</c> here and nowhere else: the handle leaves by <c>ON DELETE CASCADE</c>, which
+    /// runs as the referencing table's owner, so <c>session_tokens</c> keeps holding no <c>DELETE</c>
+    /// of its own — see the next test.
+    /// </para>
+    /// <para>
+    /// <b>Revocation is still an <c>UPDATE</c>.</b> Deleting a live session would sign a browser out
+    /// with nothing left to say when; the sweep only deletes rows that have already ended, and
+    /// <c>Database_RefusesEveryUpdateOnASessionsIdentity_WhileStillAllowingRevocation</c> still pins
+    /// the revocation column. The affected count is asserted for the class's reason: on a policed table
+    /// a delete the policy filtered reports success against zero rows.
+    /// </para>
+    /// </remarks>
     [Test]
-    public async Task Database_RefusesToDeleteASession()
+    public async Task Database_LetsTheAppRoleDeleteItsOwnSession_AndTheCascadeTakesItsHandle()
     {
         // Arrange
         await using RepositoryTestHost host = await StartHostAsync();
@@ -755,24 +775,22 @@ public sealed class AppRoleGrantsTests
         Guid credentialId = (Guid)(await SelectScalarAsync(
             admin, "select id from credentials where user_id = @id", userId))!;
         Guid sessionId = await InsertSessionAsync(admin, userId, credentialId);
+        await InsertSessionTokenAsync(admin, SeededTokenHash, sessionId, userId);
 
+        // sessions is policed on the user, so the connection names the owner.
         await using NpgsqlConnection app = await host.OpenAppConnectionForUserAsync(userId);
 
         // Act
-        PostgresException deleteRefusal = await ThrowsPostgresExceptionAsync(
-            app, "delete from sessions where id = @id", sessionId);
+        int deleted = await ExecuteAsync(app, "delete from sessions where id = @id", sessionId);
 
-        // Assert — the absent DELETE grant is what keeps revocation a recorded fact rather than a
-        // disappearance: the role holds no privilege that can make a session unaccountable, and
-        // re-revoking converges instead of failing as a second delete of nothing. A retention sweep
-        // of expired and revoked rows is the path that would need this grant, and it is the thing
-        // that would have to re-argue the omission rather than quietly delete it. The surviving row
-        // is not a second opinion on the SQLSTATE: a refusal that had already removed the row on its
-        // way to failing is exactly what this rule exists to rule out.
-        await Assert.That(deleteRefusal.SqlState).IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+        // Assert — the row, and the handle the cascade had to take with it.
+        await Assert.That(deleted).IsEqualTo(1);
         await Assert.That(await SelectScalarAsync(
                 admin, "select count(*) from sessions where id = @id", sessionId))
-            .IsEqualTo(1L);
+            .IsEqualTo(0L);
+        await Assert.That(await SelectScalarAsync(
+                admin, "select count(*) from session_tokens where session_id = @id", sessionId))
+            .IsEqualTo(0L);
     }
 
     [Test]
@@ -911,11 +929,11 @@ public sealed class AppRoleGrantsTests
                 admin, "select count(*) from session_tokens where session_id = @id", sessionId))
             .IsEqualTo(1L);
 
-        // Act — and now the same row, removed the way the product removes it. The parent named here is
-        // the CREDENTIAL rather than the session, and that is forced rather than chosen: the role holds
-        // no DELETE on sessions either, so a token row can only leave by a cascade that starts one link
-        // further up. Revoking a credential is exactly this statement, and erasure is the same chain one
-        // link further still — users -> credentials -> sessions -> session_tokens.
+        // Act — and now the same row, removed the way a credential revocation removes it. The parent
+        // named here is the CREDENTIAL, two links up: revoking a credential is exactly this statement,
+        // and erasure is the same chain one link further still — users -> credentials -> sessions ->
+        // session_tokens. The one-link cascade, from a deleted session, is the sweep's path and is
+        // pinned by Database_RefusesADeleteOnASessionToken_WhileTheCascadeFromItsSessionStillTakesIt.
         int credentialsDeleted = await ExecuteAsync(
             app, "delete from credentials where id = @id", credentialId);
 
@@ -943,6 +961,61 @@ public sealed class AppRoleGrantsTests
         // that deleted the handle instead would sign the browser out and leave nothing accountable — and
         // with DELETE granted here that path would be one line away and would succeed silently. Without
         // it, the same mistake dies loudly with the 42501 above.
+    }
+
+    /// <summary>
+    /// The role still cannot delete a handle directly, while deleting the session it opens takes the
+    /// handle with it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The sweep's half of the token rule.</b> The test above pins the cascade from a credential,
+    /// which is how revocation removes a handle. Deleting an ended session is how the sweep removes
+    /// one, and it is the first path where the role itself deletes the parent. The refusal is unchanged:
+    /// a role that could delete a handle could sign a browser out leaving a session row that still
+    /// reads as live.
+    /// </para>
+    /// <para>
+    /// This is also what makes the change-tracker trap loud. A handle EF is tracking when its session is
+    /// removed is deleted by EF rather than by the cascade, and that statement meets this <c>42501</c>.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Database_RefusesADeleteOnASessionToken_WhileTheCascadeFromItsSessionStillTakesIt()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid userId = await host.SeedUserAsync("google-1", "person@example.com");
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        Guid credentialId = (Guid)(await SelectScalarAsync(
+            admin, "select id from credentials where user_id = @id", userId))!;
+        Guid sessionId = await InsertSessionAsync(admin, userId, credentialId);
+        await InsertSessionTokenAsync(admin, SeededTokenHash, sessionId, userId);
+
+        // The owner on the connection: session_tokens is exempt and needs none, but sessions is policed,
+        // and on a connection naming nobody the parent delete below would fail with 22P02 instead.
+        await using NpgsqlConnection app = await host.OpenAppConnectionForUserAsync(userId);
+
+        // Act — the direct delete first.
+        PostgresException deleteRefusal = await ThrowsPostgresExceptionAsync(
+            app, "delete from session_tokens where session_id = @id", sessionId);
+
+        // Assert
+        await Assert.That(deleteRefusal.SqlState).IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+        await Assert.That(await SelectScalarAsync(
+                admin, "select count(*) from session_tokens where session_id = @id", sessionId))
+            .IsEqualTo(1L);
+
+        // Act — the parent, one link up.
+        int sessionsDeleted = await ExecuteAsync(app, "delete from sessions where id = @id", sessionId);
+
+        // Assert — the count first, so the zero below means the cascade rather than a missed row.
+        await Assert.That(sessionsDeleted).IsEqualTo(1);
+        await Assert.That(await SelectScalarAsync(
+                admin, "select count(*) from session_tokens where session_id = @id", sessionId))
+            .IsEqualTo(0L);
     }
 
     [Test]

@@ -249,10 +249,9 @@ public sealed class RevokePasskeyHandlerTests
     /// <para>
     /// The two <see cref="Session" /> objects are held by reference rather than read back out of the
     /// repository, deliberately. <c>Session.Revoke</c> stamps the object, and a handler that discards
-    /// its tracked entities between the revocation and the delete — which is exactly the fix the
-    /// endpoint test
-    /// <c>Revocation_WhenTheCredentialHasLiveSessions_DoesNotFailOnAMissingSessionDeleteGrant</c>
-    /// forces — empties the fake's list. Reading the list at that moment would find nothing and an
+    /// its tracked entities between the revocation and the delete — the fix the endpoint test
+    /// <c>Revocation_WhenTheCredentialHasLiveSessions_ReportsThemEndedAndAnswers200</c>
+    /// forced while <c>sessions</c> held no <c>DELETE</c> grant — empties the fake's list. Reading the list at that moment would find nothing and an
     /// "all of them are stamped" predicate would be vacuously true over zero rows, which is the one
     /// way this test could go green on a handler that revoked nothing.
     /// </para>

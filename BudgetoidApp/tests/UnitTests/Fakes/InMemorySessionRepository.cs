@@ -114,6 +114,18 @@ public sealed class InMemorySessionRepository : ISessionRepository
         // null handle would be modelling a call production cannot make.
         ArgumentNullException.ThrowIfNull(token);
 
+        // The production sweep: every ended session of the account goes in the same save, judged at
+        // the new session's CreatedAtUtc, and its handles with it. Production reads no owner
+        // predicate — RLS (user_isolation) scopes the read to the published account. This fake has
+        // no policy, so it keys on the new session's UserId to stand in for it.
+        HashSet<Guid> ended = _sessions
+            .Where(candidate =>
+                candidate.UserId == session.UserId && !candidate.IsActiveAt(session.CreatedAtUtc))
+            .Select(candidate => candidate.Id)
+            .ToHashSet();
+        _sessions.RemoveAll(candidate => ended.Contains(candidate.Id));
+        _tokens.RemoveAll(handle => ended.Contains(handle.SessionId));
+
         _sessions.Add(session);
         _tokens.Add(token);
 

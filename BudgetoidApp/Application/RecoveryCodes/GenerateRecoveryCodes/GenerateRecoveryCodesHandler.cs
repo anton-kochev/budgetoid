@@ -188,16 +188,19 @@ public sealed class GenerateRecoveryCodesHandler(
                     // A second discard, and it is not the first one restated. The sweep above loaded
                     // every unrevoked Session of this credential into the tracker. Remove the
                     // Credential with those dependents still tracked and EF cascades into the copies
-                    // it can see, emitting its own DELETE FROM sessions — on a table granted SELECT,
-                    // INSERT, UPDATE (revoked_at_utc) and deliberately no DELETE, so the request dies
-                    // with 42501 having removed nothing. Those rows are meant to leave by the
-                    // database's own cascade from credentials, which runs with the referencing table
-                    // owner's privileges rather than this role's.
+                    // it can see, emitting its own DELETE FROM sessions. Those rows are meant to leave
+                    // by the database's own cascade from credentials, which runs with the referencing
+                    // table owner's privileges rather than this role's.
                     //
-                    // Do not answer that 42501 with a grant on sessions: the SQLSTATE names a
-                    // privilege, the cause is the change tracker, and app-role-grants.sql argues that
-                    // the absent DELETE is what keeps a session accountable. RevokePasskeyHandler and
-                    // EraseAccountHandler document the identical mechanism for their own tables.
+                    // That DELETE no longer fails: the role holds DELETE on sessions, because
+                    // establishing a session deletes the account's ended ones, so EF taking the tracked
+                    // copies itself succeeds and leaves the same rows gone. What keeps this line is
+                    // everything below the sessions — any tracked dependent the role cannot delete
+                    // still dies with 42501, session_tokens among them — and the statements past this
+                    // point are written to an empty tracker. No integration test reddens if it goes;
+                    // only the unit replay test, which pins which attempts a discard lands on.
+                    // RevokePasskeyHandler and EraseAccountHandler document the same mechanism for
+                    // their own tables.
                     //
                     // The credential survives as a detached object; Remove attaches it back as
                     // Deleted, so the statement below still names that one row.
@@ -210,10 +213,11 @@ public sealed class GenerateRecoveryCodesHandler(
                     // recovery_code_hashes rows are never materialised on this path. No read above
                     // loads them and DeleteSetAsync takes the set's credential and nothing else. Were
                     // they tracked, EF would emit its own DELETE FROM recovery_code_hashes — and
-                    // unlike sessions, the role IS granted DELETE there, so it would silently succeed
+                    // the role IS granted DELETE there, so it would silently succeed
                     // and the rows would leave by the application instead of by the cascade, with no
-                    // SQLSTATE to say so. A future reader adding a "load the codes so we can count
-                    // them" read here is the way that breaks.
+                    // SQLSTATE to say so — the same quiet failure tracked sessions now have, since the
+                    // ended-session sweep's grant. A future reader adding a "load the codes so we can
+                    // count them" read here is the way that breaks.
                     //
                     // IT NOW BINDS A SECOND TABLE, AND THAT ONE FAILS THE OTHER WAY. The old set's
                     // wrapped_account_keys ROWS must not be materialised either — no read above loads
@@ -255,7 +259,7 @@ public sealed class GenerateRecoveryCodesHandler(
                 // READ HERE AND NOWHERE ABOVE, AND THE POSITION IS THE WHOLE OF WHAT MAKES IT SURVIVE A
                 // REPLAY. Two things reach back and empty the tracker before this line: the discard at
                 // the top of the delegate, which the execution strategy's replay needs, and the second
-                // one inside the branch above, which the sweep needs. ChangeTracker.Clear detaches
+                // one inside the branch above, after the session revocation. ChangeTracker.Clear detaches
                 // everything, so a manifest loaded in front of either is an instance nothing will save —
                 // the promotion would be a mutation of a detached object, the UPDATE would never be
                 // emitted, and the request would answer 200 having moved no generation at all. Loaded

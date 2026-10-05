@@ -257,13 +257,22 @@ covers some of the following without saying the rows exist:
   holds (from its factor rows, and from the manifest's length, since every entry is the same
   width), each passkey's COSE algorithm, which narrows the device family, and each credential's
   enrolment time.
-- **Sign-in history.** Every session's creation, expiry and revocation time and which credential
-  opened it, kept until that credential is revoked or replaced or the account is erased, and in the
-  backups for seven days after; each passkey's signature counter, which counts its assertions —
-  sign-ins and re-authentications — where the authenticator keeps one. From the sessions a
-  recovery code opened, when codes were redeemed; from the hash rows left against the factor rows,
-  how many are spent. From the sessions the federated credential opened, when the person signed in
-  through the provider alone.
+- **Sign-in history.** Each standing session's creation, expiry and revocation time and which
+  credential opened it. The ended-session sweep in [sessions.md](../business-logic/sessions.md)
+  takes only ended rows, so a live one stands — including a session whose cookie a later sign-in
+  overwrote, which stays live until it expires. An ended row, signed out or expired, stands until a
+  session is next established on the account — a sign-in, or a recovery-code regeneration that
+  re-establishes one — whose save deletes it and its handle. So the rows standing are the sessions
+  that were live when the account's most recent session began, whether or not they have ended
+  since, and an account that never signs in again keeps its last batch. A row of either kind also
+  leaves when its credential is revoked or replaced or the account is erased. A backup taken while
+  a row stood holds it for the backup's retention, and PostgreSQL's statistics counter for deletes
+  on `sessions` (`n_tup_del` in `pg_stat_user_tables`) counts swept rows, as one total for the table
+  that names no account. Beside the sessions, each passkey's signature counter, which counts its
+  assertions — sign-ins and re-authentications — where the authenticator keeps one. From the
+  standing sessions a recovery code opened, when codes were redeemed; from the hash rows left
+  against the factor rows, how many are spent. From the standing sessions the federated credential
+  opened, when the person signed in through the provider alone.
 - **A requested release.** An `erasure_schedules` row says the account asked to be erased and
   when it takes effect — in practice, that somebody holding the account's Google sign-in reached a
   locked session and asked: either the person lost every passkey and every code, or someone else

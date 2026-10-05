@@ -144,15 +144,20 @@ public sealed class AppRoleGrantMatrixTests
         ("currencies", ["SELECT"]),
         ("users", ["SELECT", "INSERT", "DELETE"]),
         ("credentials", ["SELECT", "INSERT", "DELETE"]),
-        ("sessions", ["SELECT", "INSERT"]),
-        // The third table in this matrix with no DELETE, and it inherits the reason from the row above
-        // rather than arguing a new one: a token row is how a session is found, so a role that could
-        // remove one could sign a browser out leaving nothing that says when access ended — which is
-        // the opposite of what revocation is for, and revocation already has its own column on
-        // sessions. Rows leave here by the cascade from sessions, and through it from credentials and
-        // users, which is a deletion somebody asked for rather than one a bug can reach. It appears on
-        // no line of ExpectedUpdateColumnGrants either: all three columns are the row's identity, so
-        // the table holds no UPDATE of any shape — a re-issued handle is a new row, not an edited one.
+        // DELETE is the sweep, not revocation. Establishing a session deletes the account's ENDED
+        // sessions — revoked or expired — in the same save, so they do not pile up as a dated record of
+        // every sign-in. Revocation is still the UPDATE of revoked_at_utc on ExpectedUpdateColumnGrants,
+        // and a revoked row stays readable until the account's next sign-in.
+        ("sessions", ["SELECT", "INSERT", "DELETE"]),
+        // No DELETE, and it no longer inherits that from the row above — sessions now holds one. A
+        // token row is how a session is found, so a role that could remove one could sign a browser
+        // out while the session row still reads as live, with nothing saying when access ended. Rows
+        // leave here by the cascade from sessions — the sweep deleting an ended session, or a credential
+        // or an account going — which runs as the table owner. The absence also keeps the change-tracker
+        // trap loud: a handle EF is tracking when its session is removed is deleted by EF instead, and
+        // dies with 42501. It appears on no line of ExpectedUpdateColumnGrants either: all three columns
+        // are the row's identity, so the table holds no UPDATE of any shape — a re-issued handle is a
+        // new row, not an edited one.
         ("session_tokens", ["SELECT", "INSERT"]),
         ("passkey_public_keys", ["SELECT", "INSERT"]),
         ("passkey_signature_counters", ["SELECT", "INSERT"]),
@@ -163,8 +168,8 @@ public sealed class AppRoleGrantMatrixTests
         // AppRoleGrantsTests.Database_RefusesEveryUpdateOnARecoveryCodeHash_WhileStillAllowingInsertAndDelete
         // for the statement-shaped half.
         ("recovery_code_hashes", ["SELECT", "INSERT", "DELETE"]),
-        // The second table in this matrix with no DELETE, alongside sessions, and the absence is the
-        // rule rather than a privilege nothing needs yet. Revoking a recovery factor removes its
+        // No DELETE, alongside session_tokens, and the absence is the rule rather than a privilege
+        // nothing needs yet. Revoking a recovery factor removes its
         // wrapped keys through the ON DELETE CASCADE from credentials, which runs with the referencing
         // table owner's privileges rather than this role's — so the cascade succeeds while this role
         // cannot issue the statement itself. With DELETE granted, an EF cascade into rows the change

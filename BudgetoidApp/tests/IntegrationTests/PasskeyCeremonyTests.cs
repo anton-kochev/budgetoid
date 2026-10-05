@@ -59,6 +59,80 @@ public sealed class PasskeyCeremonyTests
         await Assert.That(opened[0].Kind).IsEqualTo("full");
     }
 
+    /// <summary>
+    /// Signing in, signing out and signing in again leaves the account holding exactly its live
+    /// sessions: the signed-out one is gone, and another device's live one stays.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The story's own sentence, driven through the passkey path.</b> A signed-out session is a row
+    /// stamped with when it ended, and before this rule it stayed for the life of the passkey — a dated
+    /// record of every sign-in. The next sign-in deletes it. The other device is the half that keeps the
+    /// rule honest: a sweep that deleted every session of the account but the new one would pass the
+    /// first half and sign the person out of the phone in their pocket.
+    /// </para>
+    /// <para>
+    /// The second sign-in runs on a fresh client carrying no cookie, so the sweep is the only thing that
+    /// can reach the signed-out row.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task PasskeySignIn_AfterSigningOut_LeavesExactlyTheLiveSessions()
+    {
+        // Arrange — the account signed in on "another device" over its recovery codes, and a passkey.
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+        ApiFactory.SignedInClient owner = await factory.CreateSignedInClientAsync(
+            OwnerSubject, OwnerEmail, opensWith: CredentialType.RecoveryCodes);
+        SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        await RegisterAsync(owner.Client, authenticator);
+        Dictionary<Guid, string> labels = (await ReadSessionsAsync(host))
+            .Where(row => row.UserId == owner.UserId)
+            .ToDictionary(row => row.Id, _ => "another device");
+        await Assert.That(labels.Count).IsEqualTo(1);
+
+        // Sign in with the passkey, then sign that browser out.
+        IReadOnlyList<SessionRow> beforeFirst = await ReadSessionsAsync(host);
+        HttpClient browser = factory.CreateClient();
+        HttpResponseMessage firstSignIn = await PostAssertionAsync(
+            browser, await BuildAssertionAsync(browser, authenticator, owner.UserId));
+        await Assert.That(firstSignIn.StatusCode).IsEqualTo(HttpStatusCode.OK);
+        foreach (SessionRow opened in await SessionsOpenedSinceAsync(host, beforeFirst))
+        {
+            labels[opened.Id] = "signed out";
+        }
+
+        HttpResponseMessage signOut = await SignOutAsync(
+            browser, RegistrationCeremony.SessionCookieValueOf(firstSignIn));
+        await Assert.That(signOut.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
+        IReadOnlyList<SessionRow> beforeSecond = await ReadSessionsAsync(host);
+
+        // Act — the next sign-in, on a fresh client. The counter moves past the first sign-in's one, or
+        // the assertion is refused as a clone.
+        HttpClient again = factory.CreateClient();
+        AssertionResult secondAssertion = authenticator.Authenticate(
+            await BeginCeremonyAsync(again, AssertionOptionsPath),
+            ApiFactory.PasskeyOrigin,
+            PasskeyEncoding.ToUserHandle(owner.UserId),
+            signCount: 2);
+        HttpResponseMessage secondSignIn = await PostAssertionAsync(again, secondAssertion);
+
+        // Assert
+        await Assert.That(secondSignIn.StatusCode).IsEqualTo(HttpStatusCode.OK);
+        foreach (SessionRow opened in await SessionsOpenedSinceAsync(host, beforeSecond))
+        {
+            labels[opened.Id] = "signed in again";
+        }
+
+        string held = string.Join(
+            ", ",
+            (await ReadSessionsAsync(host))
+                .Where(row => row.UserId == owner.UserId)
+                .Select(row => labels.TryGetValue(row.Id, out string? label) ? label : $"unlabelled {row.Id}")
+                .Order(StringComparer.Ordinal));
+        await Assert.That(held).IsEqualTo("another device, signed in again");
+    }
+
     [Test]
     public async Task Assertion_ForACredentialThatWasNeverRegistered_Returns401AndEstablishesNoSession()
     {
@@ -1891,6 +1965,19 @@ public sealed class PasskeyCeremonyTests
             host.AppConnectionString,
             adminConnectionString: host.ConnectionString,
             usesApplicationAuthentication: true);
+
+    /// <summary>
+    /// Signs out the session <paramref name="cookie" /> names, through the real route. The cookie rides
+    /// as a header because a cookie container will not send a <c>Secure</c>, <c>__Host-</c> cookie over
+    /// the test server's <c>http</c>.
+    /// </summary>
+    private static Task<HttpResponseMessage> SignOutAsync(HttpClient client, string cookie)
+    {
+        HttpRequestMessage request = new(HttpMethod.Post, "/api/me/session/revocation");
+        request.Headers.Add("Cookie", $"{SessionCookieAuthenticationTests.CookieName}={cookie}");
+
+        return client.SendAsync(request);
+    }
 
     private static async Task<RepositoryTestHost> StartRepositoryHostAsync()
     {

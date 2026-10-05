@@ -83,9 +83,11 @@ public sealed class EmailChangeRepository(BudgetoidDbContext dbContext) : IEmail
         }
 
         // Remove attaches a detached instance and marks it Deleted, which is the case the handler produces:
-        // it discards tracked entities after its session sweep, so the credential it decided on arrives
-        // here with no entry. Nothing it depends on may be tracked by then — an EF cascade into tracked
-        // sessions would emit a DELETE FROM sessions, which the app role holds no grant for.
+        // it discards tracked entities after its session revocation, so the credential it decided on
+        // arrives here with no entry. Nothing it depends on should be tracked by then — an EF cascade into
+        // tracked sessions would emit its own DELETE FROM sessions, which the ended-session sweep's grant
+        // now lets succeed, and into a tracked handle a DELETE FROM session_tokens, which the app role
+        // holds no grant for.
         if (change.Retired is not null)
         {
             dbContext.Credentials.Remove(change.Retired);

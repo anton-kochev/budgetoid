@@ -296,8 +296,13 @@ response body is a value in a log.
   it would sign the person out of the browser in their hand.
   - **A second `DiscardTrackedEntities()` sits between the sweep and the save.** The sweep loads the
     retired credential's sessions into the change tracker; removing the credential with them tracked
-    makes EF emit its own `DELETE FROM sessions`, on a table the role holds no `DELETE` on, and the
-    request dies with `42501`. The answer is the discard, never a grant.
+    makes EF emit its own `DELETE FROM sessions`. The role holds `DELETE` there for the
+    ended-session sweep — a different act from this rule's sweep, which revokes; see
+    [sessions.md](sessions.md#must-not) — so that statement succeeds and removes the rows the
+    database's cascade would have taken, and nothing raises. The discard stays, because the save
+    past it is written to an empty tracker, and because a `SessionToken` tracked under one of those
+    sessions would still make EF delete it on `session_tokens`, which holds no `DELETE`, and the
+    request would die with `42501`. The answer to that is the discard, never a grant.
 - **Enforced in**: `ChangeEmailHandler`, through `RevokeSessionsForCredentialHandler`.
   `HandleAsync_WithANewSubject_RevokesTheRetiredCredentialsSessionsBeforeApplying` compares the call
   order and names the swept credential. `HandleAsync_WithANewSubject_ReportsTheSessionsItEnded` seeds
@@ -305,11 +310,15 @@ response body is a value in a log.
   session live. `EmailChange_ReplacingTheCredential_EndsTheSessionsTheRetiredCredentialOpened_AndReportsThem`
   does it end to end and reads `GET /api/me` on the requesting session afterwards.
   - **No unit test pins the second discard** — the fakes have no change tracker, as the handler says
-    at the call. Two endpoint tests do, measured: with the discard deleted,
+    at the call. What an endpoint test could read here is a `42501` from the EF cascade into the
+    tracked sessions, and with `DELETE` granted on `sessions` that cascade raises none.
     `EmailChange_ReplacingTheCredential_EndsTheSessionsTheRetiredCredentialOpened_AndReportsThem` and
-    `EmailChange_ForALockedSession_IsRefused403_WhileAFullSessionOnTheSameAccountSucceeds` both went
-    red with `42501`, from the EF cascade into the tracked sessions. Each seeds a session on the
-    credential the change retires.
+    `EmailChange_ForALockedSession_IsRefused403_WhileAFullSessionOnTheSameAccountSucceeds` each seed
+    a session on the credential the change retires, and both stay green with the discard deleted —
+    measured: `EmailChangeEndpointTests` with `EmailChangeRepositoryTests` passed 45 of 45 and
+    `ChangeEmailHandlerTests` 17 of 17, as removing the same discard reddens no integration test on
+    passkey revocation and recovery-code regeneration. This discard is held by review and the
+    comment at the call, and by nothing that runs.
 - **Source**: `[SOURCE: user-story]`
 
 ---
@@ -1031,7 +1040,9 @@ rolls the sweep back.
 - **`sessionsEnded` counts the sessions a provider sign-in opened.** The sweep can only find
   sessions the federated credential opened, which are the locked sessions `POST /api/locked-session`
   establishes — see [sessions.md](sessions.md). The `/release` screen starts that sign-in; every
-  test here that expects a non-zero count still seeds the locked session through the database.
+  test here that expects a non-zero count still seeds the locked session through the database. The
+  count is of rows still standing: an expired locked session the ended-session sweep took, when a
+  session was later established on the account, is not in it.
 - **An erasure racing an email change answers `500`.** The account is gone either way, so no honest
   `409` exists. A change that moves the Google identity fails on `23503 FK_credentials_users_user_id`
   — the batch surfaces the `INSERT`'s foreign-key error before the `DELETE`'s row count — pinned by

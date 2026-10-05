@@ -8,6 +8,7 @@ namespace Infrastructure.Repositories;
 public sealed class SessionRepository(BudgetoidDbContext dbContext) : ISessionRepository
 {
     private const int MaxRevocationAttempts = 3;
+    private const int MaxSweepAttempts = 3;
 
     /// <inheritdoc />
     public async Task AddAsync(
@@ -15,7 +16,9 @@ public sealed class SessionRepository(BudgetoidDbContext dbContext) : ISessionRe
         SessionToken token,
         CancellationToken cancellationToken = default)
     {
-        // ONE SaveChangesAsync FOR BOTH ROWS, and that is the whole of what this method is for. EF
+        // ONE SaveChangesAsync FOR BOTH ROWS AND THE SWEEP BELOW. The sweep's half of that is argued
+        // where it runs: a sign-in that failed to store must delete nothing, and a sweep that failed
+        // must store no sign-in. The pair's half is older. EF
         // sends the two inserts inside one transaction — its own when nothing else has opened one, the
         // ambient one when a caller has — and orders them from the foreign key, so the session is
         // written before the handle that references it whichever order they were added in. What the
@@ -31,7 +34,71 @@ public sealed class SessionRepository(BudgetoidDbContext dbContext) : ISessionRe
         dbContext.Sessions.Add(session);
         dbContext.SessionTokens.Add(token);
 
-        await dbContext.SaveChangesAsync(cancellationToken);
+        // A concurrent sign-in on the same account reads the same ended rows and can delete one
+        // between this read and the save below; a concurrent credential revocation can stamp an
+        // expired one, and revoked_at_utc is a concurrency token, so the DELETE carries
+        // "revoked_at_utc IS NULL" and matches nothing. Either way EF raises
+        // DbUpdateConcurrencyException, and the save is one transaction — EF's own, or a savepoint
+        // inside the caller's — so nothing this attempt wrote survives it, the new session included.
+        // Re-reading is what converges: a deleted row is gone from the next read, and a row revoked
+        // under us is read back revoked and is still ended.
+        //
+        // The bound is the same one RevokeForCredentialAsync carries, for the same reason: a row can
+        // be taken from this sweep at most once, so the loop shrinks toward a set nobody else is
+        // touching, and a defect that broke that reasoning surfaces as an exception rather than a hang.
+        for (int attempt = 1; ; attempt++)
+        {
+            // The whole set and NO owner predicate. sessions is policed by user_isolation, so this read
+            // reaches only the account the caller published — which is the new session's owner, on
+            // every path that calls this. An owner filter above the policy would be a second source of
+            // tenancy able to disagree with it.
+            //
+            // Filtered in memory through Session.IsActiveAt rather than in SQL, so "ended" has one
+            // spelling — the one that decides whether a request is authenticated — and is judged at the
+            // new session's own CreatedAtUtc, the instant this establishment was decided at, rather than
+            // at a second read of a clock. The live rows ride along; they are the account's live
+            // sessions, a handful at most, because every establishment leaves only those behind.
+            //
+            // Loaded and removed, because ExecuteDelete is banned (BannedSymbols.txt). The handles leave
+            // by the database's ON DELETE CASCADE from sessions, which runs as the table owner — the
+            // role holds no DELETE on session_tokens, so a SessionToken tracked in this context under a
+            // removed session would make EF send its own DELETE and die with 42501. That is why
+            // SessionTokenRepository.FindByTokenHashAsync reads untracked.
+            List<Session> accountSessions = await dbContext.Sessions.ToListAsync(cancellationToken);
+            foreach (Session ended in accountSessions.Where(
+                         candidate => !candidate.IsActiveAt(session.CreatedAtUtc)))
+            {
+                dbContext.Sessions.Remove(ended);
+            }
+
+            try
+            {
+                await dbContext.SaveChangesAsync(cancellationToken);
+
+                return;
+            }
+            // Narrowed by the entries, the shape RevokeAsync uses: SaveChangesAsync flushes everything
+            // the scoped context is tracking, so a stranger's entity conflicting on the same save must
+            // propagate rather than be retried as a raced sweep. The count test stops an exception EF
+            // could not attribute to any entry from satisfying the predicate vacuously.
+            catch (DbUpdateConcurrencyException exception) when (
+                attempt < MaxSweepAttempts
+                && exception.Entries.Count > 0
+                && exception.Entries.All(entry =>
+                    entry.Entity is Session && entry.State == EntityState.Deleted))
+            {
+                // Every removal this attempt queued, not only the one EF reported: they hold values read
+                // before the race, and EF's identity map would hand those same instances back to the read
+                // above rather than the rows as they now stand. The new session and its handle stay
+                // Added — only Deleted entries are touched — so the next attempt writes them again.
+                foreach (EntityEntry<Session> entry in dbContext.ChangeTracker.Entries<Session>()
+                             .Where(entry => entry.State == EntityState.Deleted)
+                             .ToList())
+                {
+                    entry.State = EntityState.Detached;
+                }
+            }
+        }
     }
 
     /// <inheritdoc />
@@ -46,16 +113,17 @@ public sealed class SessionRepository(BudgetoidDbContext dbContext) : ISessionRe
         // SingleOrDefault rather than FirstOrDefault: id is the primary key, so a second row is a
         // database that has lost that rule rather than a case to choose between.
         //
-        // AsNoTracking, which is the exception in this folder and is the point rather than a habit
+        // AsNoTracking, which is the exception in this repository and is the point rather than a habit
         // borrowed from the read services. This read runs on EVERY authenticated request, before the
         // handler the request was made for has started, and it writes nothing. Tracked, the entity
         // would sit in the change tracker for the rest of the request and join whatever that request
-        // then saves — and the shape that costs is documented twice already: EF cascades into session
-        // rows it happens to be holding when a credential is removed, on a table granted no DELETE, so
-        // the request dies with 42501 naming a permission while the cause is the change tracker. Every
-        // path that removes a credential or an account clears the tracker immediately before the
-        // delete, so nothing is broken today; leaving this untracked is what keeps the next one from
-        // having to remember.
+        // then saves. EF cascades into session rows it happens to be holding when a credential is
+        // removed and sends its own DELETE FROM sessions — which no longer fails, because the role holds
+        // DELETE there for the ended-session sweep, so the mistake is now silent: the row leaves by the
+        // application rather than by the database's cascade, and nothing says so. Every path that
+        // removes a credential or an account clears the tracker immediately before the delete, so
+        // nothing depends on this today; leaving this untracked is what keeps the next one from having
+        // to remember.
         return dbContext.Sessions
             .AsNoTracking()
             .SingleOrDefaultAsync(session => session.Id == sessionId, cancellationToken);

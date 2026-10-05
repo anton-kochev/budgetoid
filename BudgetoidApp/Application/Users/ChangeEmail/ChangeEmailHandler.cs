@@ -157,14 +157,15 @@ public sealed class ChangeEmailHandler(
                         new RevokeSessionsForCredentialCommand(change.Retired.Id),
                         token);
 
-                    // A second discard, and no unit test pins it: the fakes have no change tracker. The
-                    // sweep loaded every unrevoked Session of the retired credential into the tracker.
-                    // Remove the Credential with those dependents still tracked and EF cascades into the
-                    // copies it can see, emitting its own DELETE FROM sessions — on a table the app role
-                    // holds no DELETE on, so the request dies with 42501 having changed nothing. Those
-                    // rows are meant to leave by the database's own cascade from credentials, which runs
-                    // with the table owner's privileges. RevokePasskeyHandler states the same mechanism;
-                    // do not answer the 42501 with a grant on sessions.
+                    // A second discard, and no test pins it. The revocation loaded every unrevoked
+                    // Session of the retired credential into the tracker. Remove the Credential with
+                    // those dependents still tracked and EF cascades into the copies it can see, emitting
+                    // its own DELETE FROM sessions — which succeeds now that the role holds DELETE there
+                    // for the ended-session sweep, and takes the rows the database's cascade from
+                    // credentials would have. Measured: without this line both email-change integration
+                    // classes stay green, and the unit fakes have no change tracker to notice. It stays
+                    // because a tracked dependent the role cannot delete still dies with 42501 —
+                    // session_tokens among them. RevokePasskeyHandler states the same mechanism.
                     persistenceState.DiscardTrackedEntities();
                 }
 

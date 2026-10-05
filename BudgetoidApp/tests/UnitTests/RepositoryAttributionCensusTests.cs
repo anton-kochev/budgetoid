@@ -623,10 +623,12 @@ public sealed class RepositoryAttributionCensusTests
             nameof(SessionRepository),
             "SessionRepositoryTests",
             "nothing to attribute: the only repository in the folder that filters on no constraint "
-            + "name, because its only catch is a bounded DbUpdateConcurrencyException retry, which "
-            + "carries no constraint name and no SQLSTATE for a filter to mis-read. "
-            + "RevokeForCredentialAsync_RunTwice_KeepsTheFirstRevocationInstant pins the retry's "
-            + "outcome"),
+            + "name, because its catches are DbUpdateConcurrencyException handlers, which carry no "
+            + "constraint name and no SQLSTATE for a filter to mis-read. "
+            + "RevokeForCredentialAsync_RunTwice_KeepsTheFirstRevocationInstant pins the revocation "
+            + "retry's outcome, and AddAsync_WhenAnotherSignInDeletedTheEndedRowFirst_StillEstablishes "
+            + "and AddAsync_WhenAnExpiredRowIsRevokedConcurrently_StillDeletesIt pin the ended-session "
+            + "sweep's"),
         new(
             nameof(SessionTokenRepository),
             "SessionRepositoryTests",

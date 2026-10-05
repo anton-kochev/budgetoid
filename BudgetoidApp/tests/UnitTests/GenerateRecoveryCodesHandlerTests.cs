@@ -1019,9 +1019,9 @@ public sealed class GenerateRecoveryCodesHandlerTests
     /// queued for insert by an abandoned attempt are the tracker's, not the database's, so without it the
     /// surviving attempt commits two credentials and twenty codes against an index that permits one set.
     /// The second sits between the sweep and the delete, and what it buys can only be measured against a
-    /// real database:
-    /// <c>RecoveryCodeGenerationTests.Generation_WhenTheReplacedSetHasLiveSessions_DoesNotFailOnAMissingSessionDeleteGrant</c>
-    /// is where that lives. What is measurable here is the <em>placement</em>: one hoisted above the
+    /// real database — see the remarks on
+    /// <c>RecoveryCodeGenerationTests.Generation_WhenTheReplacedSetHasLiveSessions_ReportsThemEndedAndAnswers200</c>,
+    /// which say what still reddens without it now that <c>sessions</c> holds a <c>DELETE</c> grant. What is measurable here is the <em>placement</em>: one hoisted above the
     /// executor would run once, on attempt zero, and would be undone by nothing — the rollback it exists
     /// to clean up after happens later. The attempt number each discard lands on is what tells the two
     /// placements apart; a plain call count cannot.

@@ -190,12 +190,13 @@ public sealed class CredentialRevocationTests
     /// reddens alongside the test named below rather than instead of it.
     /// </para>
     /// <para>
-    /// <b>The <c>42501</c> mechanism is guarded by
-    /// <see cref="Revocation_WhenTheCredentialHasLiveSessions_DoesNotFailOnAMissingSessionDeleteGrant" />,</b>
-    /// which was confirmed to redden under removal of the second discard and is the test to read — and
-    /// to keep — if that is the failure being looked for. Do not answer such a 500 with a grant: the
-    /// SQLSTATE names a privilege, the cause is the change tracker, and <c>EraseAccountHandler</c>
-    /// documents the identical mechanism for <c>budgets</c>.
+    /// <b>The <c>42501</c> mechanism on <c>sessions</c> is no longer guarded by any test.</b>
+    /// <see cref="Revocation_WhenTheCredentialHasLiveSessions_ReportsThemEndedAndAnswers200" /> used to
+    /// redden under removal of the second discard; the ended-session sweep granted <c>DELETE</c> on
+    /// <c>sessions</c>, so EF's own delete of a tracked session now succeeds — see that test's remarks.
+    /// Do not answer a 500 on this path with a grant: the SQLSTATE names a privilege, the cause is the
+    /// change tracker, and <c>EraseAccountHandler</c> documents the identical mechanism for
+    /// <c>budgets</c>.
     /// </para>
     /// </remarks>
     [Test]
@@ -832,37 +833,34 @@ public sealed class CredentialRevocationTests
     }
 
     /// <summary>
-    /// A passkey holding a live session is revoked, and the request answers <b>200 and not 500</b>.
+    /// A passkey holding a live session is revoked: the request answers <b>200 and not 500</b>, and
+    /// reports the session ended.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// <b>Named as an outcome on purpose, because the failure names a permission and the cause is the
-    /// change tracker.</b> Revoking loads every unrevoked <c>Session</c> of the credential into EF's
-    /// change tracker. Remove the <c>Credential</c> with those dependents still tracked and EF
-    /// cascades into the copies it can see and emits its own <c>DELETE FROM sessions</c> — on a table
-    /// granted <c>SELECT, INSERT, UPDATE (revoked_at_utc)</c> and deliberately <b>no</b>
-    /// <c>DELETE</c> — so the request dies with <c>42501</c> and a 500 before it removes anything.
+    /// <b>This pins the outcome, and it no longer pins the second discard.</b> Revoking loads every
+    /// unrevoked <c>Session</c> of the credential into EF's change tracker, and removing the
+    /// <c>Credential</c> with those still tracked makes EF send its own <c>DELETE FROM sessions</c>. While
+    /// the role held no <c>DELETE</c> on <c>sessions</c> that statement died with <c>42501</c>, and this
+    /// test was the one that reddened when the second <c>DiscardTrackedEntities()</c> went. The
+    /// ended-session sweep needs that grant, so EF's delete of a tracked session now succeeds and the
+    /// same mistake is silent here. The rows end up gone either way — by EF or by the
+    /// <c>ON DELETE CASCADE</c> from <c>credentials</c>.
     /// </para>
     /// <para>
-    /// <b>Do not answer that 500 with a grant on <c>sessions</c>.</b> The absent <c>DELETE</c> is
-    /// argued for in <c>docs/business-logic/sessions.md</c> and pinned by
-    /// <c>AppRoleGrantsTests.Database_RefusesToDeleteASession</c>; the session rows are meant to leave
-    /// by the database's own <c>ON DELETE CASCADE</c> from <c>credentials</c>, which runs with the
-    /// referencing table owner's privileges rather than this role's. The fix is a second
-    /// <c>DiscardTrackedEntities()</c> between the revocation and the delete.
-    /// <c>EraseAccountHandler</c> documents the identical mechanism for <c>budgets</c>, and
-    /// <see cref="Revocation_OfTheCredentialThatProvedIt_Succeeds" /> is the same shape of test for
-    /// the tracked public key and signature counter.
+    /// <b>The trap is still live one table down.</b> A tracked <c>SessionToken</c> under a removed
+    /// session is deleted by EF too, and <c>session_tokens</c> still holds no <c>DELETE</c>, so that
+    /// shape still answers 500 with <c>42501</c>. Do not answer it with a grant: the SQLSTATE names a
+    /// privilege and the cause is the tracker. <see cref="Revocation_OfTheCredentialThatProvedIt_Succeeds" />
+    /// is the same shape of test for the tracked public key and signature counter.
     /// </para>
     /// <para>
     /// The proving passkey is the <b>other</b> one deliberately, so the only dependents in the
-    /// tracker when the delete runs are the sessions this test arranged. Proving with the revoked
-    /// passkey would drag its key and counter in as well and the 500 would no longer say which
-    /// tracked collection caused it.
+    /// tracker when the delete runs are the sessions this test arranged.
     /// </para>
     /// </remarks>
     [Test]
-    public async Task Revocation_WhenTheCredentialHasLiveSessions_DoesNotFailOnAMissingSessionDeleteGrant()
+    public async Task Revocation_WhenTheCredentialHasLiveSessions_ReportsThemEndedAndAnswers200()
     {
         // Arrange
         await using PostgresTestHost host = await StartSignedInHostAsync();
@@ -888,6 +886,10 @@ public sealed class CredentialRevocationTests
         // and a bare equality check would report it as "not OK".
         await Assert.That(response.StatusCode).IsNotEqualTo(HttpStatusCode.InternalServerError);
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
+
+        // And the session really was ended by this request, which is the half the name promises.
+        JsonObject body = await ReadJsonObjectAsync(response);
+        await Assert.That(body[SessionsEndedMember]!.GetValue<int>()).IsEqualTo(1);
     }
 
     /// <summary>

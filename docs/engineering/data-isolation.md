@@ -143,7 +143,7 @@ Enforced today:
   | `recovery_code_hashes` | `INSERT` at generation, and again at account registration | the credential it hangs off, written in the same save |
   | `session_tokens` | `FindByTokenHashAsync`, the discovery lookup every authenticated request makes | **nothing, deliberately** — it runs before there is an identity to key a filter on, and the account it answers is the one the request then adopts. This is the table's *one* permitted unscoped query, and there is currently no other read of it to compare against, which is precisely when a rule is easiest to lose |
   | `session_tokens` | `INSERT` when a session is established, on all five establishing paths | the session it hangs off, written in the same save — `ISessionRepository.AddAsync` takes both rows and has no overload taking a session alone, and `IRegistrationRepository.RegisterAsync`, the second and only other writer, takes a `Registration` carrying both as required members, so a handle-less session is unwritable on either. The composite foreign key `(session_id, user_id) → sessions(id, user_id)` means a row whose owner disagreed with its session's is unstorable, so this one is scoped by the schema as well as by the caller |
-  | `session_tokens` | **no `DELETE` and no `UPDATE`, of any shape** | not applicable, and the absence is the point: rows leave by the cascade from `sessions`, which runs as the table owner. Without the grant, an EF change-tracker cascade into tracked copies dies loudly with `42501` instead of succeeding silently |
+  | `session_tokens` | **no `DELETE` and no `UPDATE`, of any shape** | not applicable, and the absence is the point: rows leave by the cascade from `sessions` — whether a credential or account delete or the ended-session sweep removed the session — which runs as the table owner. Without the grant, an EF change-tracker cascade into tracked copies dies loudly with `42501` instead of succeeding silently, which is why `FindByTokenHashAsync` reads untracked: the sweep removes sessions on requests that have already read a handle ([sessions.md](../business-logic/sessions.md#must-not)) |
   | `webauthn_challenges` | issue, consume, sweep | **nothing, and there is nothing to scope by** — the row names no person |
 
   Where a row names a test, that test is what would notice the access losing its filter — no layer
@@ -179,7 +179,7 @@ Enforced today:
   both have to stay true: `credentials.user_id` is immutable, so the binding between an id and its
   owner cannot move between the read that scoped it and the write that used it; and the read and the
   write share one transaction — on the email change, the one `ITransactionalExecutor` delegate that
-  also carries the session sweep. The delete takes the loaded **entity**, never an id — which is
+  also carries the revocation of the retired credential's sessions. The delete takes the loaded **entity**, never an id — which is
   worth
   something only because no source of a `Credential` accepts a caller-chosen id: every public factory
   mints its own, and every query that materializes an existing row carries the owner and the type.
@@ -192,11 +192,12 @@ Enforced today:
   with the referencing table owner's privileges rather than this role's. Two consequences follow and
   both matter.
   First, a reader looking for a second caller will not find one and should not add one.
-  Second — and this is the sharpest hazard on this page — **an EF cascade into tracked
-  `RecoveryCodeHash` copies would silently succeed here.** On `sessions` the identical change-tracker
-  mistake dies loudly with `42501`, because that table deliberately holds no `DELETE`; on this one the
-  rows would simply leave by the application instead of by the database, the request would answer
-  `200`, and **no SQLSTATE would say so**. So the generation path must never materialise the previous
+  Second — and this is a hazard nothing below the application can see — **an EF cascade into tracked
+  `RecoveryCodeHash` copies would silently succeed here.** The rows would simply leave by the
+  application instead of by the database, the request would answer `200`, and **no SQLSTATE would
+  say so**. `sessions` is the same, because it holds `DELETE` for the ended-session sweep;
+  `session_tokens`, which deliberately holds none, answers the same mistake with `42501`
+  ([sessions.md](../business-logic/sessions.md#must-not)). So the generation path must never materialise the previous
   set's rows, and nothing below the application can notice if it starts to. See
   [recovery-codes.md](../business-logic/recovery-codes.md) and
   [ADR 0017](../decisions/0017-consume-a-recovery-code-by-deleting-its-row.md).

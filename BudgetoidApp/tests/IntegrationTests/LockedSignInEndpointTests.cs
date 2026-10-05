@@ -345,6 +345,96 @@ public sealed class LockedSignInEndpointTests
     }
 
     /// <summary>
+    /// A locked sign-in over the account's own ended session deletes that session and its handle.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The path where the cookie's own session is the one swept.</b> This route reads the presented
+    /// cookie — that is how it tells a full session from an ended one — and never clears the change
+    /// tracker before it establishes. So the handle it looked up is still in the context when the sweep
+    /// removes the ended session. Tracked, EF deletes that handle itself, on a table the role holds no
+    /// <c>DELETE</c> on, and the sign-in answers 500 with <c>42501</c>. Untracked, the database cascade
+    /// takes it. <c>SessionRepositoryTests.FindByTokenHashAsync_ReturnsAnUntrackedEntity</c> pins the
+    /// cause; this pins what a person sees.
+    /// </para>
+    /// <para>
+    /// Today the sign-in succeeds and both rows stay, so this fails on the counts.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task LockedSignIn_OverItsOwnAccountsEndedSession_DeletesThatSessionAndItsHandle()
+    {
+        // Arrange — a full session, ended through the real sign-out route.
+        using RSA rsa = RSA.Create(2048);
+        RsaSecurityKey signingKey = new(rsa) { KeyId = "locked-sign-in" };
+        await using PostgresTestHost host = await StartHostAsync();
+        await using ApiFactory factory = CreateRealBearerFactory(host, signingKey);
+        ApiFactory.SignedInClient account = await factory.CreateSignedInClientAsync(Subject, Email);
+        string endedCookie = CookieValueOf(account.Client);
+        Guid endedSessionId = await SessionIdOfAsync(host, endedCookie);
+        HttpResponseMessage revocation = await account.Client.PostAsync(RevocationPath, content: null);
+        await Assert.That(revocation.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
+
+        // Act — on the same client, so the ended session's cookie rides along.
+        HttpResponseMessage response = await PostLockedSessionAsync(
+            account.Client, ProviderToken(signingKey, Claims(Subject, Email)));
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
+        await Assert.That(await CountSessionsAsync(host, endedSessionId)).IsEqualTo(0L);
+        await Assert.That(await CountHandlesAsync(host, endedCookie)).IsEqualTo(0L);
+    }
+
+    /// <summary>
+    /// A signed-out session stays on record, and its cookie still reads as ended, until the account's
+    /// next sign-in deletes it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Revocation is still observable — until the next sign-in, and no longer.</b> Signing out stamps
+    /// the row rather than deleting it, so a second sign-out with the same cookie is the 204 an ended
+    /// session gets. The next sign-in anywhere on the account deletes the row and its handle, and from
+    /// then on the old cookie names nothing: the sign-out route answers it 401, as it does after an
+    /// erasure.
+    /// </para>
+    /// <para>
+    /// <b>The sign-in happens on another client</b>, carrying no cookie, so nothing but the sweep can
+    /// reach the old session. Today the row survives the sign-in and the last sign-out still answers 204.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task SignedOutSession_StaysObservableUntilTheNextSignIn()
+    {
+        // Arrange
+        using RSA rsa = RSA.Create(2048);
+        RsaSecurityKey signingKey = new(rsa) { KeyId = "locked-sign-in" };
+        await using PostgresTestHost host = await StartHostAsync();
+        await using ApiFactory factory = CreateRealBearerFactory(host, signingKey);
+        ApiFactory.SignedInClient account = await factory.CreateSignedInClientAsync(Subject, Email);
+        string oldCookie = CookieValueOf(account.Client);
+        Guid oldSessionId = await SessionIdOfAsync(host, oldCookie);
+
+        // Act — sign out, and sign out again with the same cookie.
+        HttpResponseMessage signOut = await account.Client.PostAsync(RevocationPath, content: null);
+        HttpResponseMessage secondSignOut = await account.Client.PostAsync(RevocationPath, content: null);
+
+        // Assert — the row is still there, revoked, and the cookie still reads as an ended session.
+        await Assert.That(signOut.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
+        await Assert.That(secondSignOut.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
+        await Assert.That(await CountSessionsAsync(host, oldSessionId)).IsEqualTo(1L);
+
+        // Act — the next sign-in, on another client.
+        HttpResponseMessage signIn = await PostLockedSessionAsync(
+            factory.CreateClient(), ProviderToken(signingKey, Claims(Subject, Email)));
+        HttpResponseMessage lateSignOut = await account.Client.PostAsync(RevocationPath, content: null);
+
+        // Assert — the old session is gone, so its cookie names nothing at all.
+        await Assert.That(signIn.StatusCode).IsEqualTo(HttpStatusCode.OK);
+        await Assert.That(lateSignOut.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
+        await Assert.That(await CountSessionsAsync(host, oldSessionId)).IsEqualTo(0L);
+    }
+
+    /// <summary>
     /// Over a live full session, a token whose address the provider does not vouch for is the claim
     /// gate's 401, not the conflict.
     /// </summary>
@@ -915,6 +1005,49 @@ public sealed class LockedSignInEndpointTests
         return await reader.ReadAsync()
             ? throw new InvalidOperationException("The cookie this response set matches more than one session.")
             : stored;
+    }
+
+    /// <summary>The id of the session a cookie opens, read through its handle on the admin connection.</summary>
+    private static async Task<Guid> SessionIdOfAsync(PostgresTestHost host, string cookie)
+    {
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        await using NpgsqlCommand command = new(
+            "select session_id from session_tokens where token_hash = @digest", admin);
+        command.Parameters.AddWithValue("digest", SessionToken.HashOf(Base64UrlText.Decode(cookie)));
+
+        return await command.ExecuteScalarAsync() switch
+        {
+            Guid sessionId => sessionId,
+            var unexpected => throw new InvalidOperationException(
+                $"Expected the cookie's session id, got '{unexpected ?? "null"}'."),
+        };
+    }
+
+    /// <summary>How many <c>sessions</c> rows carry this id, on the admin connection.</summary>
+    private static Task<long> CountSessionsAsync(PostgresTestHost host, Guid sessionId) =>
+        CountWhereAsync(host, "select count(*) from sessions where id = @value", sessionId);
+
+    /// <summary>How many <c>session_tokens</c> rows a cookie's digest matches, on the admin connection.</summary>
+    private static Task<long> CountHandlesAsync(PostgresTestHost host, string cookie) =>
+        CountWhereAsync(
+            host,
+            "select count(*) from session_tokens where token_hash = @value",
+            SessionToken.HashOf(Base64UrlText.Decode(cookie)));
+
+    private static async Task<long> CountWhereAsync(PostgresTestHost host, string sql, object value)
+    {
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        await using NpgsqlCommand command = new(sql, admin);
+        command.Parameters.AddWithValue("value", value);
+
+        return await command.ExecuteScalarAsync() switch
+        {
+            long count => count,
+            var unexpected => throw new InvalidOperationException(
+                $"Expected a count from '{sql}', got '{unexpected ?? "null"}'."),
+        };
     }
 
     private static async Task<RowCounts> RowCountsAsync(PostgresTestHost host)

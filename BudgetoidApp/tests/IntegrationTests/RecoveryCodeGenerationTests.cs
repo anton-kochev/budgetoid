@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text.Json.Nodes;
 using Api.Infrastructure;
 using Application.Passkeys;
+using Domain.Sessions;
 using Domain.Users;
 using Npgsql;
 using TestSupport;
@@ -1217,27 +1218,25 @@ public sealed class RecoveryCodeGenerationTests
     }
 
     /// <summary>
-    /// A set holding a live session is replaced, and the request answers <b>200 and not 500</b>.
+    /// A set holding a live session is replaced: the request answers <b>200 and not 500</b>, and reports
+    /// the session ended.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// <b>Named as an outcome on purpose, because the failure names a permission and the cause is the
-    /// change tracker.</b> Replacing a set ends the sessions it opened, which loads every unrevoked
-    /// <c>Session</c> of its credential into EF's change tracker. Remove the <c>Credential</c> with those
-    /// dependents still tracked and EF cascades into the copies it can see and emits its own
-    /// <c>DELETE FROM sessions</c> — on a table granted <c>SELECT, INSERT, UPDATE (revoked_at_utc)</c>
-    /// and deliberately <b>no</b> <c>DELETE</c> — so the request dies with <c>42501</c> and a 500 before
-    /// it removes anything. The fix is a second <c>DiscardTrackedEntities()</c> between the sweep and the
-    /// delete, and no unit test can prove it: the fakes have no grants.
+    /// <b>This pins the outcome, and it no longer pins the second discard.</b> Replacing a set ends the
+    /// sessions it opened, which loads every unrevoked <c>Session</c> of its credential into EF's change
+    /// tracker, and removing the <c>Credential</c> with those still tracked makes EF send its own
+    /// <c>DELETE FROM sessions</c>. While the role held no <c>DELETE</c> on <c>sessions</c> that died with
+    /// <c>42501</c>, and this test reddened when the second <c>DiscardTrackedEntities()</c> went. The
+    /// ended-session sweep needs that grant, so the same mistake is silent here now: the rows leave by
+    /// EF instead of by the <c>ON DELETE CASCADE</c> from <c>credentials</c>, and the outcome is the same.
     /// </para>
     /// <para>
-    /// <b>Do not answer that 500 with a grant on <c>sessions</c>.</b> The SQLSTATE names a privilege and
-    /// the cause is the tracker; the absent <c>DELETE</c> is what keeps a session accountable, and
-    /// <c>AppRoleGrantsTests.Database_RefusesToDeleteASession</c> pins it. The session rows are meant to
-    /// leave by the database's own <c>ON DELETE CASCADE</c> from <c>credentials</c>, which runs with the
-    /// referencing table owner's privileges rather than this role's. This is the twin of
-    /// <see cref="CredentialRevocationTests.Revocation_WhenTheCredentialHasLiveSessions_DoesNotFailOnAMissingSessionDeleteGrant" />,
-    /// which was confirmed to redden under removal of that discard on its own path.
+    /// <b>The trap is still live one table down.</b> A tracked <c>SessionToken</c> under a removed session
+    /// is deleted by EF as well, and <c>session_tokens</c> holds no <c>DELETE</c>, so that shape still
+    /// answers 500 with <c>42501</c>. Do not answer it with a grant: the SQLSTATE names a privilege and
+    /// the cause is the tracker. This is the twin of
+    /// <see cref="CredentialRevocationTests.Revocation_WhenTheCredentialHasLiveSessions_ReportsThemEndedAndAnswers200" />.
     /// </para>
     /// <para>
     /// <b>The session is written out of band, and that is a departure this test owes an argument for.</b>
@@ -1256,7 +1255,7 @@ public sealed class RecoveryCodeGenerationTests
     /// </para>
     /// </remarks>
     [Test]
-    public async Task Generation_WhenTheReplacedSetHasLiveSessions_DoesNotFailOnAMissingSessionDeleteGrant()
+    public async Task Generation_WhenTheReplacedSetHasLiveSessions_ReportsThemEndedAndAnswers200()
     {
         // Arrange — a real first set, then one live session hanging off it.
         await using PostgresTestHost host = await StartHostAsync();
@@ -1315,7 +1314,7 @@ public sealed class RecoveryCodeGenerationTests
     /// </para>
     /// <para>
     /// <b>The session under the replaced set is written out of band</b>, for the reason
-    /// <see cref="Generation_WhenTheReplacedSetHasLiveSessions_DoesNotFailOnAMissingSessionDeleteGrant" />
+    /// <see cref="Generation_WhenTheReplacedSetHasLiveSessions_ReportsThemEndedAndAnswers200" />
     /// gives: a session on a recovery-code credential is written by redeeming a code, and driving a
     /// redemption here would make this test depend on that whole path to arrange one row. Delete the
     /// arrangement the day driving it costs less than explaining it.
@@ -1427,6 +1426,97 @@ public sealed class RecoveryCodeGenerationTests
         await Assert.That(body[SessionMember] is null).IsTrue();
 
         await Assert.That((await SessionsOpenedSinceAsync(admin, before)).Count).IsEqualTo(0);
+    }
+
+    /// <summary>
+    /// A generation that signs the person back in deletes the account's other ended sessions too.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Re-establishing is establishing, so it runs the sweep.</b> The replaced set's own session leaves
+    /// with its credential's cascade whatever the sweep does; what only the sweep reaches is an ended
+    /// session on another credential. Two of those sit on the federated credential — one revoked, one
+    /// expired and never revoked, because the sweep this route already runs reads only
+    /// <c>revoked_at_utc</c> and says nothing about expiry. They are written out of band because no
+    /// route ages a session.
+    /// </para>
+    /// <para>
+    /// The live session the arrangement signed in with is the control: a sweep that took every row but
+    /// the new one would pass the first half and sign out the device making the request.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Generation_ThatReestablishes_DeletesTheAccountsOtherEndedSessions()
+    {
+        // Arrange — a real first set carrying one live session, and two ended federated sessions.
+        await using PostgresTestHost host = await StartHostAsync();
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
+        SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        await RegisterPasskeyAsync(client, device);
+        await Assert.That((await GenerateAsync(client, device, userId)).StatusCode).IsEqualTo(HttpStatusCode.OK);
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        SessionRow[] caller = await LiveSessionsAsync(admin, userId);
+        await Assert.That(caller.Length).IsEqualTo(1);
+        await InsertRecoveryCodeSessionAsync(admin, userId, await ResolveSetCredentialIdAsync(admin, userId));
+        Guid federatedId = await SeedEndedFederatedSessionsAsync(host, userId);
+
+        // Act
+        HttpResponseMessage response = await GenerateAsync(client, device, userId);
+
+        // Assert — it did sign back in, the ended rows went, and the caller's own session stayed.
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
+        JsonObject body = await ReadJsonObjectAsync(response);
+        await Assert.That(body[SessionMember] is null).IsFalse();
+        await Assert.That(await CountSessionsOfCredentialAsync(admin, federatedId)).IsEqualTo(0L);
+        await Assert.That((await LiveSessionsAsync(admin, userId)).Any(row => row.Id == caller[0].Id)).IsTrue();
+    }
+
+    /// <summary>
+    /// A generation that establishes no session deletes no ended session.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Establishing a session is what triggers the sweep, not this route.</b> A first issue ends
+    /// nothing and establishes nothing, so nothing is swept: a sweep placed in the handler, or run on
+    /// every generation, would delete these rows here.
+    /// </para>
+    /// <para>
+    /// <b>The second act is the control, and it is what makes this red today.</b> Alone, the first half
+    /// passes for a product that never deletes anything. A later generation that does sign back in has
+    /// to take the same two rows, which shows they were the sweep's to take.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Generation_ThatEstablishesNoSession_DeletesNothing()
+    {
+        // Arrange — two ended federated sessions on an account with no set yet.
+        await using PostgresTestHost host = await StartHostAsync();
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
+        SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        await RegisterPasskeyAsync(client, device);
+        Guid federatedId = await SeedEndedFederatedSessionsAsync(host, userId);
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+
+        // Act — a first issue, which establishes no session.
+        HttpResponseMessage first = await GenerateAsync(client, device, userId);
+
+        // Assert
+        await Assert.That(first.StatusCode).IsEqualTo(HttpStatusCode.OK);
+        JsonObject body = await ReadJsonObjectAsync(first);
+        await Assert.That(body[SessionMember] is null).IsTrue();
+        await Assert.That(await CountSessionsOfCredentialAsync(admin, federatedId)).IsEqualTo(2L);
+
+        // Act — the control: a replacement that does establish one.
+        await InsertRecoveryCodeSessionAsync(admin, userId, await ResolveSetCredentialIdAsync(admin, userId));
+        HttpResponseMessage second = await GenerateAsync(client, device, userId);
+
+        // Assert
+        await Assert.That(second.StatusCode).IsEqualTo(HttpStatusCode.OK);
+        await Assert.That(await CountSessionsOfCredentialAsync(admin, federatedId)).IsEqualTo(0L);
     }
 
     /// <summary>
@@ -2396,7 +2486,7 @@ public sealed class RecoveryCodeGenerationTests
     /// </summary>
     /// <remarks>
     /// Out of band because there is no product path to a recovery-code session today — see the remarks on
-    /// <see cref="Generation_WhenTheReplacedSetHasLiveSessions_DoesNotFailOnAMissingSessionDeleteGrant" />,
+    /// <see cref="Generation_WhenTheReplacedSetHasLiveSessions_ReportsThemEndedAndAnswers200" />,
     /// which is the only caller. The three copied columns must agree with the credential's own, or the
     /// composite foreign key to <c>credentials(id, user_id, type)</c> refuses the row — which is exactly
     /// what makes this arrangement honest rather than a fabricated shape.
@@ -2842,6 +2932,47 @@ public sealed class RecoveryCodeGenerationTests
         command.Parameters.AddWithValue("credentialId", credentialId);
 
         return await ReadCountAsync(command);
+    }
+
+    /// <summary>How many sessions a credential opened, ended or not, on the superuser connection.</summary>
+    private static async Task<long> CountSessionsOfCredentialAsync(NpgsqlConnection admin, Guid credentialId)
+    {
+        await using NpgsqlCommand command = new(
+            "select count(*) from sessions where credential_id = @credentialId", admin);
+        command.Parameters.AddWithValue("credentialId", credentialId);
+
+        return await ReadCountAsync(command);
+    }
+
+    /// <summary>
+    /// Writes two ended sessions on the account's federated credential — one revoked, one expired and
+    /// never revoked — each with its handle, and returns the credential's id.
+    /// </summary>
+    /// <remarks>
+    /// Out of band, through <c>Session.Establish</c> on the superuser connection, because no route ages
+    /// a session and none ends a federated one in a single request.
+    /// </remarks>
+    private static async Task<Guid> SeedEndedFederatedSessionsAsync(PostgresTestHost host, Guid userId)
+    {
+        Guid federatedId = await RepositoryTestHost.FederatedCredentialIdOnAsync(host.ConnectionString, userId);
+        DateTime now = DateTime.UtcNow;
+        await RepositoryTestHost.SeedSessionOnAsync(
+            host.ConnectionString,
+            federatedId,
+            RandomNumberGenerator.GetBytes(SessionToken.TokenLength),
+            SessionKind.Locked,
+            now.AddHours(-2),
+            now.AddHours(1),
+            revokedAtUtc: now.AddMinutes(-30));
+        await RepositoryTestHost.SeedSessionOnAsync(
+            host.ConnectionString,
+            federatedId,
+            RandomNumberGenerator.GetBytes(SessionToken.TokenLength),
+            SessionKind.Locked,
+            now.AddHours(-2),
+            now.AddHours(-1));
+
+        return federatedId;
     }
 
     /// <summary>

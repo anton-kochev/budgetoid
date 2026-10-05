@@ -332,7 +332,8 @@ public sealed class PasskeyRepository(BudgetoidDbContext dbContext) : IPasskeyRe
         //
         // Remove on the one row, never on its children: passkey_public_keys,
         // passkey_signature_counters, wrapped_account_keys and sessions leave by the database's own
-        // cascade from this row, and the role holds no DELETE on any of them.
+        // cascade from this row. The role holds no DELETE on the first three; on sessions it holds one
+        // for the ended-session sweep alone, and this path does not use it.
         //
         // wrapped_account_keys is the member of that list this method now owes a manifest for — the
         // factor's share of the account keys goes with it, which is a change to the account's set of

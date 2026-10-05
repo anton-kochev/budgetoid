@@ -8,6 +8,44 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-10-05 — An account's ended sessions leave when it next signs in
+
+**Context:** revocation stamps a session row and keeps it, and the app role held no `DELETE` on
+`sessions`, so revoked and expired rows stayed until their credential or the account was deleted.
+The columns are what a first-party security record may carry; the rows, one per sign-in and kept
+after the sessions were over, were the sign-in history the behavioural-record rule refuses.
+
+**Decision:**
+- **Establishing a session deletes the account's ended sessions in the same save** — every row
+  revoked, or expired by the new session's start — and leaves every live one. Their handles leave
+  by the database's cascade. [sessions.md](sessions.md) owns the rule.
+- **Revocation stays an `UPDATE`.** A signed-out row stays until the account's next sign-in, so a
+  second sign-out on that cookie still answers `204`; after that sign-in, the cookie answers `401`
+  on every route.
+- **Registration does not sweep**: no session can exist under an account its own save creates.
+
+[ADR 0029](../decisions/0029-sweep-an-accounts-ended-sessions-when-a-session-is-established.md)
+owns the mechanism and the grant.
+
+**Alternatives considered:**
+- *Keep the rows* — rejected: they are a sign-in history.
+- *Delete at sign-out* — rejected: a second sign-out would answer `401`, nothing would say when
+  access ended, and expired rows would still pile up.
+- *A scheduled sweep* — rejected: it needs a role that reaches every account.
+- *Sweep on every request* — rejected: a write on the path no transaction may wrap.
+- *Let the database judge "ended" with a policy reading `now()`* — rejected: a second clock, and a
+  third input to isolation on `sessions`.
+
+**Consequences:** an account that never signs in again keeps its last batch of ended rows, and live
+rows still record recent sign-ins. On a recovery-code regeneration, `sessionsEnded` counts an
+expired session of the old set only if no sign-in swept it first.
+
+**Affected areas:** [sessions.md](sessions.md), [users-and-ownership.md](users-and-ownership.md),
+[recovery-codes.md](recovery-codes.md), [erasure.md](erasure.md),
+[adversarial-properties.md](../engineering/adversarial-properties.md).
+
+---
+
 ## 2026-10-04 — A passkey withdraws a schedule; the notice is shown, never mailed
 
 **Context:** a locked session could file an erasure for seven days out and nothing could take it

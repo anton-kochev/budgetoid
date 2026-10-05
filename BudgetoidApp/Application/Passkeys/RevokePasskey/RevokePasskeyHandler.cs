@@ -15,9 +15,12 @@ namespace Application.Passkeys.RevokePasskey;
 /// Deleting the <c>credentials</c> row is what removes the passkey: its public key, its signature
 /// counter, <b>its share of the account's keys</b> and the sessions it opened all leave by
 /// <c>ON DELETE CASCADE</c>, which runs with the privileges of the referencing table's owner rather
-/// than this role's. The role holds no <c>DELETE</c> on any of them and must not be granted one — see
-/// <c>docs/decisions/0014-scope-the-credential-delete-in-the-application.md</c>, which is also where
-/// the argument for the delete being scoped in the application rather than by a policy lives.
+/// than this role's. The role holds no <c>DELETE</c> on the first three and must not be granted one —
+/// see <c>docs/decisions/0014-scope-the-credential-delete-in-the-application.md</c>, which is also where
+/// the argument for the delete being scoped in the application rather than by a policy lives. It does
+/// hold <c>DELETE</c> on <c>sessions</c>, for the ended-session sweep alone
+/// (<c>docs/decisions/0029-sweep-an-accounts-ended-sessions-when-a-session-is-established.md</c>); the
+/// sessions revoked here are still meant to leave by the cascade rather than by that grant.
 /// </para>
 /// <para>
 /// <b>The share of the account's keys is the member of that cascade this route owes a manifest for.</b>
@@ -227,18 +230,21 @@ public sealed class RevokePasskeyHandler(
                 // A second discard, and it is not the first one restated. The sweep above loaded every
                 // unrevoked Session of this credential into the tracker. Remove the Credential with
                 // those dependents still tracked and EF cascades into the copies it can see, emitting
-                // its own DELETE FROM sessions — on a table granted SELECT, INSERT,
-                // UPDATE (revoked_at_utc) and deliberately no DELETE, so the request dies with 42501
-                // having removed nothing. Those rows are meant to leave by the database's own cascade
-                // from credentials, which runs with the referencing table owner's privileges rather
-                // than this role's.
+                // its own DELETE FROM sessions. Those rows are meant to leave by the database's own
+                // cascade from credentials, which runs with the referencing table owner's privileges
+                // rather than this role's.
                 //
-                // Do not answer that 42501 with a grant on sessions: the SQLSTATE names a privilege,
-                // the cause is the change tracker, and app-role-grants.sql argues that the absent
-                // DELETE is what keeps a session accountable. EraseAccountHandler documents the
-                // identical mechanism for `budgets`, and
-                // Revocation_WhenTheCredentialHasLiveSessions_DoesNotFailOnAMissingSessionDeleteGrant
-                // is the test written to name the 500 rather than a wrong row count.
+                // That DELETE no longer fails: the role now holds DELETE on sessions, because
+                // establishing a session deletes the account's ended ones, so EF taking the tracked
+                // copies itself succeeds and leaves the same rows gone. What keeps this line is
+                // everything below the sessions — any dependent of a removed row that EF can see and
+                // the role cannot delete still dies with 42501, session_tokens among them, and the
+                // statements past this point are written to an empty tracker. No integration test
+                // reddens if it goes:
+                // Revocation_WhenTheCredentialHasLiveSessions_ReportsThemEndedAndAnswers200 pins the
+                // outcome, which is the same with or without it, and the unit replay test pins only
+                // which attempts a discard lands on, not what this one prevents. EraseAccountHandler documents the
+                // identical mechanism for `budgets`, which still holds no DELETE.
                 //
                 // The credential survives as a detached object; Remove attaches it back as Deleted, so
                 // the statement below still names that one row.

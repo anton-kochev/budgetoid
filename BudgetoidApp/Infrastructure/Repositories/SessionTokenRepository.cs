@@ -37,7 +37,16 @@ public sealed class SessionTokenRepository(BudgetoidDbContext dbContext) : ISess
         // Equals rather than ==, for the reason FindByWebAuthnCredentialIdAsync gives:
         // ReadOnlyMemory<byte> declares no equality operator, and what reaches PostgreSQL through the
         // property's value converter is a bytea comparison of content rather than of buffer identity.
+        //
+        // AsNoTracking, and it is load-bearing rather than a read-path habit. This runs on every request
+        // presenting a cookie, inside the request's own context, and establishing a session deletes the
+        // account's ended sessions in that same context — one of which can be the very session this
+        // handle opens, on the locked sign-in, which reads the cookie and never clears the tracker.
+        // Tracked, the handle is a dependent EF can see under a removed session, so EF deletes it itself,
+        // on a table the role holds no DELETE on, and the sign-in dies with 42501. Untracked, the
+        // database's ON DELETE CASCADE from sessions takes it, as the table owner.
         return dbContext.SessionTokens
+            .AsNoTracking()
             .SingleOrDefaultAsync(
                 sessionToken => sessionToken.TokenHash.Equals(hash), cancellationToken);
     }

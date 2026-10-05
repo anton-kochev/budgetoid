@@ -142,7 +142,7 @@ required members. A third writer is a decision rather than a refactor.
   - **Why**: changing `credential_id` would relabel which key opened the door, and which key opened
     it is the fact revocation is decided by. Changing `kind` would hand budget content to a session
     a federated credential opened, the one thing the kind exists to refuse.
-  - **Enforced in**: the grant matrix. `GRANT SELECT, INSERT ON sessions` plus
+  - **Enforced in**: the grant matrix. `GRANT SELECT, INSERT, DELETE ON sessions` plus
     `GRANT UPDATE (revoked_at_utc) ON sessions` — the other six are immutable by **omission from the
     column list**, never by a `REVOKE`, which additive column privileges could not express. A
     one-column list is still a list and must not be collapsed into a table-wide grant. Above it,
@@ -162,18 +162,59 @@ required members. A third writer is a decision rather than a refactor.
 
 ### MUST NOT
 
-- **The application role MUST NOT hold `DELETE` on `sessions`.**
-  - **Why**: revocation writes `revoked_at_utc`; it does not remove the row. Session rows do leave —
-    the cascade from `credentials`, and through it from `users` — but that reaches them by
-    descending from a row rather than by a privilege over this table, so it cannot single one out.
-    **The result is that ended rows accumulate**: a revoked or expired session stays until its
-    credential or the account goes, so an account's `sessions` rows are a timestamped record of its
-    sign-ins for the life of the credential that opened them — which the behavioural-record rule in
-    [users-and-ownership.md](users-and-ownership.md#must) weighs. Nothing sweeps them. A sweep would
-    need this grant, and whoever changes that has to re-argue the paragraph in
-    `app-role-grants.sql` rather than quietly delete it.
-  - **Enforced in**: no `DELETE` appears for `sessions` in the grant matrix, pinned by
-    `Database_RefusesToDeleteASession`.
+- **A `DELETE` on `sessions` MUST NOT end a session.** The application role holds `DELETE` there
+  for one act, the **ended-session sweep**: establishing a session removes the account's sessions
+  that have already ended — revoked or expired — and leaves every live one. Four of the five
+  establishing paths run it; registration has nothing to sweep — see
+  [Integration Points](#integration-points).
+  - **Why**: revocation writes `revoked_at_utc`, because the row is what says access ended and when
+    — see the revocation rule below. A delete of a live row would sign a browser out and leave
+    nothing saying so. The grant serves the other end of a row's life. Without it, a session row
+    leaves only by descending from a deleted credential or account, so **ended rows accumulate**:
+    an account's `sessions` rows become a timestamped record of its sign-ins for the life of the
+    credential that opened them — the record the behavioural-record rule in
+    [users-and-ownership.md](users-and-ownership.md#must) weighs. The sweep bounds that record to
+    the sessions that were live when the account's most recent session was established, whether or
+    not they have ended since. The cascade from `credentials`, and through it from `users`, takes
+    rows too.
+    - **Where the sweep runs is the rule, and three other placements were refused.** It runs inside
+      `SessionRepository.AddAsync`, in the same `SaveChanges` as the new session and its handle, so
+      a sign-in that fails to store deletes nothing and a sweep that fails stores no sign-in. A
+      **scheduled sweep** needs a role that reaches every account — the elevated reach
+      [ADR 0004](../decisions/0004-connect-as-a-least-privilege-role.md) keeps off the application
+      role — and the API scales to zero. **Deleting at sign-out** would make a second sign-out
+      present a cookie naming no row, the `401` the sign-out rule's idempotence exists to avoid, and
+      would remove the row saying when the person signed out. **Sweeping at authentication** is a
+      write on every request, on a path no transaction may wrap.
+    - **"Only ended rows" sits in the application, which ADR 0002 requires stating.** The database
+      cannot judge liveness against the application's clock declaratively. A restrictive
+      `FOR DELETE` policy comparing against `now()` was refused: it is a second clock beside the one
+      the handlers read, the suite pins the sweep at fixed instants that a policy reading `now()`
+      would judge differently, and it would be a third input to isolation on a table whose policy
+      reads `user_id` alone — the axis the MUST NOT on `kind` below refuses. The sweep filters
+      through `Session.IsActiveAt` at the new session's `CreatedAtUtc`, the reading that decides
+      whether a request is authenticated, so "ended" keeps one spelling. `IsActiveAt` reads any
+      revocation as ended, so a row revoked *after* that instant goes too.
+    - **Whose rows it reaches is the database's.** The read names no owner; `user_isolation` covers
+      the delete as it covers the read, so the sweep reaches the account the caller published. The
+      handles leave by the `ON DELETE CASCADE` from `sessions`, which runs as the table's owner, so
+      `session_tokens` still holds no `DELETE`.
+    - **What remains.** An account that never signs in again keeps its last batch of ended rows.
+      Live rows still record recent sign-ins, including sessions whose cookie a later sign-in
+      overwrote — see the overwrite gotcha. And PostgreSQL's own statistics counter for deletes on
+      `sessions` (`n_tup_del` in `pg_stat_user_tables`) counts swept rows, as a table-wide total that
+      names no account.
+  - **Enforced in**: the grant matrix, which pins both ends of the delete's reach —
+    `AppRoleGrantsTests.Database_LetsTheAppRoleDeleteItsOwnSession_AndTheCascadeTakesItsHandle` and
+    `Database_RefusesADeleteOnASessionToken_WhileTheCascadeFromItsSessionStillTakesIt` — and
+    `RlsIsolationTests.Database_RefusesToDeleteAnotherUsersSession_WhileStillAllowingItsOwn`, which
+    pins the owner scope. The sweep is pinned by `SessionRepositoryTests`' `AddAsync_*` cases on the
+    app role: ended rows on two credentials go and live ones stay, a row revoked after the
+    establishing instant among the ended; the expiry boundary is `IsActiveAt`'s; another account's
+    ended rows stay; a failed insert deletes nothing and a failed delete stores nothing; and a row
+    another request deleted or revoked first is re-read rather than raised.
+    **Nothing confines the grant to `AddAsync`**: with it, EF's own delete of a tracked session
+    succeeds rather than raising `42501` — see the change-tracker gotcha.
 
 - **No policy on `sessions` may read `kind`.**
   - **Why**: the two policies the schema carries answer *whose* a row is. The kind answers something
@@ -233,7 +274,7 @@ required members. A third writer is a decision rather than a refactor.
 - **Enforced in**: `CK_sessions_kind_matches_credential`,
   `(kind = 'full') = (credential_type in ('passkey', 'recovery_codes'))`, the lowest layer that can
   state the rule declaratively. Without it the rule lived only in the factory while
-  `GRANT SELECT, INSERT ON sessions` stayed table-wide on `INSERT` —
+  the `INSERT` grant on `sessions` stayed table-wide —
   `(credential_id = <a federated credential>, kind = 'full')` was a fully storable row.
   `CK_sessions_kind` bounds only the vocabulary and the composite foreign key proves only whose the
   two rows are; neither refuses that pair. Above it, `Session.Establish` takes the `Credential` and
@@ -265,12 +306,14 @@ required members. A third writer is a decision rather than a refactor.
 
 - **Rule**: Revocation is an **`UPDATE` of `revoked_at_utc`**, never a `DELETE`, and it is
   **idempotent** — an already-revoked session keeps the instant access actually ended.
-- **Why**: the row is what says access ended and when. Deleting it needs a `DELETE` grant, the
-  single privilege that can erase every session on the system, and it cannot tell "already revoked"
-  from "never existed" — a distinction anything reporting a revocation needs. The usual argument for
-  `DELETE`, that updated rows accumulate, does not separate the two options: an unrevoked but
-  expired row accumulates identically. What accumulates is a sign-in record — see the MUST NOT on
-  `DELETE` above. **Note what this is not**: a tombstone. A session row exists
+- **Why**: the row is what says access ended and when. Deleting it at revocation leaves nothing
+  saying so, and it cannot tell "already revoked" from "never existed" — a distinction anything
+  reporting a revocation needs. The role does hold `DELETE` on `sessions`, for the ended-session
+  sweep alone — see the MUST NOT on `DELETE` above. The usual argument for deleting at revocation,
+  that revoked rows accumulate, does not separate the two options: an unrevoked but expired row
+  accumulates identically, so whatever answers it has to take both kinds of ended row. The sweep
+  does, at the account's next sign-in, so a revoked row stays readable until then. **Note what this
+  is not**: a tombstone. A session row exists
   only while its account does, so a revoked session leaves nothing behind an erasure.
 - **Enforced in**: `Session.Revoke` returns without writing when `RevokedAtUtc` is already set;
   `SessionRepository.RevokeForCredentialAsync` loads the credential's unrevoked sessions and calls
@@ -287,10 +330,15 @@ required members. A third writer is a decision rather than a refactor.
 - **Example** — **what the returned count means**: the number of sessions **this call** ended,
   excluding any a concurrent sweep ended first. It counts the **unrevoked**, not the live: the
   filter is `revoked_at_utc is null` and says nothing about expiry, so a session that expired with
-  nobody revoking it is in the number. It reaches the wire on both paths as `sessionsEnded`, which
-  makes it a published contract; on the generation path it is also the condition that path's
-  re-established session is written on, so **what this number counts cannot be changed on one caller
-  alone**. See [recovery-codes.md](recovery-codes.md).
+  nobody revoking it is in the number — **while it is still there**. The ended-session sweep takes
+  such a row at the account's next sign-in, so whether an expired session counts depends on whether
+  a session was established on the account between its expiry and this call. A session still live
+  when the call runs has never been swept, because it was live at every sign-in since it began, so
+  it always counts — on the generation path that includes the caller's own session whenever the
+  caller signed in with the set being replaced. It reaches the wire on both paths as
+  `sessionsEnded`, which makes it a published contract; on the generation path it is also the
+  condition that path's re-established session is written on, so **what this number counts cannot
+  be changed on one caller alone**. See [recovery-codes.md](recovery-codes.md).
 - **Counterexample**: tightening the filter to "live at the caller's instant". It would look like a
   fix to the recovery-code rule and would silently change what a passkey revocation reports.
 - **Source**: `[SOURCE: discussion]`
@@ -834,8 +882,9 @@ required members. A third writer is a decision rather than a refactor.
   caller names no session — the id comes from the claim its own authentication produced — so there
   is no session id on the wire for anyone to substitute. Idempotence stops a dead cookie living on
   the client for the rest of its lifetime: a `401` on the second call would leave the browser
-  holding a handle nothing clears before its `Expires`. An erased account is the one end where that
-  does happen, on purpose — the rule below says why it is harmless there.
+  holding a handle nothing clears before its `Expires`. Two ends do leave one, on purpose — an
+  erased account, and an ended session the account's next sign-in swept — and the rule below says
+  why it is harmless in both.
 - **Enforced in**: `SessionEndpoints` and `RevokeSessionHandler`, over
   `ISessionRepository.RevokeAsync`, whose idempotence is `Session.Revoke`'s.
   `SignOutTests.SigningOut_LeavesAnotherDeviceSignedIn` is the negative control — without it, a
@@ -845,7 +894,8 @@ required members. A third writer is a decision rather than a refactor.
 ---
 
 - **Rule**: An **ended** session — revoked or expired — authenticates on exactly one route, the one
-  that ends sessions, and reaches **no ambient budget** even there.
+  that ends sessions, and reaches **no ambient budget** even there. It does so while its row stands,
+  which is until the account's next sign-in at the latest — see the note below.
 - **Why**: the idempotence above needs it. Signing out twice presents the same dead cookie twice, so
   the second call has to authenticate far enough to answer `204`. What makes this narrow rather than
   a hole is what it does *not* relax: the token still has to match, so it is a verdict about
@@ -859,15 +909,22 @@ required members. A third writer is a decision rather than a refactor.
   until somebody argues for it.
 - **Counterexample**: relaxing the *lookup* instead — admitting a request whose token matched
   nothing so that sign-out "always works". That is an unauthenticated route with extra steps.
-- **Note** — **an erased account is the one end where this route answers `401`**, and the cookie
-  stays on the client until its own `Expires`, which is the deleted session row's expiry. An erasure
-  leaves no *ended* session behind, only an absent one: the cascade takes the `session_tokens` row,
-  so `AuthenticateSessionHandler` finds no token and returns nothing, and
+- **Note** — **this route answers `401` at two ends, and at both the cookie stays on the client**
+  until its own `Expires`, which is the deleted session row's expiry. **An erased account** leaves
+  no *ended* session behind, only an absent one: the cascade takes the `session_tokens` row, so
+  `AuthenticateSessionHandler` finds no token and returns nothing, and
   `SessionCookieAuthenticationHandler` answers `NoResult` before it ever reads
-  `AcceptsEndedSessionAttribute`. That is the dead cookie the sign-out rule above exists to avoid,
-  and here it is harmless: the handle names no row, so it opens nothing and every route answers it
-  `401`. **Do not "fix" it by relaxing the lookup** — that is this rule's own counterexample. See
-  [erasure.md](erasure.md).
+  `AcceptsEndedSessionAttribute`. **A swept session** arrives at the same place by another road. An
+  ended session stays, and this route answers its cookie `204`, until a session is established on
+  its account; the ended-session sweep then deletes the row and the cascade its handle. A sign-in
+  in the same browser overwrites that cookie, so the dead one is held by a browser the sign-in did
+  not happen in. That is the dead cookie the sign-out rule above exists to avoid, and at both ends
+  it is harmless: the handle names no row, so it opens nothing and every route answers it `401`.
+  [Guessing] The client needs nothing new for it — read from the code, not run: a `401` reaches
+  `sessionExpiryInterceptor` like any other, and `endSession()` carries no
+  `EXPECTS_UNAUTHENTICATED`, so even a sign-out press ends the tab's session and lands on
+  `/welcome`. **Do not "fix" it by relaxing the lookup** — that is this rule's own counterexample.
+  See [erasure.md](erasure.md).
 - **Source**: `[SOURCE: discussion]`
 
 ---
@@ -917,10 +974,18 @@ required members. A third writer is a decision rather than a refactor.
     carrying the session and its handle, and the account's erasure schedule read.
     `Session.Establish` derives `Locked` from the credential's type, so nothing on this path can
     ask for anything else. **No
-    transaction and no `ITransactionalExecutor`**: there is one write, and a transaction opened
+    transaction and no `ITransactionalExecutor`**: there is one save, and a transaction opened
     before the publication would configure its connection with the identity still empty. On a
     request carrying a live locked cookie, `ResolveUser` replaces that cookie's account with the
     credential's owner.
+  - **That one save also runs the ended-session sweep, and the cookie's own session can be in it.**
+    An ended cookie falls through to the handler, and when it names a session of the token's own
+    account, `AddAsync` deletes that row with the account's other ended ones and the cascade takes
+    its handle. Nothing on this path clears the change tracker, and the cookie scheme read that
+    handle earlier, on the same request's context, which is why
+    `SessionTokenRepository.FindByTokenHashAsync` reads untracked. Tracked, EF cascades into the
+    handle and sends its own delete on `session_tokens`, and the sign-in answers `500` with `42501`
+    — measured: `LockedSignIn_OverAnEndedSession_Succeeds` goes red.
   - **An unknown subject is a `404` with `refusal: "no_account"`**, and the handler publishes,
     writes and sets nothing — no session, no handle, no cookie. The body repeats neither the subject
     nor the address. A cookie the browser sent has already published its own account by then — see
@@ -948,7 +1013,10 @@ required members. A third writer is a decision rather than a refactor.
   neither the subject nor the address, no `Set-Cookie`, unchanged row counts, and the full cookie
   still answering `"kind": "full"` on `GET /api/me/session`.
   `LockedSignIn_OverALiveLockedSession_ReplacesIt` and `LockedSignIn_OverAnEndedSession_Succeeds`
-  hold the two cookies that are not refused.
+  hold the two cookies that are not refused, and
+  `LockedSignIn_OverItsOwnAccountsEndedSession_DeletesThatSessionAndItsHandle` holds the sweep
+  taking the ended one; `SessionRepositoryTests.FindByTokenHashAsync_ReturnsAnUntrackedEntity`
+  holds the cause on the tracker.
   `LockedSignIn_WithAnotherAccountsLockedCookie_OpensEverythingOnTheTokensAccount` holds that a
   replaced locked cookie lends the new session nothing: the row and the schedule are the token's
   account's. `LockedSignIn_OverAFullSession_WithAnUnverifiedEmail_Is401NotTheConflict` holds the
@@ -1111,8 +1179,8 @@ stateDiagram-v2
     Established --> Revoked : someone ends this session, or the credential that opened it
     Established --> Expired : expires_at_utc passes with nobody revoking anything
     Established --> [*] : the account is erased (the row is deleted)
-    Revoked --> [*] : the row is deleted when its credential is removed or the account is erased
-    Expired --> [*] : the row is deleted when its credential is removed or the account is erased
+    Revoked --> [*] : swept when the account next establishes a session, or deleted with its credential or the account
+    Expired --> [*] : swept when the account next establishes a session, or deleted with its credential or the account
 ```
 
 | Transition | Triggered by | Validations |
@@ -1120,7 +1188,8 @@ stateDiagram-v2
 | → Established | `Session.Establish(credential, createdAtUtc, expiresAtUtc)`, reached from `RegisterAccountHandler` once a registration ceremony verifies — over the **passkey** credential it just created, never the recovery-codes one — from `CompleteAssertionHandler` once a passkey assertion verifies, from `RedeemRecoveryCodeHandler` once a presented verifier matches a stored hash, from `GenerateRecoveryCodesHandler` when replacing a set ended at least one of that set's sessions, and from `EstablishLockedSessionHandler` once a provider token's subject matches a federated credential — the one path whose session is `Locked` | the credential is required; the expiry must be after the creation instant; the kind is derived from the credential's type and cannot be supplied |
 | Established → Revoked | `Session.Revoke(revokedAtUtc)`, reached two ways: through `RevokeSessionsForCredentialHandler`, which `RevokePasskeyHandler`, `GenerateRecoveryCodesHandler` and `ChangeEmailHandler` each call before deleting a credential, and through `RevokeSessionHandler`, which `POST /api/me/session/revocation` calls to end the caller's own | none. Already revoked is a no-op keeping the first instant, which is what makes a retry honest about having ended nothing new |
 | Established → Expired | the clock | none. `IsActiveAt` reads the expiry as well as the revocation, with an exclusive boundary: a session is live up to its expiry and not at it |
-| Established → deleted | `EraseAccountHandler` deleting the user row; the session and its `session_tokens` rows leave by the cascade `users → credentials → sessions → session_tokens`, in the erasure's own transaction. A revoked or expired row leaves the same way | none, and nothing is stamped: a `revoked_at_utc` would be a remnant. The cascade runs as the referencing table's owner; the role holds no `DELETE` on either table, so a cascade is the only way these rows leave — see [erasure.md](erasure.md). The next request presenting the cookie finds no token row and answers `401` — **the sign-out route included**, which makes this the one end where the cookie stays on the client until its `Expires`. Harmless, because it names nothing; do not answer it by relaxing the lookup — see the ended-session rule |
+| Revoked / Expired → deleted (swept) | `SessionRepository.AddAsync`, in the save that writes a new session and its handle, reached from `CompleteAssertionHandler`, `RedeemRecoveryCodeHandler`, `GenerateRecoveryCodesHandler` when it re-establishes, and `EstablishLockedSessionHandler`. **Not** from `RegisterAccountHandler`, which writes through `IRegistrationRepository` onto an account that holds no session yet | the row is not `IsActiveAt` the new session's `CreatedAtUtc` — any revocation, or an expiry at or before that instant; `user_isolation` keeps it to the published account; the handle leaves by the cascade from `sessions`. A failed save deletes nothing and stores nothing, and a row another request deleted or revoked first is re-read, up to three attempts. The next request presenting the cookie finds no token row and answers `401` — **the sign-out route included**; see the ended-session rule |
+| Established → deleted | `EraseAccountHandler` deleting the user row; the session and its `session_tokens` rows leave by the cascade `users → credentials → sessions → session_tokens`, in the erasure's own transaction. A revoked or expired row leaves the same way | none, and nothing is stamped: a `revoked_at_utc` would be a remnant. The cascade runs as the referencing table's owner, so the erasure needs no `DELETE` grant on either table — see [erasure.md](erasure.md). The next request presenting the cookie finds no token row and answers `401` — **the sign-out route included**, which makes this one of two ends where the cookie stays on the client until its `Expires`; a swept session is the other. Harmless, because it names nothing; do not answer it by relaxing the lookup — see the ended-session rule |
 
 There is no transition back. Nothing un-revokes a session and nothing extends one.
 
@@ -1180,7 +1249,10 @@ ELSE                                                    ← an unenumerated futu
   transaction, so the session row and its handle ride on the same save as the account; the session
   is opened over the **passkey** credential and never over the recovery-codes one, a mistake that
   satisfies every constraint in the schema and changes only which credential a later revocation
-  sweeps.
+  sweeps. **It runs no ended-session sweep**, and needs none: the account id is derived from this
+  registration's own challenge and the `users` row is inserted in the same save, so no session can
+  already exist under that account. A sweep there would be a read and a delete over a set that is
+  empty by construction.
 - **[Recovery Codes](recovery-codes.md)** — a set of codes opens a `Full` session exactly as a
   passkey does. The two routes divide differently than the names suggest: a **redemption** opens a
   session and revokes nothing, while a **regeneration** revokes the replaced set's sessions and —
@@ -1324,28 +1396,42 @@ ELSE                                                    ← an unenumerated futu
   - **On the recovery-code path a second mutation produces the same wrong number**: swapping the
     revocation with the delete also reports `0`, because the cascade has already taken the session
     rows and the sweep matches nothing. So the count discriminates ordering as well as presence.
-- **Between the revocation and the delete, the tracked sessions have to be discarded.** Revoking
-  loads every unrevoked `Session` into the change tracker. Remove the credential with those
-  dependents still tracked and EF cascades into the copies it can see and emits its own
-  `DELETE FROM sessions` — on a table granted no `DELETE`, so the request dies with `42501`. **The
-  failure names a permission and the cause is the change tracker; do not answer it with a grant on
-  `sessions`.** Same mechanism `EraseAccountHandler` documents for `budgets`.
-  - **The absent `DELETE` is what makes this loud, and one table beside it does not have that
-    protection.** `recovery_code_hashes` **is** granted `DELETE`, so the same mistake there succeeds
-    silently instead of raising `42501` — see [recovery-codes.md](recovery-codes.md). The `42501` on
-    this table is a diagnostic the grant matrix buys, not an inconvenience it imposes.
-  - **`session_tokens` is the third table this binds, and it is the loudest.** A session now carries
-    a handle, so the cascade a tracked `Session` drags behind it reaches one more relation — and the
-    role holds no `DELETE` there either. `GenerateRecoveryCodesHandler` is where it bites; its
-    never-materialise rule now names three tables.
+- **Between the revocation and the delete, the tracked sessions are discarded, and on `sessions`
+  nothing notices when they are not.** Revoking loads every unrevoked `Session` into the change
+  tracker. Remove the credential with those dependents still tracked and EF cascades into the copies
+  it can see and emits its own `DELETE FROM sessions`. The role holds `DELETE` there for the
+  ended-session sweep, so that statement succeeds and removes the rows the database's cascade would
+  have taken: the outcome is the same. Measured: removing the second `DiscardTrackedEntities()` in
+  `RevokePasskeyHandler` or `GenerateRecoveryCodesHandler` reddens no integration test, and only the
+  unit replay and placement tests notice. The discard stays because the statements past it are
+  written to an empty tracker, and because the cascade a tracked `Session` drags behind it does not
+  stop at `sessions`. Same mechanism `EraseAccountHandler` documents for `budgets`, which still holds
+  no `DELETE`.
+  - **The `DELETE` the sweep needs costs this trap its alarm on `sessions`.** Like
+    `recovery_code_hashes`, which is granted `DELETE` too, the mistake there succeeds silently rather
+    than raising `42501` — see [recovery-codes.md](recovery-codes.md). The `42501` a table holding no
+    `DELETE` raises is a diagnostic the grant matrix buys, not an inconvenience it imposes, and on
+    this chain `session_tokens` is the table still buying it.
+  - **`session_tokens` is where the alarm still sounds.** A session carries a handle, so the cascade
+    a tracked `Session` drags behind it reaches one more relation, and the role holds no `DELETE`
+    there. A `SessionToken` tracked under a session EF removes makes EF send its own delete on
+    `session_tokens`, and the request dies with `42501`. **The failure names a permission and the
+    cause is the change tracker; do not answer it with a grant on `session_tokens`.** The
+    ended-session sweep removes sessions on requests that may already have read a handle; the locked
+    sign-in is where that was measured, because it reads the cookie and never clears the tracker,
+    and it is why `FindByTokenHashAsync` reads untracked — see the locked sign-in's rule.
+    `GenerateRecoveryCodesHandler`'s never-materialise rule names three tables, this one among them.
     - **The trap needs *both* links in the tracker, which is what makes it easy to lose.** A read
       that projects — `Select(session => session.Id)` — materialises no entity, so EF has no cascade
       to walk and nothing fails. Somebody "optimising" a read into a projection will find the rule
       stops biting and conclude it no longer applies. It does; the read simply stopped being the
       shape that triggers it.
-- **Revoked and expired rows accumulate.** Nothing sweeps them, and the application role holds no
-  `DELETE` grant to do it with. The grant a sweep needs is the one this file argues against adding;
-  the MUST NOT on `DELETE` says what the rows amount to.
+- **Revoked and expired rows stay until the account's next sign-in.** The ended-session sweep takes
+  them in the save that writes the next session, and only their credential or the account leaving
+  takes them sooner — the MUST NOT on `DELETE` says where else a sweep could run and why it does
+  not. So a signed-out session stays readable, and its cookie still gets the sign-out route's `204`,
+  until then; afterwards that cookie gets `401` on every route. An account that never signs in
+  again keeps its last batch. A registration sweeps nothing, because no session can predate it.
 - **`RevokeSessionsForCredentialHandler`'s three callers do not all mean the same thing by the
   number.** To `RevokePasskeyHandler` and `ChangeEmailHandler` it is evidence and nothing more; to
   `GenerateRecoveryCodesHandler` it is also the condition a re-established session is written on.

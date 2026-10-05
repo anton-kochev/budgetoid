@@ -1,13 +1,14 @@
+using System.Security.Cryptography;
 using Domain.Sessions;
 using Domain.Users;
 
 namespace UnitTests.Fakes;
 
 /// <summary>
-/// Covers the two behaviours of <see cref="InMemorySessionRepository"/> that
-/// <c>AuthenticateSessionHandlerTests</c> silently leans on. Everything else about the fake is
-/// exercised through the handler tests; these two are not, and either would degrade without anything
-/// going red.
+/// Covers the behaviours of <see cref="InMemorySessionRepository"/> that the handler tests silently
+/// lean on: the two <c>AuthenticateSessionHandlerTests</c> needs, and the sweep every establishing
+/// handler's test reads through. Everything else about the fake is exercised through the handler
+/// tests; these are not, and any of them would degrade without anything going red.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -88,6 +89,88 @@ public sealed class InMemorySessionRepositoryTests
         await Assert.That(repository.IdentityWhenFindByIdWasEntered[0]).IsEqualTo(Guid.Empty);
         await Assert.That(repository.IdentityWhenFindByIdWasEntered[1]).IsEqualTo(userId);
     }
+
+    /// <summary>
+    /// That adding a session removes every session of the same owner that has ended at the new
+    /// session's creation instant, with its handle, and nothing else.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The fake has to sweep because the real repository does</b>, in the same save as the insert.
+    /// A handler test asserting "the account holds exactly its live sessions" against a fake that kept
+    /// every ended row would be red for a reason that is the fake's, and one asserting the opposite
+    /// would be green for a repository production does not have.
+    /// </para>
+    /// <para>
+    /// <b>Keyed on the session's owner, and the stranger is what says so.</b> The real sweep names no
+    /// owner and leaves that to <c>user_isolation</c>; a fake has no policy, so it has to restate the
+    /// owner itself, and a fake that swept every account would pass a single-owner arrangement. The
+    /// stranger holds both kinds of ended row. The owner's revoked row sits on a second credential, so
+    /// a fake keyed on the establishing credential keeps it.
+    /// </para>
+    /// <para>
+    /// <b>The handles go with the sessions</b>, because in the database they leave by the cascade from
+    /// <c>sessions</c>. A fake that left them would hold a handle naming nothing, which the store cannot
+    /// produce.
+    /// </para>
+    /// <para>
+    /// Everything is seeded live at one instant and revoked afterwards. Seeding a revoked row first
+    /// would let the fake's own sweep remove it while the next row was being seeded.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task AddAsync_RemovesTheOwnersEndedSessionsAndTheirHandles_AndNothingElse()
+    {
+        // Arrange
+        var ownerId = Guid.CreateVersion7();
+        var strangerId = Guid.CreateVersion7();
+        var repository = new InMemorySessionRepository();
+        Credential ownCredential = Credential.CreatePasskey(ownerId, UtcNow().AddHours(-1));
+        Credential ownOtherCredential = Credential.CreatePasskey(ownerId, UtcNow().AddHours(-1));
+        Credential strangerCredential = Credential.CreatePasskey(strangerId, UtcNow().AddHours(-1));
+        Session ownRevoked = Session.Establish(ownOtherCredential, UtcNow(), UtcNow().AddDays(1));
+        Session ownExpired = Session.Establish(ownCredential, UtcNow(), UtcNow().AddHours(1));
+        Session ownLive = Session.Establish(ownCredential, UtcNow(), UtcNow().AddDays(1));
+        Session strangerRevoked = Session.Establish(strangerCredential, UtcNow(), UtcNow().AddDays(1));
+        Session strangerExpired = Session.Establish(strangerCredential, UtcNow(), UtcNow().AddHours(1));
+        foreach (Session session in new[] { ownRevoked, ownExpired, ownLive, strangerRevoked, strangerExpired })
+        {
+            await repository.AddAsync(session);
+        }
+
+        ownRevoked.Revoke(UtcNow().AddMinutes(30));
+        strangerRevoked.Revoke(UtcNow().AddMinutes(30));
+
+        // Established two hours on, after both one-hour sessions have run out.
+        Session established = Session.Establish(ownCredential, UtcNow().AddHours(2), UtcNow().AddDays(14));
+        Dictionary<Guid, string> labels = new()
+        {
+            [ownRevoked.Id] = "own revoked",
+            [ownExpired.Id] = "own expired",
+            [ownLive.Id] = "own live",
+            [strangerRevoked.Id] = "stranger revoked",
+            [strangerExpired.Id] = "stranger expired",
+            [established.Id] = "established",
+        };
+
+        // Act
+        await repository.AddAsync(
+            established,
+            SessionToken.For(established, RandomNumberGenerator.GetBytes(SessionToken.TokenLength)));
+
+        // Assert
+        await Assert.That(Render(repository.Sessions.Select(session => session.Id), labels))
+            .IsEqualTo("established, own live, stranger expired, stranger revoked");
+        await Assert.That(Render(repository.Tokens.Select(token => token.SessionId), labels))
+            .IsEqualTo("established, own live, stranger expired, stranger revoked");
+    }
+
+    /// <summary>The ids as their labels, sorted and joined, so a failure names the row.</summary>
+    private static string Render(IEnumerable<Guid> ids, IReadOnlyDictionary<Guid, string> labels) =>
+        string.Join(
+            ", ",
+            ids.Select(id => labels.TryGetValue(id, out string? label) ? label : $"unlabelled {id}")
+                .Order(StringComparer.Ordinal));
 
     private static DateTime UtcNow() => new(2026, 6, 12, 13, 14, 15, DateTimeKind.Utc);
 

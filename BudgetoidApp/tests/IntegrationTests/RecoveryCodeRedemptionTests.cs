@@ -5,6 +5,7 @@ using System.Security.Cryptography;
 using System.Text.Json.Nodes;
 using Api.Infrastructure;
 using Application.Passkeys;
+using Domain.Sessions;
 using Npgsql;
 using TestSupport;
 
@@ -276,6 +277,70 @@ public sealed class RecoveryCodeRedemptionTests
         // Exactly the presented code is gone, and the other nine are the nine the client still holds.
         await Assert.That(await StoredHashesAsync(admin, userId))
             .IsEquivalentTo(ExpectedHashesOf(verifiers.Skip(1)));
+    }
+
+    /// <summary>
+    /// A redemption deletes the account's ended sessions — revoked or expired — and keeps its live one.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The recovery sign-in is one of the five establishing paths, and it runs the sweep inside its
+    /// transaction.</b> The ended rows sit on the account's federated credential, not on the set, so a
+    /// sweep keyed on the establishing credential would leave them. They are written out of band
+    /// because a federated session cannot be revoked or aged through a route in one request.
+    /// </para>
+    /// <para>
+    /// The live session the arrangement signed in with is the control: a sweep that took every session
+    /// but the new one would pass the first half.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Redemption_DeletesTheAccountsEndedSessions()
+    {
+        // Arrange — a real account, passkey and set, plus one revoked and one expired session.
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
+        SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        await RegisterPasskeyAsync(client, device);
+        string[] verifiers = Verifiers();
+        await IssueSetAsync(client, device, userId, verifiers);
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        IReadOnlyList<SessionRow> live = [.. (await ReadSessionsAsync(admin)).Where(row => row.UserId == userId)];
+        await Assert.That(live.Count).IsEqualTo(1);
+
+        Guid federatedId = await RepositoryTestHost.FederatedCredentialIdOnAsync(host.ConnectionString, userId);
+        DateTime now = DateTime.UtcNow;
+        await RepositoryTestHost.SeedSessionOnAsync(
+            host.ConnectionString,
+            federatedId,
+            RandomNumberGenerator.GetBytes(SessionToken.TokenLength),
+            SessionKind.Locked,
+            now.AddHours(-2),
+            now.AddHours(1),
+            revokedAtUtc: now.AddMinutes(-30));
+        await RepositoryTestHost.SeedSessionOnAsync(
+            host.ConnectionString,
+            federatedId,
+            RandomNumberGenerator.GetBytes(SessionToken.TokenLength),
+            SessionKind.Locked,
+            now.AddHours(-2),
+            now.AddHours(-1));
+        await Assert.That(await CountSessionsOfCredentialAsync(admin, federatedId)).IsEqualTo(2L);
+        IReadOnlyList<SessionRow> before = await ReadSessionsAsync(admin);
+
+        // Act
+        HttpResponseMessage response = await RedeemAsync(host.Factory.CreateClient(), verifiers[0]);
+
+        // Assert — both ended rows gone; the live one and the new one are what the account holds.
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
+        await Assert.That(await CountSessionsOfCredentialAsync(admin, federatedId)).IsEqualTo(0L);
+        IReadOnlyList<SessionRow> opened = await SessionsOpenedSinceAsync(admin, before);
+        Guid[] expected = [.. live.Select(row => row.Id), .. opened.Select(row => row.Id)];
+        Guid[] held = [.. (await ReadSessionsAsync(admin)).Where(row => row.UserId == userId).Select(row => row.Id)];
+        await Assert.That(opened.Count).IsEqualTo(1);
+        await Assert.That(held).IsEquivalentTo(expected);
     }
 
     /// <summary>
@@ -1324,6 +1389,16 @@ public sealed class RecoveryCodeRedemptionTests
         HashSet<Guid> standing = [.. before.Select(session => session.Id)];
 
         return [.. (await ReadSessionsAsync(admin)).Where(session => !standing.Contains(session.Id))];
+    }
+
+    /// <summary>How many sessions a credential opened, ended or not, on the admin connection.</summary>
+    private static async Task<long> CountSessionsOfCredentialAsync(NpgsqlConnection admin, Guid credentialId)
+    {
+        await using NpgsqlCommand command = new(
+            "select count(*) from sessions where credential_id = @credentialId", admin);
+        command.Parameters.AddWithValue("credentialId", credentialId);
+
+        return await ReadCountAsync(command);
     }
 
     /// <summary>How many sets the account holds, which the product's own index bounds at one.</summary>

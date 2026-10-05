@@ -687,6 +687,112 @@ public sealed class RlsIsolationTests
             .IsEqualTo(1L);
     }
 
+    /// <summary>
+    /// A session delete reaches only the owner the connection names, and the cascade takes only that
+    /// owner's handle.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>This is what scopes the ended-session sweep.</b> The sweep reads the whole <c>sessions</c> set
+    /// with no owner predicate and deletes what it loaded, so <c>user_isolation</c> is the only thing
+    /// keeping one account's sign-in from deleting another's sessions. Like the revocation test above,
+    /// a filtered delete raises nothing: the foreign statement matches zero rows, and only the count
+    /// says the policy did it.
+    /// </para>
+    /// <para>
+    /// Zero, not <c>42501</c>, is the measurement, and it needs the grant: without <c>DELETE</c> on
+    /// <c>sessions</c> the foreign statement answers <c>42501</c> and says nothing about the policy. The
+    /// own delete beside it is the positive half: a policy of <c>USING (false)</c> passes the foreign
+    /// half alone.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Database_RefusesToDeleteAnotherUsersSession_WhileStillAllowingItsOwn()
+    {
+        // Arrange — one live session and one handle per owner, so the foreign zero counts rows that
+        // were there to be deleted.
+        await using RepositoryTestHost host = await StartHostAsync();
+        (RepositoryTestHost.SeededOwner session, RepositoryTestHost.SeededOwner other) =
+            await SeedTwoOwnersAsync(host);
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        await SeedSessionAsync(admin, session.UserId);
+        await SeedSessionAsync(admin, other.UserId);
+        await SeedSessionTokenAsync(admin, session.UserId, SessionTokenHash(0x31));
+        await SeedSessionTokenAsync(admin, other.UserId, SessionTokenHash(0x32));
+        await using NpgsqlConnection app = await host.OpenAppConnectionForUserAsync(session.UserId);
+
+        // Act — the same statement shape both times, keyed on the owner.
+        int foreignDeleted = await DeleteSessionsOfAsync(app, other.UserId);
+        int ownDeleted = await DeleteSessionsOfAsync(app, session.UserId);
+
+        // Assert
+        await Assert.That(foreignDeleted).IsEqualTo(0);
+        await Assert.That(ownDeleted).IsEqualTo(1);
+
+        // On the superuser connection, which row-level security does not apply to: the other owner's
+        // session and handle stand, and this owner's are gone — the handle by the cascade.
+        await Assert.That(await CountKeyedRowsAsync(admin, "sessions", "user_id", other.UserId))
+            .IsEqualTo(1L);
+        await Assert.That(await CountKeyedRowsAsync(admin, "session_tokens", "user_id", other.UserId))
+            .IsEqualTo(1L);
+        await Assert.That(await CountKeyedRowsAsync(admin, "sessions", "user_id", session.UserId))
+            .IsEqualTo(0L);
+        await Assert.That(await CountKeyedRowsAsync(admin, "session_tokens", "user_id", session.UserId))
+            .IsEqualTo(0L);
+    }
+
+    /// <summary>
+    /// A session delete on a connection naming nobody fails with <c>22P02</c> rather than deleting
+    /// anything.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The shape of a sweep run before the identity was published — the locked sign-in and the passkey
+    /// assertion both publish theirs partway through. It must fail loudly, the same way the read in
+    /// <see cref="Database_RefusesToReadSessionsWhenTheConnectionNamesNoUser" /> does, and for the same
+    /// reason: the policy reads an unset setting as <c>''::uuid</c>.
+    /// </para>
+    /// <para>
+    /// <b>The 22P02 arrives with or without the grant, so the second act is what makes this a test of the
+    /// grant's neighbour rather than of nothing.</b> Measured: with the role holding no <c>DELETE</c> on
+    /// <c>sessions</c>, this statement on a connection naming nobody still answers <c>22P02</c> — the
+    /// policy's cast fails before the privilege check is reached — while the same statement on a
+    /// connection naming the owner answers <c>42501</c>. So the refusal alone cannot say the role is
+    /// allowed to delete at all. The owner's own delete afterwards, on a connection naming them, can.
+    /// The row is seeded because a policy qual is only evaluated against candidate rows.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Database_RefusesASessionDeleteOnAConnectionNamingNobody()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartHostAsync();
+        (RepositoryTestHost.SeededOwner session, _) = await SeedTwoOwnersAsync(host);
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        await SeedSessionAsync(admin, session.UserId);
+        await using NpgsqlConnection bare = new(host.AppConnectionString);
+        await bare.OpenAsync();
+
+        // Act — the whole table, as the sweep's own statement would be with the owner unpublished.
+        await using NpgsqlCommand delete = new("delete from sessions", bare);
+        PostgresException? refusal = await CaptureRefusalAsync(delete);
+
+        // Assert
+        await Assert.That(refusal?.SqlState ?? "no error")
+            .IsEqualTo(PostgresErrorCodes.InvalidTextRepresentation);
+        await Assert.That(await CountKeyedRowsAsync(admin, "sessions", "user_id", session.UserId))
+            .IsEqualTo(1L);
+
+        // Act — the control: the same table, on a connection naming the owner.
+        await using NpgsqlConnection app = await host.OpenAppConnectionForUserAsync(session.UserId);
+        int deleted = await DeleteSessionsOfAsync(app, session.UserId);
+
+        // Assert
+        await Assert.That(deleted).IsEqualTo(1);
+    }
+
     [Test]
     public async Task Database_HidesAnotherUsersSignatureCounter()
     {
@@ -1904,6 +2010,17 @@ public sealed class RlsIsolationTests
             "update sessions set revoked_at_utc = @value where user_id = @id",
             connection);
         command.Parameters.AddWithValue("value", RevocationInstant);
+        command.Parameters.AddWithValue("id", ownerId);
+        return await command.ExecuteNonQueryAsync();
+    }
+
+    /// <summary>
+    /// Deletes every session of one owner and returns the affected-row count — the shape of statement
+    /// the policy has to narrow, and a filtered DELETE raises nothing.
+    /// </summary>
+    private static async Task<int> DeleteSessionsOfAsync(NpgsqlConnection connection, Guid ownerId)
+    {
+        await using NpgsqlCommand command = new("delete from sessions where user_id = @id", connection);
         command.Parameters.AddWithValue("id", ownerId);
         return await command.ExecuteNonQueryAsync();
     }

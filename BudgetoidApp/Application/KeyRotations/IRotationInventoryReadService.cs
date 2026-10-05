@@ -13,8 +13,9 @@ namespace Application.KeyRotations;
 /// applied to, and these answer questions out of columns. Here the split earns more than usual,
 /// because the question is about an entire account — materialising an account's worth of tracked
 /// entities to count them is the one shape this path must not build, and a count that went through the
-/// change tracker would also be the way <c>wrapped_account_keys</c> and <c>sessions</c> get pulled into
-/// a save that then dies with <c>42501</c>.
+/// change tracker would also be the way <c>wrapped_account_keys</c> gets pulled into a save that then
+/// dies with <c>42501</c>, and <c>sessions</c> into one that deletes them quietly — the role holds
+/// <c>DELETE</c> there for the ended-session sweep.
 /// </para>
 /// <para>
 /// <b>It refuses nothing, which is the difference from its sibling gate.</b>

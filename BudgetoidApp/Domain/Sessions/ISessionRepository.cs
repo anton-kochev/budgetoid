@@ -3,9 +3,24 @@ namespace Domain.Sessions;
 public interface ISessionRepository
 {
     /// <summary>
-    /// Opens <paramref name="session"/> and files the handle it is presented by, in one save.
+    /// Opens <paramref name="session"/> and files the handle it is presented by, and deletes every
+    /// session of the same owner that is not live at <paramref name="session"/>'s creation instant, in
+    /// one save.
     /// </summary>
     /// <remarks>
+    /// <para>
+    /// <b>The sweep is part of establishing, not a step beside it.</b> "Not live" is
+    /// <see cref="Session.IsActiveAt"/>'s answer at <see cref="Session.CreatedAtUtc"/> — revoked, or
+    /// expired at or before that instant, on any of the account's credentials — and each deleted
+    /// session's handle goes with it. One save means one outcome: a session that cannot be stored deletes
+    /// nothing, and a delete that fails stores no session. A concurrent sign-in or revocation reaching
+    /// the same ended rows first is converged on, never reported as a failure.
+    /// </para>
+    /// <para>
+    /// <b>The owner is the publication, not a parameter.</b> <c>sessions</c> is policed by
+    /// <c>user_isolation</c>, so the sweep reaches exactly the account the caller published — which
+    /// must therefore be <paramref name="session"/>'s owner, and is on every path that establishes.
+    /// </para>
     /// <para>
     /// <b>It takes both, and there is deliberately no member taking a session alone.</b> A session
     /// committed without its handle is a sign-in nobody can present — the person is told they are in

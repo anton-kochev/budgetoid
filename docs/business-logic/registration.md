@@ -191,6 +191,12 @@ the *set*, so it is authenticated once.
     own, above everything here, so this request commits **twice** — and that is the design rather
     than a leak in it, because a ceremony refused at rung 5 or rung 12 must still have spent the
     challenge it answered. *Of the account*, in the rule above, is doing real work.
+  - **It runs no ended-session sweep, and has nothing to sweep.** The four other establishing paths
+    write their session through `SessionRepository.AddAsync`, which deletes the account's ended
+    sessions in the same save — see [sessions.md](sessions.md#must-not). This one writes through
+    `RegistrationRepository`, onto an account whose id is derived from this registration's own
+    challenge and whose `users` row is inserted in this same save, so no session can already exist
+    under it.
 
 - **The request MUST carry a set of exactly ten submissions, and the passkey's factor identifier
   MUST differ from all ten.**
