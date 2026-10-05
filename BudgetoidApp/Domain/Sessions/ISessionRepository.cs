@@ -14,7 +14,8 @@ public interface ISessionRepository
     /// expired at or before that instant, on any of the account's credentials — and each deleted
     /// session's handle goes with it. One save means one outcome: a session that cannot be stored deletes
     /// nothing, and a delete that fails stores no session. A concurrent sign-in or revocation reaching
-    /// the same ended rows first is converged on, never reported as a failure.
+    /// the same ended rows first is converged on by re-reading, within a bounded number of attempts;
+    /// past that bound the conflict propagates as an exception.
     /// </para>
     /// <para>
     /// <b>The owner is the publication, not a parameter.</b> <c>sessions</c> is policed by
@@ -163,7 +164,8 @@ public interface ISessionRepository
     /// answer the same way.
     /// </para>
     /// <para>
-    /// <b>A concurrent revocation is converged on, never reported.</b> A session revoked between the read
+    /// <b>A concurrent revocation is converged on, within a bounded number of attempts</b>; past that
+    /// bound the conflict propagates as an exception. A session revoked between the read
     /// and the delete is still the one named, so it is still removed and this answers
     /// <see langword="true"/>; one a concurrent call deleted first answers <see langword="false"/> —
     /// reasoned, not run: no test races two removals.

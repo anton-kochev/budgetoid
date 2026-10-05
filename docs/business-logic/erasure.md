@@ -774,10 +774,11 @@ role holds no `DELETE` there of any shape.
       gotcha on the request's own session row argues why — so the browser keeps it until its
       `Expires`, which is the deleted session row's own expiry. It names nothing, and it answers `401`
       everywhere, the sign-out route included: that route admits an *ended* session, and one the
-      cascade took is not ended but absent. [sessions.md](sessions.md) records it as one of three
-      ends where that route answers `401`; the others are an ended session that the ended-session
-      sweep deleted when the account next signed in, and a session displacement deleted when the
-      response carrying the browser's new cookie was lost.
+      cascade took is not ended but absent. [sessions.md](sessions.md) records it among the ends
+      where that route answers `401`; the others it lists are an ended session that the
+      ended-session sweep deleted when the account next signed in, a session whose credential was
+      deleted from another device, and a session displacement deleted when the response carrying
+      the browser's new cookie was lost.
     - **The rotation-epoch record.** `rotation-epoch-record.ts` keeps one `localStorage` key per
       budget id, and the erased budget's entry stays, keyed on a budget that no longer exists. It is
       not cleared, by decision: the record only ever rises, custody is its single writer, and the

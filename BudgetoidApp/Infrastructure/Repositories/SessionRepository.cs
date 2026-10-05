@@ -41,8 +41,18 @@ public sealed class SessionRepository(BudgetoidDbContext dbContext) : ISessionRe
         // "revoked_at_utc IS NULL" and matches nothing. Either way EF raises
         // DbUpdateConcurrencyException, and the save is one transaction — EF's own, or a savepoint
         // inside the caller's — so nothing this attempt wrote survives it, the new session included.
-        // Re-reading is what converges: a deleted row is gone from the next read, and a row revoked
-        // under us is read back revoked and is still ended.
+        // Re-reading is what converges, for the rows this attempt queued for deletion: the catch
+        // detaches them, so a row deleted under us is gone from the next read and a row revoked under
+        // us is read back revoked and is still ended.
+        //
+        // A row that was live in the failed attempt is not converged on. It was never removed, so it
+        // stays tracked as Unchanged, and EF's identity resolution hands that tracked copy back to the
+        // re-read without overwriting its values from the row — so a live row revoked between attempts
+        // is still judged live and kept until the account's next sweep. That is
+        // harmless because liveness only goes one way: a row never comes back to life, so a stale copy
+        // can only look more alive than the row is, never less, and the sweep can only keep too much,
+        // never delete a live session. Reasoned from EF's documented tracking behaviour, not run: no
+        // test revokes a live row between two attempts.
         //
         // The bound is the same one RevokeForCredentialAsync carries, for the same reason: a row can
         // be taken from this sweep at most once, so the loop shrinks toward a set nobody else is
@@ -57,8 +67,10 @@ public sealed class SessionRepository(BudgetoidDbContext dbContext) : ISessionRe
             // Filtered in memory through Session.IsActiveAt rather than in SQL, so "ended" has one
             // spelling — the one that decides whether a request is authenticated — and is judged at the
             // new session's own CreatedAtUtc, the instant this establishment was decided at, rather than
-            // at a second read of a clock. The live rows ride along; they are the account's live
-            // sessions, a handful at most, because every establishment leaves only those behind.
+            // at a second read of a clock. The live rows ride along: every establishment leaves only
+            // the account's live sessions behind, but that set is not bounded — it grows by one per
+            // sign-in within a session's lifetime whenever the old cookie is gone (cleared, or another
+            // device), and nothing here caps it. Unmeasured: no figure for how large it gets in use.
             //
             // Loaded and removed, because ExecuteDelete is banned (BannedSymbols.txt). The handles leave
             // by the database's ON DELETE CASCADE from sessions, which runs as the table owner — the

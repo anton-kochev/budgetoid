@@ -312,7 +312,7 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
     - **`sessions` keeps an ended row only until the account's next sign-in.** Revocation stamps
       `revoked_at_utc` and the row stays, because the row is what says access ended and when; an
       expired row stays too. Establishing a session deletes the account's ended rows in the save
-      that stores it, so ended rows no longer pile up past the next sign-in. What stands is at most
+      that stores it, so ended rows do not outlast the next sign-in. What stands is at most
       the sessions that were live when the account's most recent session was established, whether
       or not they have ended since. Rows also leave by the cascade, when their credential is deleted
       or the account is erased.
@@ -321,12 +321,16 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
       sign-in overwrote is not left behind as a record that this browser was signed in to it.
     - **What still remains** is a record this rule has to keep weighing: an account that never signs
       in again keeps its last batch of ended rows, and live rows record recent sign-ins. A live row
-      is normally held by a browser, and can be held by none: a sign-in's new session when its
-      displacement failed or its response was lost, and the session of a browser that dropped its
-      cookie without signing out, which tells the server nothing — [Guessing] reasoned, not run.
-      And PostgreSQL's own delete counter on the table counts swept and
-      displaced rows, as one total naming no account. The mechanisms are the ended-session sweep in
-      [sessions.md](sessions.md#must-not) and the displacement rule beside it; whoever changes either
+      is normally held by a browser, and can be held by none — these are the ways known, not a
+      closed list: a sign-in's new session when its displacement failed or its response was lost,
+      and the session of a browser that dropped its cookie without signing out, which tells the
+      server nothing — [Guessing] reasoned, not run. [Guessing] Also reasoned and not run: one of
+      two new sessions when two establishing requests leave one browser at once, since the browser
+      keeps one cookie; and a new session whose client disconnected after the commit and before
+      displacement, which the cancelled request skips, so the old session survives as well. And
+      PostgreSQL's own delete counter on the table counts every delete — measured on a PostgreSQL
+      17 container, a rolled-back one included — as one total naming no account. The mechanisms
+      are the ended-session sweep in [sessions.md](sessions.md#must-not) and the displacement rule beside it; whoever changes either
       re-argues that rule rather than going around it.
     - **`passkey_signature_counters.signature_counter` is not that kind of record.** On an
       authenticator that implements the counter it rises with each assertion, but it is a value the
@@ -649,17 +653,18 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
 ---
 
 - **Rule**: The application role may **delete a `users` row**, and that one statement removes the
-  account's whole structural graph. Of the other **user-owned** tables it holds `DELETE` on exactly
-  two, `credentials` and `recovery_code_hashes`, and **neither grant exists for erasure** — the
-  first is for removing one credential (revoking a passkey, replacing a recovery-code set, and
-  retiring the federated credential on an email change), the second for redeeming a recovery code.
-  The user-owned tables beside them hold no `DELETE` of any shape and are emptied by the cascade
-  descending from the `users` row — `budgets`, `sessions`, `session_tokens`, `passkey_public_keys`,
-  `passkey_signature_counters`, `wrapped_account_keys`, `key_rotations` and `factor_manifests` —
-  and so is `recovery_code_hashes`, whose own grant is spent on a redemption rather than here. The
+  account's whole structural graph. Of the other **user-owned** tables it holds `DELETE` on four,
+  `credentials`, `recovery_code_hashes`, `sessions` and `erasure_schedules`, and **no such grant
+  exists for erasure** — the first is for removing one credential (revoking a passkey, replacing a
+  recovery-code set, and retiring the federated credential on an email change), the second for
+  redeeming a recovery code, the third for the ended-session sweep and displacement, the fourth for
+  withdrawing a scheduled erasure. The user-owned tables beside them hold no `DELETE` of any shape
+  and are emptied by the cascade descending from the `users` row — `budgets`, `session_tokens`,
+  `passkey_public_keys`, `passkey_signature_counters`, `wrapped_account_keys`, `key_rotations` and
+  `factor_manifests` — and so are the four granted ones, whose own grants are spent elsewhere. The
   budget-owned rows leave the same way, `transactions` excepted, which erasure empties itself
-  because four `RESTRICT` edges name it. The asymmetry is worth reading twice: erasure needs
-  neither of those two grants and would still work if both were revoked tomorrow.
+  because four `RESTRICT` edges name it. The asymmetry is worth reading twice: erasure needs none
+  of those four grants and would still work if all four were revoked tomorrow.
 - **Why**: erasing an account has to run as the application rather than on an elevated connection —
   that is the whole point of [ADR 0004](../decisions/0004-connect-as-a-least-privilege-role.md).
   Every owned table hangs off `users` by `ON DELETE CASCADE`: `users` → `budgets` → {`payees`,
@@ -684,7 +689,7 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
     sequence runs on **one** session: `SessionContextInterceptor` writes `app.current_user_id` and
     `app.current_budget_id` in the same statement on every connection open.
   - **The grants the cascade does without are a decision, not an oversight.** `budgets`, `payees`,
-    `sessions`, `session_tokens`, `passkey_public_keys`, `passkey_signature_counters`,
+    `session_tokens`, `passkey_public_keys`, `passkey_signature_counters`,
     `wrapped_account_keys`, `key_rotations` and `factor_manifests` hold no `DELETE` of any shape.
     **That is a list of absent `DELETE`s and not a list of read-only tables**, which is the reading
     to guard against at both ends of it: `key_rotations` holds `INSERT` and a column-listed `UPDATE`

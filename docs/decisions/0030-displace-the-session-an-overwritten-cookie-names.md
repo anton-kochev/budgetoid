@@ -40,15 +40,26 @@ superseded sentences are named here rather than corrected there.
   sessions whose cookie a later sign-in overwrote, because overwriting a cookie ends nothing and
   such a row stays live until it expires, is false. Such a session is displaced: deleted with its
   handle before the new cookie is written. The same bullet's clause that the statistics counter
-  counts swept rows now holds for displaced rows too, and its opening — ended rows stand until the
-  account next establishes a session — has a second way out: a browser still presenting one's
-  cookie establishing a session.
+  counts swept rows was always narrower than the counter: `n_tup_del` on `sessions` counts every
+  delete on the table — measured on a PostgreSQL 17 container, where a delete later rolled back
+  counted too — so displaced rows and rows cascading from a credential or an account land in it
+  beside swept ones. Its opening — ended rows stand until the account next establishes a session —
+  has a second way out: a browser still presenting one's cookie establishing a session.
 - **ADR 0029, Decision, the opening statement that the role holds `DELETE` on `sessions` for that
   act.** It now holds it for two: the sweep and displacement. The grant line itself is unchanged.
+- **ADR 0028, Decision, item 3, the sentence on a live locked session being replaced.** Its claim
+  that the new cookie overwrites the old one and the old row stays live until it expires, as with
+  every sign-in that overwrites a cookie, is false. The old locked session is displaced: deleted
+  with its handle, on whichever account owns it, before the new cookie is written. The replacement
+  itself stands.
 
 One sentence is **extended, not superseded**. ADR 0029's Consequences call a swept session a second
-end, beside erasure, where a dead cookie stays on the client until its `Expires`. Both still hold.
-A third now stands beside them: a lost establishing response, under Consequences below.
+end, beside erasure, where a dead cookie stays on the client until its `Expires`. Both still hold,
+and they were never the only two: a credential deleted from another device — a passkey revocation,
+an email change retiring the federated credential, a regeneration deleting the old set — leaves
+the cookie of a browser holding one of its sessions naming no row as well. A lost establishing
+response, under Consequences below, now stands beside them. These are the ends known, not a closed
+list.
 
 ## Decision
 
@@ -58,8 +69,8 @@ then is the new cookie written. No grant changes.**
 
 1. **One writer.** `SessionCookieWriter.WriteEstablishedAsync` in the API runs displacement and then
    calls `SessionCookie.Issue`. Each establishing endpoint calls it on the arm that established a
-   session. `SessionCookieIssueCensusTests` holds the writer as the one caller of `Issue`. Measured:
-   a direct `Issue` in an endpoint reddens it.
+   session. `SessionCookieIssueCensusTests` holds that one file calls `Issue`, the writer's; it
+   counts files, not call sites. Measured: a direct `Issue` in an endpoint reddens it.
 
 2. **After the handler, never before.** Every refusal on an establishing path leaves before the
    writer runs. Measured: displacing before the handler reddens both tests that a refused sign-in
@@ -79,7 +90,12 @@ then is the new cookie written. No grant changes.**
    owner of it. Measured: deleting in the request's scope by the cookie scheme's session id reddens
    the cross-account cases — a locked sign-in over another account's locked cookie, a registration
    from a browser holding another account's session, a passkey sign-in over another account's
-   ended cookie — while the three same-account cases stay green.
+   ended cookie — while the same-account tests
+   `PasskeyCeremonyTests.PasskeySignIn_OverItsOwnLiveSession_DeletesTheSessionTheCookieNamed`,
+   `RecoveryCodeRedemptionTests.Redemption_OverItsOwnLiveSession_DeletesTheSessionTheCookieNamed`
+   and `LockedSignInEndpointTests.LockedSignIn_OverALiveLockedSession_DeletesTheReplacedSession`
+   stayed green. `Generation_ThatReestablishes_DeletesTheCallersPasskeySession`, also
+   same-account, was not reported under that run.
 
 5. **One reader of the cookie.** The digest comes from `SessionCookie.TryReadTokenHash`, the reader
    `SessionCookieAuthenticationHandler` uses, so a value that reader refuses to decode is not one
@@ -124,7 +140,9 @@ row it takes is one its own account's next sweep would take.
 ## Alternatives considered
 
 **Keep the residue.** The overwritten session stays a live record of a sign-in in that browser,
-held by nobody. Nothing else reaches it before it expires.
+held by nobody. Neither the sweep nor a sign-out reaches it before it expires; only its credential
+or its account leaving does — a passkey revocation, an email change retiring the federated
+credential, a regeneration deleting the old set, or an erasure.
 
 **Displace before the handler.** Measured above: a refused sign-in would delete the session the
 browser presented.
@@ -153,22 +171,31 @@ cookie named another account, that sign-in may never come.
 ## Consequences
 
 - **What remains as a sign-in record, after this and ADR 0029.** A live row is normally held by a
-  browser. It can still be held by none: the new session of an establishment whose displacement
-  failed, the new session of one whose response was lost, and the session of a browser that dropped
-  its cookie without signing out — cleared site data, a closed private window. [Guessing] That last
-  case is reasoned, not run: such a browser tells the server nothing. Each such row stays live until
-  it expires or a revocation ends it. An ended row stands until the account next establishes a
-  session, until a browser still presenting its cookie establishes one, or until its credential or
-  the account is deleted. An account that never signs in again keeps its last batch. `n_tup_del` on `sessions` counts swept and displaced rows, as one total
-  that names no account. [sessions.md](../business-logic/sessions.md) and
+  browser. It can still be held by none, and these are the ways known, not a closed list: the new
+  session of an establishment whose displacement failed, the new session of one whose response was
+  lost, and the session of a browser that dropped its cookie without signing out — cleared site
+  data, a closed private window. [Guessing] That last case is reasoned, not run: such a browser
+  tells the server nothing. [Guessing] Two more are reasoned from the code and not run. Two
+  establishing requests from one browser at once, such as two tabs, both carry the old cookie: one
+  displaces its session, the other finds nothing, and the browser keeps one of the two new cookies,
+  so the other new session is held by nobody. And a client that disconnects after the commit and
+  before displacement cancels the request's token, which cancels displacement: the old session
+  survives and the new one is orphaned. Each such row stays live until it expires or a revocation
+  ends it. An ended row stands until the account next establishes a session, until a browser still
+  presenting its cookie establishes one, or until its credential or the account is deleted. An
+  account that never signs in again keeps its last batch. `n_tup_del` on `sessions` counts every
+  delete on the table — measured on a PostgreSQL 17 container, a delete later rolled back included —
+  and `session_tokens`' counter moves with it through the cascade; each is a per-table total that
+  names no account. [sessions.md](../business-logic/sessions.md) and
   [adversarial-properties.md](../engineering/adversarial-properties.md) carry the operator's view.
 - **The failure window.** If the delete throws, the request answers `500` after the new session
   committed, and no cookie is written, because the exception handler clears the response. The new
   session stands with no browser holding it, and the old one survives in the browser still
   presenting it. What reaches this is a failure underneath — the database, or the retries running
-  out. Measured: swallowing the failure turned that `500` into a `200` with the old session left
-  live, so it stays loud.
-- **A lost establishing response is a third end.** Displacement has already deleted the session
+  out — or a cancelled request, whose client has already gone, the last residue above. Measured:
+  swallowing a failure turned that `500` into a `200` with the old session left live, so it stays
+  loud.
+- **A lost establishing response is another end.** Displacement has already deleted the session
   the browser's old cookie names, and the response carrying the new cookie never arrives. The old
   cookie is then answered `401` on every route, the sign-out route included. Before, that browser
   kept its old session. [Guessing] The web client reads that `401` as an ended session and goes to

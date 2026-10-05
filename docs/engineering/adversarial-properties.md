@@ -262,10 +262,14 @@ covers some of the following without saying the rows exist:
   takes only ended rows, so a live one stands. A live session whose cookie a later sign-in
   overwrote does not: that sign-in deletes it, on whichever account owns it, before it writes its
   own cookie — displacement, in the same file. So a live row is normally one some browser holds. It
-  can be held by none: the new session of an establishment whose displacement failed or whose
-  response was lost, and the session of a browser that dropped its cookie without signing out,
-  which tells the server nothing — [Guessing] reasoned, not run. Each stays live until it expires
-  or is revoked. An ended row, signed out or expired, stands until a session is next established on
+  can be held by none, in at least these ways: the new session of an establishment whose
+  displacement failed or whose response was lost, and the session of a browser that dropped its
+  cookie without signing out, which tells the server nothing — [Guessing] reasoned, not run.
+  [Guessing] Also reasoned and not run: one of two new sessions when two establishing requests
+  leave one browser at once, such as two tabs, since the browser keeps one of the two cookies; and
+  the new session of a client that disconnected after the commit and before displacement, which
+  the cancelled request skips, so the old session survives beside it. Each stays live until it
+  expires or is revoked. An ended row, signed out or expired, stands until a session is next established on
   the account — a sign-in, or a recovery-code regeneration that re-establishes one — whose save
   deletes it and its handle, or until a browser still presenting its cookie establishes a session
   and displaces it. So the rows standing are at most the sessions that were live when the account's
@@ -273,8 +277,10 @@ covers some of the following without saying the rows exist:
   in again keeps its last batch. A row of either kind also leaves when its credential is revoked or
   replaced or the account is erased. A backup taken while a row stood holds it for the backup's
   retention, and PostgreSQL's statistics counter for deletes on `sessions` (`n_tup_del` in
-  `pg_stat_user_tables`) counts swept and displaced rows, as one total for the table that names no
-  account. Beside the sessions, each passkey's signature counter, which counts its
+  `pg_stat_user_tables`) counts every delete on the table — measured on a PostgreSQL 17 container,
+  where a delete later rolled back counted too — so swept, displaced and cascaded rows all land in
+  it, and `session_tokens`' counter moves with it through the cascade. Each is one total for its
+  table that names no account. Beside the sessions, each passkey's signature counter, which counts its
   assertions — sign-ins and re-authentications — where the authenticator keeps one. From the
   standing sessions a recovery code opened, when codes were redeemed; from the hash rows left
   against the factor rows, how many are spent. From the standing sessions the federated credential
@@ -325,8 +331,9 @@ assertion against this product's own API and reaches no provider. The API itself
 provider's published signing keys to validate a provider token — registration's, the email
 change's and the locked sign-in's — which names no person. All three moments NFR-025 permits are
 built in the browser and on the server. The locked sign-in's request, `POST /api/locked-session`,
-accepts a provider token and opens a locked session; it stores nothing the token asserts, and
-writes only the session row and its handle. See [sessions.md](../business-logic/sessions.md) and
+accepts a provider token and opens a locked session. It inserts only the session row and its
+handle; it deletes the account's ended sessions and the session the browser's old cookie names,
+if any; and it stores nothing the token asserts. See [sessions.md](../business-logic/sessions.md) and
 [email-change.md](../business-logic/email-change.md).
 
 ## Keeping this chapter true

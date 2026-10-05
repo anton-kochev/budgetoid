@@ -21,8 +21,9 @@ namespace Api.Infrastructure;
 /// <b>The only caller of <see cref="SessionCookie.Issue" />, so that every establishing path displaces.</b>
 /// An endpoint writing the cookie itself would compile and still hand the browser a working cookie, and
 /// would leave the overwritten session behind — reasoned, not run. What was run is the guard:
-/// <c>SessionCookieIssueCensusTests</c> holds the one caller, and a direct <c>Issue</c> in an endpoint
-/// reddens it.
+/// <c>SessionCookieIssueCensusTests</c> holds it to one file outside the endpoints — it counts files,
+/// not call sites, so a second call in this one would pass it — and a direct <c>Issue</c> in an
+/// endpoint reddens it.
 /// </para>
 /// </remarks>
 public sealed class SessionCookieWriter(IServiceScopeFactory scopeFactory)

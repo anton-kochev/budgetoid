@@ -76,10 +76,12 @@ public sealed class AuthenticateSessionHandler(
         // Policed, by the id published one line above. A null here is nearly unreachable and is not
         // dead code: the composite foreign key makes a token naming another account's session
         // unstorable, so the policy cannot hide the row from the owner this very token named, and a
-        // session that is deleted takes its token rows with it by cascade. What is left is the race —
-        // an erasure, or a revocation of the establishing credential, committing between these two
-        // reads. The honest answer to it is that the handle now names nothing, which is also the answer
-        // that fails closed if a later path finds a second way here.
+        // session that is deleted takes its token rows with it by cascade. What is left is a delete of
+        // the session committing between these two reads, and that is an open list rather than a
+        // fixed pair: an erasure, the ended-session sweep, displacement, or the establishing
+        // credential being deleted under it, among others. The honest answer to every one of them is
+        // that the handle now names nothing, which is also the answer that fails closed for a way here
+        // nobody has listed.
         Session? session = await sessionRepository.FindByIdAsync(token.SessionId, cancellationToken);
         if (session is null)
         {

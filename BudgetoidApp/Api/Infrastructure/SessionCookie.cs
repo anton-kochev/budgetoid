@@ -67,8 +67,8 @@ public static class SessionCookie
     /// past its gates is a returned outcome rather than an exception, so there the writer runs on the
     /// established arm only, and the 404 arm writes nothing. The writer stands between the endpoints and
     /// this method because overwriting a cookie does not, by itself, end the session it named; the writer
-    /// displaces that session first. <c>SessionCookieIssueCensusTests</c> holds the one caller. Measured:
-    /// a direct call here from an endpoint reddens it.
+    /// displaces that session first. <c>SessionCookieIssueCensusTests</c> holds the calls to one file — it
+    /// counts files, not call sites. Measured: a direct call here from an endpoint reddens it.
     /// </para>
     /// <para>
     /// <b>Neither argument may be built here.</b> <paramref name="value"/> is the handle the handler

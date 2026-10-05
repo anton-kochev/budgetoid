@@ -42,7 +42,8 @@ it and deletes the session that browser held.
 **Affected areas:** [sessions.md](sessions.md), [registration.md](registration.md),
 [recovery-codes.md](recovery-codes.md), [users-and-ownership.md](users-and-ownership.md),
 [erasure.md](erasure.md), [email-change.md](email-change.md), [passkeys.md](passkeys.md),
-[adversarial-properties.md](../engineering/adversarial-properties.md).
+[adversarial-properties.md](../engineering/adversarial-properties.md),
+[data-isolation.md](../engineering/data-isolation.md).
 
 ---
 
@@ -80,7 +81,9 @@ expired session of the old set only if no sign-in swept it first.
 
 **Affected areas:** [sessions.md](sessions.md), [users-and-ownership.md](users-and-ownership.md),
 [recovery-codes.md](recovery-codes.md), [erasure.md](erasure.md),
-[adversarial-properties.md](../engineering/adversarial-properties.md).
+[email-change.md](email-change.md), [registration.md](registration.md),
+[adversarial-properties.md](../engineering/adversarial-properties.md),
+[data-isolation.md](../engineering/data-isolation.md).
 
 ---
 

@@ -220,15 +220,17 @@ erDiagram
   - **Why**: these rows are nonces, and a row nobody can delete is a row swept by a path that does
     not exist. Contrast `sessions`, where revocation writes a column precisely so the row stays
     accountable.
-    - **The company the grant keeps.** `webauthn_challenges` is one of the four identity tables
+    - **The company the grant keeps.** `webauthn_challenges` is not the only identity table
       holding `DELETE`. The others are `users`, the root every owned row cascades from;
       `credentials`, which holds it for **removing one credential** — revocation, replacing a
       recovery-code set, and retiring the federated credential on an email change — rather than
       erasure
-      ([ADR 0014](../decisions/0014-scope-the-credential-delete-in-the-application.md)); and
+      ([ADR 0014](../decisions/0014-scope-the-credential-delete-in-the-application.md));
       `recovery_code_hashes`, whose grant rests on **this** table's sentence word for word
-      ([ADR 0017](../decisions/0017-consume-a-recovery-code-by-deleting-its-row.md)). Two of the
-      four — `credentials` and `recovery_code_hashes` — have their delete scoped by the application
+      ([ADR 0017](../decisions/0017-consume-a-recovery-code-by-deleting-its-row.md)); `sessions`,
+      for the ended-session sweep and displacement ([sessions.md](sessions.md)); and
+      `erasure_schedules`, for withdrawing a schedule ([erasure.md](erasure.md)). Two of them —
+      `credentials` and `recovery_code_hashes` — have their delete scoped by the application
       alone. Being exempt from row-level security is only half of why: `webauthn_challenges` is
       exempt too and is not among them, because it carries no owner column at all, so its delete has
       nothing to be scoped *by*. What singles those two out is holding an owner column **and** no
@@ -855,8 +857,10 @@ factor, and an account identifier derived from the challenge it just spent —
   as on every request, and once the new session is established, to displace the session it names
   — see [sessions.md](sessions.md). The handler never takes the account from either read. The
   rule the handler enforces is unchanged — **the account comes from the verified passkey, never from
-  the request** — but it now outlives its original reason: it was written because a provisioning
-  middleware had already put a *different* account on the request, and today nothing can. Keep it.
+  the request** — and its reason did not leave with the provisioning middleware it was first written
+  against, which had already put a *different* account on the request. A presented session cookie
+  still can: the session scheme publishes the account its handle names before the handler runs,
+  the residue whose gotcha [sessions.md](sessions.md) carries on a refused request. Keep it.
   Somebody signing into their own account with somebody else's passkey is the failure, and the
   handler is the layer that refuses it whatever runs above.
   `Assertion_PresentedWithAnotherUsersBearerToken_EstablishesTheSessionForThePasskeysOwner` pins the
