@@ -1,14 +1,17 @@
 # The data inventory
 
 Every column of every table carries exactly one classification — **narrative**, **arithmetic** or
-**excluded** — and the build fails on a column nobody classified. The inventory is the single source
-the coverage tests read, so that adding a column is a decision made once rather than a change to be
-remembered in five places.
+**excluded** — and the build fails on a column nobody classified. Beside the columns, every mapped
+table carries exactly one owner — **User**, **Budget** or **Nobody** — and the build fails on a table
+nobody decided about. The coverage tests that judge a column by its word read that word here, so
+that adding a column is a decision made once rather than a change to be remembered in five places.
 
-`Infrastructure/Persistence/Inventory/` holds it: `DataInventory` (the 112 entries and the reader),
-`DataInventoryCoverage` (the comparison), `MappedSchema` (the enumerator, in two walks — one over
-what the model says a property holds, one over what the store is handed), and
-`NarrativeEncryptionCoverage` (the gate that demands ciphertext of the narrative half).
+`Infrastructure/Persistence/Inventory/` holds it: `DataInventory` (the 112 column entries, the 20
+table owners and the reader), `DataInventoryCoverage` (the comparison), `MappedSchema` (the
+enumerator, in two walks — one over what the model says a property holds, one over what the store is
+handed), `TableOwners.cs` (`TableOwnerEntry` and `TableOwnerCoverage`, the owner axis and its two
+comparisons), and `NarrativeEncryptionCoverage` (the gate that demands ciphertext of the narrative
+half).
 
 ## The three words classify what the product owes the person, not what the column holds
 
@@ -54,7 +57,7 @@ silently find six of the eight.
 The requirement says "a column exists **in the model**", and a model walk needs no container, which
 keeps the gate in the unit tier where it belongs. But every card that reads the inventory makes a
 claim about the **database** — that a column is stored as ciphertext, that it appears in an export
-of real rows, that an erasure reaches it.
+of real rows, that the owner written for a table is the one its columns name.
 
 So a container-backed test asserts that the EF model and the live catalog describe the same columns,
 in both directions. Measured over this model: 112 mapped columns over 20 tables against 114 over 21,
@@ -86,6 +89,62 @@ out at its own reason census, and this inventory inherits it rather than pretend
 **One reason per column, never one per table.** The saving is obvious and wrong: a reason argued at
 table grain is inherited by columns it was never written about, which is exactly the drift that
 forced `TableExemption` to grow the column set its reason covers.
+
+## Every mapped table has one owner, written out and checked against the catalog's column fact
+
+The three words say what the export owes for a column; none of them says whose rows a table holds.
+`DataInventory.TableOwners` is that second question, asked once per mapped table.
+
+| Word | Means | Owner column |
+|---|---|---|
+| **User** | The rows belong to one person. | `id` on `users`, `user_id` everywhere else. |
+| **Budget** | The rows belong to one budget. | `budget_id`. |
+| **Nobody** | The rows belong to no account — a decision, with a written reason. | None. |
+
+Thirteen tables are `User`, five are `Budget`, and two are `Nobody`: `currencies`, shared reference
+data that budgets and accounts point at, and `webauthn_challenges`, a ceremony's nonce, which the
+authentication pool mints before anybody has said who they are. `__EFMigrationsHistory` is not in
+the list; it is a relation outside the model and owes no owner.
+
+**The shape copies the column entry's.** `TableOwnerEntry` has no public constructor: `User` and
+`Budget` take the owner column, `Nobody` takes a reason and no column. **The owner column is written
+out, never derived**, because whoever scopes one account's rows by it should read the column it
+names, not one a rule picked. And **a table nobody decided about is absent, not `Nobody`** — absent
+is what `TableOwnerCoverage.Compare` reports as undecided. That split is why the list does not reuse
+`RowLevelSecurityCoverage`'s `TableOwnership`, whose `None` means *undecided*: one enum would let a
+table nobody had thought about read as one somebody had.
+
+**It is held in two tiers, and they catch different mistakes.**
+
+- The unit tier holds the list against the EF design-time model. Every table `MappedSchema.TablesOf`
+  returns has an entry and every entry names a mapped table, each owner column is a mapped column of
+  its own table **and** the one its kind names, no table is named twice, and a `Nobody` reason
+  clears the 80-character floor an excluded column's reason does. The column-by-kind check is what
+  stands against `transactions` filed under `account_id`: a real column, on a table the catalog
+  agrees is budget-owned.
+- The integration tier compares each written word with the ownership
+  `RowLevelSecurityCoverage.DiscoverAsync` reads off the migrated database, through
+  `TableOwnerCoverage.DisagreementsWith`: `User` against `UserOwned`, `Budget` against `BudgetOwned`,
+  `Nobody` against `None`, and a table either side holds that the other does not. The relations
+  `RelationsOutsideTheModel` excuses are removed first, as in the column reconciliation.
+
+**The integration case reads a column fact and never the exemptions, and that is the trap here.**
+`DiscoveredTable.Ownership` says only which owner column a table carries — `budget_id`, else
+`user_id`, else the table is `users`. Whether the table is *policed* is a different fact: four owned
+tables — `credentials`, `passkey_public_keys`, `recovery_code_hashes` and `session_tokens` — are
+exempt from a policy because each is read before the request has an identity, and every one of them
+holds one person's rows. A comparison reading "policed" as "owned" would call all four nobody's.
+**This case is not redundant with the unit tier**: filing `recovery_code_hashes` as `Nobody` with a
+long reason passes every unit-tier test and reddens only here, which was measured and is recorded at
+the case.
+
+**What neither tier can see.** A table carrying neither owner column reads `None` off its columns,
+so filed as `Nobody` it agrees with the catalog whatever it holds. A table keeping a person's rows
+under some other column would pass both tiers that way, and the written reason is what a reviewer
+reads to object. `RowLevelSecurityCoverage` refuses the same table as unclassifiable unless an
+exemption names it — but that conversation is about isolation, not about whose rows these are. The
+decision and its alternatives are in
+[ADR 0031](../decisions/0031-write-down-each-tables-owner-in-the-inventory.md).
 
 ## Every narrative column is checked for ciphertext, and the check is four facts
 
@@ -343,12 +402,14 @@ restated here.
 
 ## What this does not replace
 
-The inventory is one axis, and **it replaces none of the ten censuses beside it.** They ask different
-questions of the same columns, so none of them is the inventory said another way and none is retired
-by it. The families a reader adding a column will meet:
+The column classification is one axis and the table owner another, and **neither replaces any of
+the ten censuses beside them.** They ask different questions of the same columns, so none of them is
+the inventory said another way and none is retired by it. The families a reader adding a column will
+meet:
 
 - `RowLevelSecurityCoverage` classifies **relations** for tenancy, discovered from the catalog, and
-  fails closed on a relation nobody decided about.
+  fails closed on a relation nobody decided about. The owner axis reads one fact off its discovery —
+  the ownership a table's columns name — and decides nothing about policies or exemptions.
 - `KeyMaterialSecrecyTests.Classifications` argues, per `bytea` column, *why holding this unwraps
   nothing*.
 - `ProhibitedColumnVocabulary` and its two siblings are deny-lists over **names**, failing open by
@@ -488,7 +549,14 @@ the gate goes red in one commit, and the fix is not one commit.
 
 - `DataInventoryCoverageTests` — the FR-005 gate, the empty-inventory and stale-entry controls, the
   duplicate check, the narrative derivation in both directions, and the reason floor.
-- `DataInventoryReconciliationTests` — the model against the live catalog, with its two controls.
+- `DataInventoryReconciliationTests` — the model against the live catalog, with its two controls;
+  and `TableOwners_AgreeWithTheOwnershipTheLiveCatalogReads`, the owner axis against the ownership
+  discovery reads off each table's columns, the one case that sees an owned table filed as nobody's.
+- `TableOwnerCoverageTests` — every mapped table has an owner and every owner names a mapped table,
+  with the empty-list and stale-entry controls; no table named twice; each owner column mapped on
+  its own table and the one its kind names; the `Nobody` reason floor; the factory guards; and
+  hand-built controls for every wrong pairing `DisagreementsWith` must report, an unlisted
+  relation of each kind, and ordinal names.
 - `MappedSchemaTests` — the enumerator, including that it keeps the table with the column. Two
   columns named `name` on different tables is what proves it; an enumerator that flattens the table
   away collapses them into one, which is what its two name-scanning readers do deliberately and

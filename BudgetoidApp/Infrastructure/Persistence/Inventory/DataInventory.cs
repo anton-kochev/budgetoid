@@ -751,6 +751,70 @@ public static class DataInventory
             + "longer binds or an account that no longer exists"),
     ];
 
+    /// <summary>
+    /// Every mapped table with whose rows it holds — a second axis beside the column
+    /// classification, answering which tables an erasure of one account has to reach.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Three words, and the third is a decision.</b> A table owned by nobody is written down with
+    /// its reason; a table nobody decided about is absent, and <see cref="TableOwnerCoverage.Compare" />
+    /// reports it against the model's tables. The owner column is written out on every owned entry
+    /// rather than derived, because whoever reads this list scopes rows by it.
+    /// </para>
+    /// <para>
+    /// The written word is reconciled against the ownership the live catalog reads off each table's
+    /// columns, through <see cref="TableOwnerCoverage.DisagreementsWith" />. That reading is a column
+    /// fact and never the row-level-security exemptions: <c>credentials</c>,
+    /// <c>passkey_public_keys</c>, <c>recovery_code_hashes</c> and <c>session_tokens</c> are exempt
+    /// from a policy and still hold one person's rows.
+    /// </para>
+    /// </remarks>
+    public static IReadOnlyList<TableOwnerEntry> TableOwners { get; } =
+    [
+        // The account and its tenancy unit.
+        TableOwnerEntry.User("users", "id"),
+        TableOwnerEntry.User("budgets", "user_id"),
+
+        // Sign-in and sessions.
+        TableOwnerEntry.User("credentials", "user_id"),
+        TableOwnerEntry.User("passkey_public_keys", "user_id"),
+        TableOwnerEntry.User("passkey_signature_counters", "user_id"),
+        TableOwnerEntry.User("recovery_code_hashes", "user_id"),
+        TableOwnerEntry.User("sessions", "user_id"),
+        TableOwnerEntry.User("session_tokens", "user_id"),
+
+        // Account keys and their rotation.
+        TableOwnerEntry.User("wrapped_account_keys", "user_id"),
+        TableOwnerEntry.User("factor_manifests", "user_id"),
+        TableOwnerEntry.User("key_rotations", "user_id"),
+        TableOwnerEntry.User("key_rotation_seals", "user_id"),
+
+        // Account lifecycle.
+        TableOwnerEntry.User("erasure_schedules", "user_id"),
+
+        // Budget content.
+        TableOwnerEntry.Budget("accounts", "budget_id"),
+        TableOwnerEntry.Budget("category_groups", "budget_id"),
+        TableOwnerEntry.Budget("categories", "budget_id"),
+        TableOwnerEntry.Budget("payees", "budget_id"),
+        TableOwnerEntry.Budget("transactions", "budget_id"),
+
+        // Owned by nobody.
+        TableOwnerEntry.Nobody(
+            "currencies",
+            "shared reference data belonging to no tenant: every row is a currency from the published "
+            + "ISO 4217 list, the same for every account, and no column names a person or a budget. "
+            + "Budgets and accounts point at these rows, so an erasure that reached them would take "
+            + "the currency out from under every other account still using it"),
+        TableOwnerEntry.Nobody(
+            "webauthn_challenges",
+            "a ceremony's nonce rather than a person's record: the authentication pool mints one "
+            + "before anybody has said who they are, no column names a user or a budget, and the "
+            + "row is deleted when the ceremony spends it or swept once it expires. There is no "
+            + "account to scope it by, so an erasure has nothing here it could select"),
+    ];
+
     /// <summary>The entries carrying one classification, in the order the list declares them.</summary>
     /// <param name="classification">The word to select.</param>
     /// <returns>Every entry classified that way, which may be none.</returns>

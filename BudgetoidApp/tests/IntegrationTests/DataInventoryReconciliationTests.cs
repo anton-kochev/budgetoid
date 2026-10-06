@@ -86,6 +86,16 @@ public sealed class DataInventoryReconciliationTests
     /// <summary>The dropped column's surviving sibling, which the same run must not report.</summary>
     private const string SurvivingSiblingColumn = "wrapped_account_keys.wrapped_private_key";
 
+    /// <summary>
+    /// The floor both sides of the owner comparison must clear. Twenty tables are mapped today; a
+    /// floor rather than a count, so a new table is a decision rather than an edit here.
+    /// </summary>
+    /// <remarks>
+    /// Ten, half of today's twenty, so it catches an emptied list or an empty discovery and never a
+    /// single deleted entry, which must reach the assertion that names the table.
+    /// </remarks>
+    private const int OwnedTableFloor = 10;
+
     [Test]
     public async Task Model_AndTheLiveCatalog_DescribeTheSameColumns()
     {
@@ -235,6 +245,63 @@ public sealed class DataInventoryReconciliationTests
         // Ordinal comparison, deliberately: pg_class stores __EFMigrationsHistory exactly as EF
         // quotes it, and a loose comparison would let an entry claim a relation it does not name.
         await Assert.That(namingNothing).IsEmpty();
+    }
+
+    /// <summary>
+    /// Every written-down owner agrees with the ownership the live catalog reads off the table's own
+    /// columns, and the two name the same tables.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The comparison reads only <see cref="DiscoveredTable.Ownership" />, which is a column fact:
+    /// <c>budget_id</c>, <c>user_id</c>, or the table being <c>users</c>. It never reads the
+    /// row-level-security exemptions, the classification buckets or the policies, because four owned
+    /// tables — <c>credentials</c>, <c>passkey_public_keys</c>, <c>recovery_code_hashes</c> and
+    /// <c>session_tokens</c> — are exempt from a policy and still hold one person's rows. Reading
+    /// "policed" as "owned" would call those four nobody's.
+    /// </para>
+    /// <para>
+    /// <b>This case is the only guard against an owned table filed as nobody's</b> — measured:
+    /// <c>recovery_code_hashes</c> rewritten as <see cref="OwnedBy.Nobody" /> with a long reason passes
+    /// every unit-tier test and reddens only here. It is not redundant with the unit tier; do not
+    /// delete it as such.
+    /// </para>
+    /// <para>
+    /// <see cref="DataInventory.RelationsOutsideTheModel" /> is removed from the discovered side before
+    /// the comparison, the same exclusion the column reconciliation applies: a relation outside the
+    /// model is no mapped table and owes no owner.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task TableOwners_AgreeWithTheOwnershipTheLiveCatalogReads()
+    {
+        // Arrange — the migrated database, read on the superuser connection.
+        await using RepositoryTestHost host = await StartHostAsync();
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+
+        HashSet<string> outsideTheModel =
+            new(DataInventory.RelationsOutsideTheModel, StringComparer.Ordinal);
+
+        // Act
+        IReadOnlyList<DiscoveredTable> discovered = await RowLevelSecurityCoverage.DiscoverAsync(admin);
+        DiscoveredTable[] considered =
+        [
+            .. discovered.Where(table => !outsideTheModel.Contains(table.Name)),
+        ];
+        IReadOnlyList<string> disagreements =
+            TableOwnerCoverage.DisagreementsWith(DataInventory.TableOwners, considered);
+
+        Console.WriteLine(
+            $"Discovered (outside-the-model relations removed): {considered.Length}. "
+            + $"Owner entries: {DataInventory.TableOwners.Count}.");
+        Console.WriteLine($"Disagreements: {string.Join(" | ", disagreements)}");
+
+        // Assert — both sides non-vacuous first. An empty discovery and an empty owner list disagree
+        // about nothing, and green is what that looks like.
+        await Assert.That(considered.Length).IsGreaterThanOrEqualTo(OwnedTableFloor);
+        await Assert.That(DataInventory.TableOwners.Count).IsGreaterThanOrEqualTo(OwnedTableFloor);
+        await Assert.That(disagreements).IsEmpty();
     }
 
     /// <summary>Both directions of the comparison, with the two sets they were computed from.</summary>
