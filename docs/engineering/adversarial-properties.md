@@ -258,29 +258,22 @@ covers some of the following without saying the rows exist:
   width), each passkey's COSE algorithm, which narrows the device family, and each credential's
   enrolment time.
 - **Sign-in history.** Each standing session's creation, expiry and revocation time and which
-  credential opened it. The ended-session sweep in [sessions.md](../business-logic/sessions.md)
-  takes only ended rows, so a live one stands. A live session whose cookie a later sign-in
-  overwrote does not: that sign-in deletes it, on whichever account owns it, before it writes its
-  own cookie — displacement, in the same file. So a live row is normally one some browser holds. It
-  can be held by none, in at least these ways: the new session of an establishment whose
-  displacement failed or whose response was lost, and the session of a browser that dropped its
-  cookie without signing out, which tells the server nothing — [Guessing] reasoned, not run.
-  [Guessing] Also reasoned and not run: one of two new sessions when two establishing requests
-  leave one browser at once, such as two tabs, since the browser keeps one of the two cookies; and
-  the new session of a client that disconnected after the commit and before displacement, which
-  the cancelled request skips, so the old session survives beside it. Each stays live until it
-  expires or is revoked. An ended row, signed out or expired, stands until a session is next established on
-  the account — a sign-in, or a recovery-code regeneration that re-establishes one — whose save
-  deletes it and its handle, or until a browser still presenting its cookie establishes a session
-  and displaces it. So the rows standing are at most the sessions that were live when the account's
-  most recent session began, whether or not they have ended since, and an account that never signs
-  in again keeps its last batch. A row of either kind also leaves when its credential is revoked or
-  replaced or the account is erased. A backup taken while a row stood holds it for the backup's
-  retention, and PostgreSQL's statistics counter for deletes on `sessions` (`n_tup_del` in
-  `pg_stat_user_tables`) counts every delete on the table — measured on a PostgreSQL 17 container,
-  where a delete later rolled back counted too — so swept, displaced and cascaded rows all land in
-  it, and `session_tokens`' counter moves with it through the cascade. Each is one total for its
-  table that names no account. Beside the sessions, each passkey's signature counter, which counts its
+  credential opened it. The ended-session sweep and displacement in
+  [sessions.md](../business-logic/sessions.md) bound which rows stand, and neither promises that a
+  live row is one some browser still holds: a session can outlive the browser that held it, and it
+  stands until it expires or is revoked. An ended row, signed out or expired, stands until a
+  session is next established on the account — a sign-in, or a recovery-code regeneration that
+  re-establishes one — whose save deletes it and its handle, or until a browser still presenting its
+  cookie establishes a session and displaces it. So the rows standing are at most the sessions that
+  were live when the account's most recent session began, whether or not they have ended since,
+  and an account that never signs in again keeps its last batch. A row of either kind also leaves
+  when its credential is revoked or replaced or the account is erased. A backup taken while a row
+  stood holds it for the backup's retention, and PostgreSQL's statistics counter for deletes on
+  `sessions` (`n_tup_del` in `pg_stat_user_tables`) counts every delete on the table — measured on a
+  PostgreSQL 17 container, where a delete later rolled back counted too — so swept, displaced and
+  cascaded rows all land in it, and `session_tokens`' counter moves with it through the cascade.
+  Each is one total for its table that names no account. Beside the sessions, each passkey's
+  signature counter, which counts its
   assertions — sign-ins and re-authentications — where the authenticator keeps one. From the
   standing sessions a recovery code opened, when codes were redeemed; from the hash rows left
   against the factor rows, how many are spent. From the standing sessions the federated credential

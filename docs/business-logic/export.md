@@ -635,10 +635,10 @@ How the web client turns a press into a file — every arm but the last saves no
 IF Export is not pressable                                  ← custody not unlocked, a run in
   THEN no request is made                                      flight, an export already running,
                                                                or the page departing for Google
-ELSE IF the request fails, or anything throws after it      ← a 401 is sessionExpiryInterceptor's
-  THEN failed                                                  to judge: an ending verdict leaves
-                                                               the screen, and a kept one reads
-                                                               failed here
+ELSE IF the request fails, or anything throws after it      ← a 401 is one the interceptor hands
+  THEN failed                                                  to the session judgement: an ending
+                                                               verdict leaves the screen, and a
+                                                               kept one reads failed here
 ELSE IF the text does not decode                            ← before any cipher runs
     — not JSON, a member missing or extra, a wrong JSON type, a null where none is declared,
       schemaVersion ≠ 1, a non-canonical row id, a wire string the strict decoder refuses,

@@ -39,6 +39,11 @@ from three screens: `/register`, to create an account, `/app/settings`, to chang
 `/release`, to sign in to an account nobody can open — and the email change's request carries a
 provider token **beside** the cookie, never in its place; see [email-change.md](email-change.md).
 
+**Three mechanisms bound what the table and a tab hold**: the **ended-session sweep** deletes an
+account's revoked or expired sessions when a session is established on it, **displacement** deletes
+the session an establishing browser's incoming cookie names, and the **session judgement** decides in
+the client whether a `401` means the tab's session ended — each has its rule below.
+
 ## Key Entities
 
 - **Session** — one established sign-in. It carries a `Guid Id` of its own, the `UserId` whose
@@ -150,7 +155,7 @@ required members. A third writer is a decision rather than a refactor.
     same test as a permitted `revoked_at_utc` update reporting one affected row — the affected-row
     count is what stops the pair passing when row-level security matched nothing. See
     [ADR 0004](../decisions/0004-connect-as-a-least-privilege-role.md).
-    - **Omission refuses an edit in place, and no longer refuses the same row written again.**
+    - **Omission refuses an edit in place, and does not refuse the same row written again.**
       [Guessing] Reasoned, not run: holding `DELETE` and `INSERT` on `sessions`, and `SELECT` and
       `INSERT` on `session_tokens`, the role can delete a session and insert one under the same id,
       with its handle, and a later `expires_at_utc` — `CK_sessions_lifetime` asks only that the
@@ -172,84 +177,21 @@ required members. A third writer is a decision rather than a refactor.
 - **A `DELETE` on `sessions` MUST NOT take more than one of its two callers may take.** The
   application role holds `DELETE` there for two acts, and each is entitled to a different set. The
   **ended-session sweep** takes the published account's sessions that have already ended — revoked
-  or expired — when a session is established on it, and leaves every live one. Four of the five
-  establishing paths run it; registration has nothing to sweep — see
-  [Integration Points](#integration-points). **Displacement** takes the one session the browser's
+  or expired — and leaves every live one. **Displacement** takes the one session the browser's
   incoming cookie names, live or ended, on whichever account owns it, once a session has been
-  established over that cookie — see its rule under [Business Rules](#business-rules--invariants).
+  established over that cookie. Each has its own rule under
+  [Business Rules](#business-rules--invariants).
   - **Why**: revocation writes `revoked_at_utc`, because the row is what says access ended and when
     — see the revocation rule below. A delete of a live row a browser still presents would sign that
-    browser out and leave nothing saying so. The sweep takes no live row. Displacement takes one only
-    from the browser being handed a new cookie on the same response, which stops presenting the old
-    handle either way — except when that response is lost, the cost the displacement rule states,
-    and except when the handle is held in two places. A copied cookie's other holder is signed out
-    by the displacement with no revoked row to say when; a revoked row would have stood at most
-    until that account's next sign-in swept it anyway.
-    The sweep's half of the grant serves the other end of a row's life. Without it, a session row
-    leaves only by descending from a deleted credential or account, or by displacement, which
-    reaches only a row some browser still presents — so **ended rows accumulate**:
-    an account's `sessions` rows become a timestamped record of its sign-ins for the life of the
-    credential that opened them — the record the behavioural-record rule in
-    [users-and-ownership.md](users-and-ownership.md#must) weighs. The sweep bounds that record to
-    the sessions that were live when the account's most recent session was established, whether or
-    not they have ended since. The cascade from `credentials`, and through it from `users`, takes
-    rows too.
-    - **Where the sweep runs is the rule, and three other placements were refused.** It runs inside
-      `SessionRepository.AddAsync`, in the same `SaveChanges` as the new session and its handle, so
-      a sign-in that fails to store deletes nothing and a sweep that fails stores no sign-in. A
-      **scheduled sweep** needs a role that reaches every account — the elevated reach
-      [ADR 0004](../decisions/0004-connect-as-a-least-privilege-role.md) keeps off the application
-      role — and the API scales to zero. **Deleting at sign-out** would make a second sign-out
-      present a cookie naming no row, the `401` the sign-out rule's idempotence exists to avoid, and
-      would remove the row saying when the person signed out. **Sweeping at authentication** is a
-      write on every request, on a path no transaction may wrap.
-    - **"Only ended rows" sits in the application, which ADR 0002 requires stating.** The database
-      cannot judge liveness against the application's clock declaratively. A restrictive
-      `FOR DELETE` policy comparing against `now()` was refused: it is a second clock beside the one
-      the handlers read, the suite pins the sweep at fixed instants that a policy reading `now()`
-      would judge differently, and it would be a third input to isolation on a table whose policy
-      reads `user_id` alone — the axis the MUST NOT on `kind` below refuses. The sweep filters
-      through `Session.IsActiveAt` at the new session's `CreatedAtUtc`, the reading that decides
-      whether a request is authenticated, so "ended" keeps one spelling. `IsActiveAt` reads any
-      revocation as ended, so a row revoked *after* that instant goes too.
-    - **Whose rows it reaches is the database's.** The read names no owner; `user_isolation` covers
-      the delete as it covers the read, so the sweep reaches the account the caller published. The
-      handles leave by the `ON DELETE CASCADE` from `sessions`, which runs as the table's owner, so
-      `session_tokens` still holds no `DELETE`.
-    - **What remains.** An account that never signs in again keeps its last batch of ended rows.
-      Live rows still record recent sign-ins, each normally held by a browser: a session whose
-      cookie a later sign-in overwrote is displaced, not left behind — see the overwrite gotcha.
-      The exceptions are rows no browser holds, live until they expire or a revocation ends them,
-      and these are the ways known to leave one, not a closed list: the new session of an
-      establishment whose displacement failed, the new session of one whose response never reached
-      the browser — both in the displacement rule — and a session whose browser discarded its
-      cookie without signing out, which tells the server nothing — [Guessing] reasoned, not run.
-      [Guessing] Two more, reasoned from the code and not run: two establishing requests from one
-      browser at once, such as two tabs, both carry the old cookie — one displaces its session, the
-      other finds nothing, and the browser keeps one of the two new cookies, so the other new
-      session is held by nobody; and a client that disconnects after the commit and before
-      displacement cancels the request's token, which cancels displacement, so the old session
-      survives and the new one is orphaned.
-      And PostgreSQL's own statistics counter for deletes on `sessions` (`n_tup_del` in
-      `pg_stat_user_tables`) counts every delete on the table — measured on a PostgreSQL 17
-      container, where a delete later rolled back counted too — so swept rows, displaced rows and
-      rows cascading from a deleted credential or account all land in it, and `session_tokens`'
-      counter moves with it through the cascade. Each is a per-table total that names no account.
+    browser out and leave nothing saying so. The ended-session sweep takes no live row, and
+    displacement takes one only on a response that hands the browser a new cookie in its place.
   - **Enforced in**: the grant matrix, which pins both ends of the delete's reach —
     `AppRoleGrantsTests.Database_LetsTheAppRoleDeleteItsOwnSession_AndTheCascadeTakesItsHandle` and
     `Database_RefusesADeleteOnASessionToken_WhileTheCascadeFromItsSessionStillTakesIt` — and
     `RlsIsolationTests.Database_RefusesToDeleteAnotherUsersSession_WhileStillAllowingItsOwn`, which
-    pins the owner scope. The sweep is pinned by `SessionRepositoryTests`' `AddAsync_*` cases on the
-    app role: ended rows on two credentials go and live ones stay, a row revoked after the
-    establishing instant among the ended; the expiry boundary is `IsActiveAt`'s; another account's
-    ended rows stay; a failed insert deletes nothing and a failed delete stores nothing; and a row
-    another request deleted or revoked first is re-read rather than raised. Displacement's half is
-    `SessionRepository.RemoveAsync`, pinned by `RemoveAsync_DeletesOnlyTheNamedSessionAndItsHandle`
-    (the named row unrevoked and revoked, another row on the same credential kept),
-    `RemoveAsync_ForAnotherAccountsSession_RemovesNothing` and
-    `RemoveAsync_WhenRevokedConcurrently_StillRemovesIt`.
-    **Nothing confines the grant to its two callers**: with it, EF's own delete of a tracked session
-    succeeds rather than raising `42501` — see the change-tracker gotcha.
+    pins the owner scope. Each caller's own cases are named under its rule. **Nothing confines the
+    grant to its two callers**: with it, EF's own delete of a tracked session succeeds rather than
+    raising `42501` — see the change-tracker gotcha.
 
 - **No policy on `sessions` may read `kind`.**
   - **Why**: the two policies the schema carries answer *whose* a row is. The kind answers something
@@ -347,33 +289,32 @@ required members. A third writer is a decision rather than a refactor.
   sweep and for displacement, and neither is a revocation — see the MUST NOT on `DELETE` above. The
   usual argument for deleting at revocation, that revoked rows accumulate, does not separate the two
   options: an unrevoked but expired row accumulates identically, so whatever answers it has to take
-  both kinds of ended row. The sweep does, at the account's next sign-in, so a revoked row stays
-  readable until then, unless a sign-in in a browser still presenting its cookie displaces it
-  sooner. **Note what this
-  is not**: a tombstone. A session row exists
-  only while its account does, so a revoked session leaves nothing behind an erasure.
+  both kinds of ended row. The ended-session sweep does, at the account's next sign-in, so a revoked
+  row stays readable until then, unless a sign-in in a browser still presenting its cookie displaces
+  it sooner. **Note what this is not**: a tombstone. A session row exists only while its account
+  does, so a revoked session leaves nothing behind an erasure.
 - **Enforced in**: `Session.Revoke` returns without writing when `RevokedAtUtc` is already set;
   `SessionRepository.RevokeForCredentialAsync` loads the credential's unrevoked sessions and calls
   it per row. `ExecuteUpdateAsync` is a compile error under `BannedSymbols.txt`, and the ban buys
   correctness here rather than uniformity: a set-based `UPDATE` would rewrite every matched row's
   instant on every call and report a retry as if it had ended access a second time.
   - **Concurrently, too**: `Session.Revoke`'s idempotence is a property of one object in memory, so
-    on its own it does not survive two sweeps running at once — both would read the rows as
-    unrevoked and the later commit would overwrite the first instant. `revoked_at_utc` is therefore
-    a **concurrency token**: the `UPDATE` carries `and revoked_at_utc is null`, the losing sweep
-    matches zero rows and raises `DbUpdateConcurrencyException`, and `RevokeForCredentialAsync`
-    answers it by re-reading and retrying. A token in the `WHERE` clause needs only `SELECT`, so the
-    `GRANT UPDATE (revoked_at_utc)` column list is unaffected.
+    on its own it does not survive two revocation sweeps running at once — both would read the rows
+    as unrevoked and the later commit would overwrite the first instant. `revoked_at_utc` is
+    therefore a **concurrency token**: the `UPDATE` carries `and revoked_at_utc is null`, the losing
+    revocation sweep matches zero rows and raises `DbUpdateConcurrencyException`, and
+    `RevokeForCredentialAsync` answers it by re-reading and retrying. A token in the `WHERE` clause
+    needs only `SELECT`, so the `GRANT UPDATE (revoked_at_utc)` column list is unaffected.
 - **Example** — **what the returned count means**: the number of sessions **this call** ended,
-  excluding any a concurrent sweep ended first. It counts the **unrevoked**, not the live: the
-  filter is `revoked_at_utc is null` and says nothing about expiry, so a session that expired with
-  nobody revoking it is in the number — **while it is still there**. The ended-session sweep takes
-  such a row at the account's next sign-in, so whether an expired session counts depends on whether
-  a session was established on the account between its expiry and this call — or a sign-in in a
-  browser still presenting its cookie displaced it. A session still live
-  when the call runs has never been swept, because it was live at every sign-in since it began, so
-  it always counts — on the generation path that includes the caller's own session whenever the
-  caller signed in with the set being replaced. It reaches the wire on both paths as
+  excluding any a concurrent revocation sweep ended first. It counts the **unrevoked**, not the
+  live: the filter is `revoked_at_utc is null` and says nothing about expiry, so a session that
+  expired with nobody revoking it is in the number — **while it is still there**. The ended-session
+  sweep takes such a row at the account's next sign-in, so whether an expired session counts depends
+  on whether a session was established on the account between its expiry and this call — or a
+  sign-in in a browser still presenting its cookie displaced it. A session still live when the call
+  runs has never been taken by the ended-session sweep, because it was live at every sign-in since
+  it began, so it always counts — on the generation path that includes the caller's own session
+  whenever the caller signed in with the set being replaced. It reaches the wire on both paths as
   `sessionsEnded`, which makes it a published contract; on the generation path it is also the
   condition that path's re-established session is written on, so **what this number counts cannot
   be changed on one caller alone**. See [recovery-codes.md](recovery-codes.md).
@@ -475,17 +416,83 @@ required members. A third writer is a decision rather than a refactor.
   API share one registrable domain; a cross-site topology would have forced `None`, the deployment
   argument [ADR 0010](../decisions/0010-serve-the-app-from-a-custom-domain.md) carries. A
   **sliding** expiry would need `GRANT UPDATE (expires_at_utc)`, a column the list leaves off on
-  purpose, or a delete and a re-insert under the same id, which the grants no longer refuse
+  purpose, or a delete and a re-insert under the same id, which the grants do not refuse
   ([Guessing] reasoned, not run — see the identity-columns MUST) and nothing in `Session` offers.
   Either way it would write a row on every request to buy it.
 - **Enforced in**: `SessionCookie`, which owns the name and builds the attributes once so the issue
   and the clear cannot drift. `SessionCookieTests` pins each attribute. It is also the only cookie
-  the API sets — see the MUST NOT above. `SessionCookie.TryReadTokenHash` is the one reader of the
-  presented value, shared by the session scheme and by displacement, and `SessionCookieWriter`'s
-  file is the one that calls `SessionCookie.Issue` — see the displacement rule below.
+  the API sets — see the MUST NOT above. `SessionCookie.TryReadTokenHash` is the reader of the
+  presented value both the session scheme and displacement use, and `SessionCookieWriter`'s file is
+  the one that calls `SessionCookie.Issue` — see the displacement rule below.
   - **The clear must match the issue attribute for attribute**, and this is the pin most worth
     having: a browser silently keeps a cookie whose clear does not match, and the symptom is a
     sign-out that appears to work and a session that comes back.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: Establishing a session through `ISessionRepository.AddAsync` runs the **ended-session
+  sweep**: in the same save as the new session and its handle, every session of the account that is
+  not live at the new session's `CreatedAtUtc` — revoked, or expired at or before that instant — is
+  deleted, and its handle with it. Every live session stays.
+- **Why**: without it, an ended row leaves with its credential or its account, or by displacement,
+  which reaches only a row some browser still presents — so **ended rows accumulate**, and an
+  account's `sessions` rows become a timestamped record of its sign-ins for the life of the
+  credential that opened them, the record the behavioural-record rule in
+  [users-and-ownership.md](users-and-ownership.md#must) weighs. The ended-session sweep bounds that
+  record to the sessions that were live when the account's most recent session was established,
+  whether or not they have ended since. Revocation stays an `UPDATE`, so a revoked row says when
+  access ended for as long as it stands.
+  - **Where it runs is the rule, and three other placements were refused.** It runs inside
+    `SessionRepository.AddAsync`, in the same `SaveChanges` as the new session and its handle, so a
+    sign-in that fails to store deletes nothing and a delete that fails stores no sign-in. A
+    **scheduled sweep** needs a role that reaches every account — the elevated reach
+    [ADR 0004](../decisions/0004-connect-as-a-least-privilege-role.md) keeps off the application
+    role — and the API scales to zero. **Deleting at sign-out** would make a second sign-out present
+    a cookie naming no row, the `401` the sign-out rule's idempotence exists to avoid, and would
+    remove the row saying when the person signed out. **Sweeping at authentication** is a write on
+    every request, on a path no transaction may wrap.
+  - **"Only ended rows" sits in the application, which ADR 0002 requires stating.** The database
+    cannot judge liveness against the application's clock declaratively. A restrictive
+    `FOR DELETE` policy comparing against `now()` was refused: it is a second clock beside the one
+    the handlers read, the suite pins the ended-session sweep at fixed instants that a policy reading
+    `now()` would judge differently, and it would be a third input to isolation on a table whose
+    policy reads `user_id` alone — the axis the MUST NOT on `kind` refuses. The ended-session sweep
+    filters through `Session.IsActiveAt` at the new session's `CreatedAtUtc`, the reading that
+    decides whether a request is authenticated, so "ended" keeps one spelling.
+  - **Whose rows it reaches is the database's.** The read names no owner; `user_isolation` covers
+    the delete as it covers the read, so it reaches the account the caller published. The
+    handles leave by the `ON DELETE CASCADE` from `sessions`, which runs as the table's owner, so
+    `session_tokens` holds no `DELETE`.
+  - **What remains.** An account that never signs in again keeps its last batch of ended rows, and
+    live rows still record recent sign-ins. A session can outlive the browser that held it; neither
+    the ended-session sweep nor displacement guarantees otherwise. PostgreSQL's own statistics
+    counter for deletes on `sessions` (`n_tup_del` in `pg_stat_user_tables`) counts every delete on
+    the table — measured on a PostgreSQL 17 container, where a delete later rolled back counted too
+    — so swept rows, displaced rows and rows cascading from a deleted credential or account all land
+    in it, and `session_tokens`' counter moves with it through the cascade. Each is a per-table total
+    that names no account.
+- **Enforced in**: `SessionRepository.AddAsync`, reached from `CompleteAssertionHandler`,
+  `RedeemRecoveryCodeHandler`, `GenerateRecoveryCodesHandler` when it re-establishes, and
+  `EstablishLockedSessionHandler`; registration writes through another port — see
+  [Integration Points](#integration-points). `SessionRepositoryTests`' `AddAsync_*` cases pin it on
+  the app role: ended rows on two credentials go and live ones stay, a row revoked after the
+  establishing instant among the ended; the expiry boundary is `IsActiveAt`'s; another account's
+  ended rows stay; a failed insert deletes nothing and a failed delete stores nothing; and a row
+  another request deleted or revoked first is re-read rather than raised, up to three attempts.
+  `LockedSignInEndpointTests.LockedSignIn_OverItsOwnAccountsEndedSession_DeletesThatSessionAndItsHandle`
+  holds it through an endpoint.
+- **Example**: somebody signs out on a laptop and, the next day, signs in on a phone. The phone's
+  sign-in deletes the laptop's revoked row and its handle in the save that writes the phone's
+  session, so the record of the laptop's sign-in goes too, and that handle now names no row: any
+  request presenting it is answered `401`, the sign-out route included — see the ended-session
+  rule. Edge case: a row whose revocation instant falls *after* the new session's `CreatedAtUtc` is
+  taken too, because `IsActiveAt` reads any revocation as ended; the `AddAsync_*` cases hold that
+  row among the ended.
+- **Counterexample**: an ended-session sweep filtering on `revoked_at_utc is not null`. It reads as
+  "delete the revoked rows" and misses every session that expired with nobody revoking it, so those
+  rows accumulate as before. The other wrong shape is a restrictive `FOR DELETE` policy comparing
+  against `now()`, a second clock beside the handlers' — argued under Why.
 - **Source**: `[SOURCE: discussion]`
 
 ---
@@ -497,17 +504,17 @@ required members. A third writer is a decision rather than a refactor.
   nothing.
 - **Why**: overwriting a cookie ends nothing. The browser stops presenting the old handle, and its
   row stays live until it expires, held by no browser — a standing record that this browser was
-  signed in to that account. Neither the sweep nor a sign-out reaches that row. The ended-session
-  sweep takes only ended rows of the account signing in, while the cookie may name a live session,
-  or a session of another account, whose rows `user_isolation` hides from this one; and no browser
-  is left to sign it out. Only its credential or its account leaving takes it sooner — a passkey
-  revocation, an email change retiring the federated credential, a regeneration deleting the old
-  set, or an erasure.
+  signed in to that account. Neither the ended-session sweep nor a sign-out reaches that row. The
+  ended-session sweep takes only ended rows of the account signing in, while the cookie may name a
+  live session, or a session of another account, whose rows `user_isolation` hides from this one;
+  and no browser is left to sign it out. Its credential or its account leaving takes it sooner —
+  among them a passkey revocation, an email change retiring the federated credential, a
+  regeneration deleting the old set, and an erasure.
   - **Displacement takes no more than sign-out could end.** It needs the cookie's handle, the same
     proof `POST /api/me/session/revocation` needs, and takes the one session that handle names. An
-    ended row it takes is one its own account's next sweep would take. Its handle leaves by the
-    cascade from `sessions`, and `session_tokens` is the table holding a foreign key into
-    `sessions`, so the delete reaches nothing past the handle.
+    ended row it takes is one its own account's next ended-session sweep would take. Its handle
+    leaves by the cascade from `sessions`, and `session_tokens` is the table holding a foreign key
+    into `sessions`, so the delete reaches nothing past the handle.
   - **After the handler, never before.** Every refusal on an establishing path leaves before
     `SessionCookieWriter` runs. Measured: displacing before the handler reddens both tests that a
     refused sign-in leaves the presented session live — a passkey assertion that does not verify, in
@@ -529,11 +536,9 @@ required members. A third writer is a decision rather than a refactor.
     `PasskeyCeremonyTests.PasskeySignIn_OverItsOwnLiveSession_DeletesTheSessionTheCookieNamed`,
     `RecoveryCodeRedemptionTests.Redemption_OverItsOwnLiveSession_DeletesTheSessionTheCookieNamed`
     and `LockedSignInEndpointTests.LockedSignIn_OverALiveLockedSession_DeletesTheReplacedSession`
-    stayed green.
-    `Generation_ThatReestablishes_DeletesTheCallersPasskeySession`, also same-account, was not
-    reported under that run. The request is published as the new account, and the policy hides the
-    old account's row from it.
-  - **One reader of the cookie, the scheme's own.** The digest comes from
+    stayed green. The request is published as the new account, and the policy hides the old
+    account's row from it.
+  - **The scheme's reader of the cookie, not a second one.** The digest comes from
     `SessionCookie.TryReadTokenHash`, so a value that reader refuses to decode is not one
     displacement deletes by. Measured: a writer that decoded leniently, truncating to 32 bytes,
     deleted a live full session presented as its handle with one byte appended, on the locked
@@ -542,32 +547,28 @@ required members. A third writer is a decision rather than a refactor.
   - **No check that the cookie names the new session.** The new handle was minted on this request
     and the incoming cookie was issued before it.
   - **A cookie naming no row is a no-op**, whether it was never issued or its row is already gone —
-    including a cookie whose ended session the establishing path's own sweep just took. Measured:
-    without that guard, a sign-in from a browser holding a cookie that named no row answered `500`
-    after the new session committed.
+    including a cookie whose ended session the establishing path's own ended-session sweep just
+    took. Measured: without that guard, a sign-in from a browser holding a cookie that named no row
+    answered `500` after the new session committed.
   - **A concurrent sign-out does not fail it.** `RemoveAsync` re-reads when a revocation lands
     between its read and its delete — `revoked_at_utc` is a concurrency token — up to three
     attempts. Measured: without the retry, or without detaching the failed delete,
     `RemoveAsync_WhenRevokedConcurrently_StillRemovesIt` fails with `DbUpdateConcurrencyException`.
     Whether a row was removed does not change the response.
-  - **The failure window**, stated as the cost. If the delete throws, the request answers `500` after
-    the new session committed, and no cookie is written, because the exception handler clears the
-    response. The new session stands with no browser holding it, and the old one survives in the
-    browser still presenting it. What reaches this is a failure underneath — the database, or the
-    bounded retries running out — or a cancelled request, whose client has already gone; that case
-    is among the residues under the MUST NOT on `DELETE`. A failure stays loud: measured,
+  - **A failed delete answers `500`, stated as the cost.** If the delete throws — the database
+    failing, or the bounded retries running out — the request answers `500` after the new session
+    committed, and no cookie is written, because the exception handler clears the response; the
+    browser keeps presenting the old session, which survives. A failure stays loud: measured,
     swallowing it turned that `500` into a `200` with the old session left live.
   - **A lost establishing response.** When the response carrying the new cookie never reaches the
-    browser, the browser keeps its old cookie, whose row displacement has already deleted, and the
-    new session stands with no browser holding it. The old cookie's next request is answered `401` —
-    another way a cookie comes to name no row, beside an erasure, the sweep and its credential's
-    deletion; see the ended-session rule. Without displacement that browser would have kept its old session.
+    browser, the browser keeps its old cookie, whose row displacement has already deleted, so its
+    next request is answered `401` — another way a cookie comes to name no row, beside an erasure,
+    the ended-session sweep and its credential's deletion; see the ended-session rule.
   - **Another tab's request in flight.** [Guessing] Reasoned, not run in a browser: tabs share one
     cookie jar, so a request another tab sent under the old cookie, reaching the server after the
     delete, is answered `401` while the jar holds, or is about to hold, the new cookie. That `401`
-    speaks for the cookie the request carried, not for the browser. Before displacement the old
-    session stayed live and that request succeeded. The client therefore judges a `401` before it
-    ends a tab's session — see the interceptor rule.
+    speaks for the cookie the request carried, not for the browser. The client therefore runs the
+    session judgement on a `401` before it ends a tab's session — see the interceptor rule.
   - **Six shapes were refused**, and
     [ADR 0030](../decisions/0030-displace-the-session-an-overwritten-cookie-names.md) records them.
     - **Displacing before the handler** — the measured refusal above.
@@ -593,14 +594,22 @@ required members. A third writer is a decision rather than a refactor.
 - **Enforced in**: `SessionCookieWriter.WriteEstablishedAsync` in the API, which each establishing
   endpoint calls on its established arm, after its handler returned.
   `SessionCookieIssueCensusTests` holds that one file calls `SessionCookie.Issue`, the writer's —
-  it counts files, not call sites — and measured, a direct `Issue` in an endpoint reddens it. `DisplaceSessionHandler` in
-  `Application/Sessions/DisplaceSession`, and `SessionRepository.RemoveAsync` beneath it, pinned by
-  the `RemoveAsync_*` cases named under the MUST NOT on `DELETE`. The endpoint cases, the
-  cross-account and refused-sign-in ones measured above among them, sit in the establishing paths'
-  own integration tests.
+  it counts files, not call sites — and measured, a direct `Issue` in an endpoint reddens it.
+  `DisplaceSessionHandler` in `Application/Sessions/DisplaceSession`, and
+  `SessionRepository.RemoveAsync` beneath it, pinned by
+  `RemoveAsync_DeletesOnlyTheNamedSessionAndItsHandle` (the named row unrevoked and revoked, another
+  row on the same credential kept), `RemoveAsync_ForAnotherAccountsSession_RemovesNothing` and
+  `RemoveAsync_WhenRevokedConcurrently_StillRemovesIt`. The endpoint cases, the cross-account and
+  refused-sign-in ones measured above among them, sit in the establishing paths' own integration
+  tests.
 - **Example**: somebody signs in on a shared laptop and walks away without signing out. A second
   person signs in on the same browser with their own passkey. The first person's live session is
   deleted with its handle, so the row saying this browser was signed in to that account goes too.
+  Edge cases: had the second person's assertion failed to verify, nothing would be displaced — a
+  refused sign-in leaves the presented session live
+  (`ARefusedAssertion_LeavesThePresentedSessionLive`); and a cookie naming another account's
+  *ended* session is deleted all the same
+  (`PasskeySignIn_WithAnotherAccountsEndedCookie_DeletesThatSession`).
 - **Counterexample**: an endpoint calling `SessionCookie.Issue` itself. It compiles, answers `200`
   and sets a working cookie, and leaves the overwritten session live, held by nobody.
 - **Source**: `[SOURCE: discussion]`
@@ -800,23 +809,24 @@ required members. A third writer is a decision rather than a refactor.
     await buys is a screen that does not draw a list the answer would have replaced.
   - **The reading also moves twice mid-visit, and neither move is a re-probe.**
     `ended()` is called by `SessionService.judgeRefusal` on a `401` the interceptor hands it and the
-    judgement confirms or that reaches a tab it cannot judge, by the Settings screen's sign out, by
-    the release screen's Sign out, and by `ErasureFlowService` on the erasing request's `204`. Each
-    runs **before** the navigation to `/welcome` — the interceptor navigates only once the verdict
-    is in — because `guestGuard` reads the status the moment the router asks, and a navigation made
-    first is judged against a stale session and sent back. `established()` is called by the registration flow on the `201` and by
-    the sign-in flow on the assertion's answer, and `establishedLocked()` by the release flow on the
-    locked sign-in's `200`. Each time the server has just said what it thinks, in the same breath as
-    the cookie it set or the refusal it answered, so asking again would replace an answer with a
-    guess over a network that may itself be the problem. On the establishing side a re-probe also
-    costs a round trip at the happiest moment of the flow and can come back `unreachable` — a
-    **third** reading of a fact already stated.
+    session judgement confirms or that reaches a tab it cannot judge, by the Settings screen's sign
+    out, by the release screen's Sign out, and by `ErasureFlowService` on the erasing request's
+    `204`. Each runs **before** the navigation to `/welcome` — the interceptor navigates only once
+    the verdict is in — because `guestGuard` reads the status the moment the router asks, and a
+    navigation made first is judged against a stale session and sent back. `established()` is
+    called by the registration flow on the `201` and by the sign-in flow on the assertion's answer,
+    and `establishedLocked()` by the release flow on the locked sign-in's `200`. Each time the
+    server has just said what it thinks, in the same breath as the cookie it set or the refusal it
+    answered, so asking again would replace an answer with a guess over a network that may itself
+    be the problem. On the establishing side a re-probe also costs a round trip at the happiest
+    moment of the flow and can come back `unreachable` — a **third** reading of a fact already
+    stated.
     - **A `401` is the one move that asks first — in a tab it can judge — and it asks once rather
-      than re-probing.** Since a
-      sign-in displaces the session the old cookie named, a `401` speaks for the cookie its request
-      carried and not for the jar, so the refusal alone is not the server saying this tab's session
-      is over. The judgement asks `GET /api/me` — not the probe's session read, which names nobody —
-      and sets the status from that answer. The interceptor rule below argues the rest.
+      than re-probing.** Since a sign-in displaces the session the old cookie named, a `401` speaks
+      for the cookie its request carried and not for the jar, so the refusal alone is not the server
+      saying this tab's session is over. The session judgement asks `GET /api/me` — not the probe's
+      session read, which names nobody — and sets the status from that answer. The interceptor rule
+      below argues the rest.
   - **The scheduled erasure is the one fact read again, and the read publishes nothing else.** A
     sign-in's answer does not carry the schedule, so `established()` sends one marked
     `GET /api/me/session` behind it, unawaited, exactly as it reads the budget: the status is
@@ -836,11 +846,10 @@ required members. A third writer is a decision rather than a refactor.
       person withdraws cannot bring the notice back. And the answer's `kind` must match the status,
       which catches a cookie replaced underneath the tab by a session of the *other* kind; another
       account of the same kind passes it, and only an identity in the answer could catch that. That
-      is why the judgement of a `401` re-reads `GET /api/me` and compares its `budgetId` rather than
+      is why the session judgement re-reads `GET /api/me` and compares its `budgetId` rather than
       re-reading this route: the session read carries no identity, so it cannot tell this tab's
-      account from another of the same kind.
-      Separately, at most one refresh is out at a time — a load rule, not a freshness one, and
-      `established()`'s own read does not wait on it.
+      account from another of the same kind. Separately, at most one refresh is out at a time — a
+      load rule, not a freshness one, and `established()`'s own read does not wait on it.
     - **A withdrawal's `204` publishes only into the session that sent it.** `erasureCancelled()`
       takes the `sessionToken()` the flow read just before posting and does nothing when it is no
       longer current, so an answer that lands after this tab signed out and somebody else signed in
@@ -849,7 +858,7 @@ required members. A third writer is a decision rather than a refactor.
       session — and is deliberately not the generation, which also moves inside one session and
       would drop the right answer. Otherwise it publishes `null` — nothing scheduled, which the
       server just said — never `'unread'`.
-    - **The token has a second reader: the judgement of a `401`.** `sessionExpiryInterceptor` reads
+    - **The token has a second reader: the session judgement.** `sessionExpiryInterceptor` reads
       `sessionToken()` as a request leaves and hands it to `judgeRefusal`, which answers `'stale'`
       and writes nothing when the visit has moved — a `401` to a request sent before a sign-out and
       a sign-in says nothing about the session after them. The re-read in flight is keyed on the
@@ -987,9 +996,11 @@ required members. A third writer is a decision rather than a refactor.
   anything. `SessionService.judgeRefusal` sends one marked `GET /api/me`, and the session ends
   client-side — and the browser goes to `/welcome` — only when that read names another budget,
   names none, or fails. An answer naming the tab's own budget keeps the session. A tab holding no
-  full session, or no budget to compare against, ends without asking. A `403`, another origin's
-  `401`, and any request carrying the `EXPECTS_UNAUTHENTICATED` context token are all left alone.
-  The error is **always re-thrown** — a judged one once the verdict is in — and never retried.
+  full session, or no budget to compare against, ends without asking, and a `401` to a request sent
+  in an earlier visit changes nothing. A `403`, another origin's `401`, and any request carrying the
+  `EXPECTS_UNAUTHENTICATED` context token are all left alone. This act is the **session
+  judgement**. The error is **always re-thrown** — a judged one once the verdict is in — and never
+  retried.
 - **Why**: a session ending is an application-wide fact — every screen's reads start failing at once
   — so it is noticed in one place rather than in each caller, which is why no screen carries a
   lapsed-session sentence of its own.
@@ -998,22 +1009,17 @@ required members. A third writer is a decision rather than a refactor.
     flight under that cookie comes back `401` while the jar already holds the new one — the cost the
     displacement rule names, [Guessing] reasoned and not run in a browser. Read as the end of the
     session, that signs a tab out of an account it is still inside and locks its keys.
-  - **The re-read is `GET /api/me` and never the session read.** `GET /api/me/session` names nobody
-    by design, so a session of another account of the same kind passes it, and a tab kept on that
-    would fold its budget and keys into writes made under that account's cookie. Measured: the
-    candidate that re-read the session route and kept the session on any `200` reddened 18 specs.
-    `GET /api/me` names the budget, and the budget is what the tab's writes are keyed by.
+  - **The re-read is `GET /api/me` and never the session read.** `GET /api/me` names the budget,
+    and the budget is what the tab's writes are keyed by; `GET /api/me/session` names nobody by
+    design — see the Counterexample.
   - **Fail closed, and to `anonymous`.** Anything but a `200` naming this tab's budget ends the
     session — a `401`, a `403`, a `5xx`, no answer, a body naming no budget. Not `unreachable`: the
     server has already refused the request being judged, and a tab left signed in stays on screens
     whose every read is refused. A locked session cannot be judged — `GET /api/me` refuses one — so
     it ends without asking, as a tab with no budget does — and so a locked tab still ends over the
     race above, [Guessing] reasoned and not run.
-  - **What the judgement does not reach**, stated as behaviour. [Guessing] Reasoned from the code,
-    not run. It runs only on a `401`: a tab with nothing in flight when another tab's sign-in
-    replaces the cookie hears none, and carries on under whatever session the jar now holds —
-    another account's included — with nothing in the client noticing. And a re-read that leaves
-    before the new cookie has landed carries the old one, is refused, and ends the tab anyway.
+  - **It answers a refusal and nothing else.** The session judgement runs on a `401`; it is not a
+    watch over which session the cookie jar holds.
   - **Still an observer.** The interceptor calls `judgeRefusal` and navigates on an ending verdict;
     it never calls `ended()` itself — that would be a second owner of the transition — and never
     retries. The navigation hangs off the verdict rather than off the observable it returns, so a
@@ -1046,8 +1052,8 @@ required members. A third writer is a decision rather than a refactor.
   list is a second definition of the anonymous surface, and the first route to move leaves it ending
   the session of somebody who mistyped a recovery code. `app.config.spec.ts` carries a registration
   pin for this interceptor too, independent of the credentials one.
-  - **The judgement is `SessionService.judgeRefusal`'s, and the interceptor hands it one value.** It
-    reads `sessionToken()` as the request leaves and passes it on a qualifying `401`. The verdict is
+  - **The session judgement is `SessionService.judgeRefusal`'s, and the interceptor hands it one
+    value.** It reads `sessionToken()` as the request leaves and passes it on a qualifying `401`. The verdict is
     `'ended'`, with `ended()` already run, `'kept'` or `'stale'`, and the promise never rejects:
     awaited inside the interceptor's `catchError`, a rejection would replace the caller's `401`. At
     most one re-read is in flight per visit — a `401` that arrives while one is out joins it rather
@@ -1060,7 +1066,7 @@ required members. A third writer is a decision rather than a refactor.
     over the real `SessionService`, `MeApiService` and `HttpClient`: one marked re-read, the session
     kept on the same budget, and ended on another budget or on a refused re-read with nothing sent
     after it. Measured: hanging the navigation inside the returned observable, and leaving the
-    judgement's `ended()` unguarded, each reddened its own test.
+    session judgement's `ended()` unguarded, each reddened its own test.
   - **Which members set it is a rule and deliberately not a tally.** A number written in prose is a
     second copy of the list standing beside it, kept in step by nobody and reddening nothing when
     the two disagree — and it is the number that rots, because a member added to a service is added
@@ -1085,12 +1091,12 @@ required members. A third writer is a decision rather than a refactor.
     a session that had already ended before the gate ran, and either way the request erased
     nothing. Unmarked, the gate's `401` would cost a re-read of `GET /api/me` — one that, failing,
     ends a session that is still live — and the dialog would hear its own verdict only after the
-    judgement had run on it. Marked, the dialog reads the gate's verdict itself and no re-read is
-    spent. **A session that really had ended is not lost by the mark**, because
+    session judgement had run on it. Marked, the dialog reads the gate's verdict itself and no
+    re-read is spent. **A session that really had ended is not lost by the mark**, because
     `ErasureFlowService` resolves every `401` there with one **unmarked** `GET /api/me` —
     `getMe()`, the counterexample above, used for exactly the reason it is one. A `401` on that
-    probe is the interceptor's to judge: on an ending verdict the tab leaves for `/welcome` while
-    the dialog says nothing. On a kept one the dialog says nothing either and its commit is live
+    probe is one the interceptor hands to the session judgement: on an ending verdict the tab
+    leaves for `/welcome` while the dialog says nothing. On a kept one the dialog says nothing either and its commit is live
     again — [Guessing] the case where the probe, too, carried a cookie another tab's sign-in had
     just displaced, so the erasing request was refused before the gate and erased nothing. A
     `200`, or a probe that cannot answer, lets the dialog say `refused`.
@@ -1101,18 +1107,31 @@ required members. A third writer is a decision rather than a refactor.
       `KeyRotationApiService.beginRotation` also carries a re-authentication assertion to a gate
       that answers `401` when it declines, and it is unmarked, like the other three members of that
       service. So a `401` from the rotation gate reaches the interceptor, where the same verdict
-      from the erasure gate stays with the dialog. There the judgement re-reads `GET /api/me` over a
-      session that is still live and keeps it, so a declined rotation passkey does not take the tab
-      to `/welcome`, and what stays on screen is the rotation flow's own reading of that `401` —
-      [Guessing] read from the code, not run. That service's header argues the absence from the
-      judgement: it settles an ended session on all four routes, and on the begin the body's own
-      `refusal` member is what tells a declined passkey from any other `401`.
+      from the erasure gate stays with the dialog. There the session judgement re-reads
+      `GET /api/me` over a session that is still live and keeps it, so a declined rotation passkey
+      does not take the tab to `/welcome`, and what stays on screen is the rotation flow's own
+      reading of that `401` — [Guessing] read from the code, not run. That service's header argues
+      why its members carry no mark: the session judgement settles an ended session on all four
+      routes, and on the begin the body's own `refusal` member is what tells a declined passkey from
+      any other `401`.
 
     `RegistrationApiService` builds a **fresh** `HttpContext` per call, because that object is
     mutable and a shared one would be read and written by every registration request in the visit. What the token buys there is concrete: without it, a `401` on the second leg
     navigates the person to `/welcome` mid-flow, away from a screen showing ten recovery codes they
     may already have written down — reachable rather than theoretical, because a provider id token
     lives an hour and somebody can sit on the codes step for longer.
+- **Example**: tab A, signed in on budget X, has a request in flight when tab B in the same browser
+  signs in to the same account. B's sign-in displaces the session A's request carried, so that
+  request comes back `401`; the session judgement's `GET /api/me` names X, and A is kept. Edge case:
+  had B signed in to another account, the re-read would name that account's budget Y, and A would
+  end and leave for `/welcome`. [Guessing] The two-tab half is reasoned and not run in a browser;
+  the two verdicts are the ones the `sessionExpiryInterceptor judging a 401 against the session`
+  block pins.
+- **Counterexample**: re-reading `GET /api/me/session` and keeping the session on any `200`. It
+  reads as the cheaper question, since both kinds of session reach that route, and it carries no
+  identity: another account's session of the same kind passes it, and a tab kept on that answer
+  would fold its budget and keys into writes made under that account's cookie. Measured: that
+  candidate reddened 18 specs.
 - **Source**: `[SOURCE: discussion]`
 
 ---
@@ -1124,10 +1143,10 @@ required members. A third writer is a decision rather than a refactor.
   is no session id on the wire for anyone to substitute. Idempotence stops a dead cookie living on
   the client for the rest of its lifetime: a `401` on the second call would leave the browser
   holding a handle nothing clears before its `Expires`. Some ends do leave one, and these are the
-  ones known — an erased account, an ended session the account's next sign-in swept, and a session
-  whose credential was deleted from another device, all on purpose, and an establishing response
-  lost on its way back after displacement took the session the browser still presents — and the
-  rule below says why the dead handle is harmless at each.
+  ones known — an erased account, an ended session the ended-session sweep took at the account's
+  next sign-in, and a session whose credential was deleted from another device, all on purpose, and
+  an establishing response lost on its way back after displacement took the session the browser
+  still presents — and the rule below says why the dead handle is harmless at each.
 - **Enforced in**: `SessionEndpoints` and `RevokeSessionHandler`, over
   `ISessionRepository.RevokeAsync`, whose idempotence is `Session.Revoke`'s.
   `SignOutTests.SigningOut_LeavesAnotherDeviceSignedIn` is the negative control — without it, a
@@ -1138,12 +1157,36 @@ required members. A third writer is a decision rather than a refactor.
 
 - **Rule**: An **ended** session — revoked or expired — authenticates on exactly one route, the one
   that ends sessions, and reaches **no ambient budget** even there. It does so while its row stands,
-  which is until the account's next sign-in at the latest — see the note below.
+  which is until the account's next sign-in at the latest — see the ended-session sweep's rule.
 - **Why**: the idempotence above needs it. Signing out twice presents the same dead cookie twice, so
   the second call has to authenticate far enough to answer `204`. What makes this narrow rather than
   a hole is what it does *not* relax: the token still has to match, so it is a verdict about
   liveness and never about the handle. And the tenant is published only on the live path, so a
   marked route is structurally unable to reach budget-owned rows.
+  - **Where the row is gone, this route answers `401`, and the cookie stays on the client** until
+    its own `Expires`, which is the deleted session row's expiry. These are the ends known, not a
+    closed list. **An erased account** leaves no *ended* session behind, only an absent one: the
+    cascade takes the `session_tokens` row, so `AuthenticateSessionHandler` finds no token and
+    returns nothing, and `SessionCookieAuthenticationHandler` answers `NoResult` before it ever reads
+    `AcceptsEndedSessionAttribute`. **A session the ended-session sweep took** arrives at the same
+    place by another road. An ended session stays, and this route answers its cookie `204`, until a
+    session is established on its account; the ended-session sweep then deletes the row and the
+    cascade its handle. A sign-in in the same browser overwrites that cookie, so the dead one is
+    held by a browser the sign-in did not happen in. **A deleted credential** takes its sessions and
+    their handles by the cascade from `credentials`: a passkey revocation, an email change retiring
+    the federated credential, or a regeneration deleting the old set, made from another device,
+    leaves the cookie of a browser holding one of those sessions naming no row. **A lost
+    establishing response** is the one where the dead cookie is held by the browser the sign-in did
+    happen in: displacement deleted the session it names, and the response that would have
+    overwritten it never arrived. That is the dead cookie the sign-out rule above exists to avoid,
+    and at each of these ends it is harmless: the handle names no row, so it opens nothing and every
+    route answers it `401`.
+  - **The client needs nothing new for it.** [Guessing] Read from the code, not run: a `401`
+    reaches `sessionExpiryInterceptor` like any other, and `endSession()` carries no
+    `EXPECTS_UNAUTHENTICATED`, so even a sign-out press ends the tab's session and lands on
+    `/welcome`. The outcome goes through the session judgement's re-read, which carries the same
+    dead cookie and is refused in turn, so it does not change. **Do not "fix" it by relaxing the
+    lookup** — that is this rule's own counterexample. See [erasure.md](erasure.md).
 - **Enforced in**: `AcceptsEndedSessionAttribute`, an **opt-in marker on the route**, read by
   `SessionCookieAuthenticationHandler`. A marker rather than an authorization requirement because
   `AuthorizationMiddleware` answers `403` where this needs `401`, and rather than `AllowAnonymous`
@@ -1152,30 +1195,6 @@ required members. A third writer is a decision rather than a refactor.
   until somebody argues for it.
 - **Counterexample**: relaxing the *lookup* instead — admitting a request whose token matched
   nothing so that sign-out "always works". That is an unauthenticated route with extra steps.
-- **Note** — **this route answers `401` at each end below, and at each the cookie stays on the
-  client** until its own `Expires`, which is the deleted session row's expiry. They are the ends
-  known, not a closed list. **An erased account** leaves no *ended* session behind, only an absent
-  one: the cascade takes the `session_tokens` row, so
-  `AuthenticateSessionHandler` finds no token and returns nothing, and
-  `SessionCookieAuthenticationHandler` answers `NoResult` before it ever reads
-  `AcceptsEndedSessionAttribute`. **A swept session** arrives at the same place by another road. An
-  ended session stays, and this route answers its cookie `204`, until a session is established on
-  its account; the ended-session sweep then deletes the row and the cascade its handle. A sign-in
-  in the same browser overwrites that cookie, so the dead one is held by a browser the sign-in did
-  not happen in. **A deleted credential** takes its sessions and their handles by the cascade from
-  `credentials`: a passkey revocation, an email change retiring the federated credential, or a
-  regeneration deleting the old set, made from another device, leaves the cookie of a browser
-  holding one of those sessions naming no row. **A lost establishing response** is the one where
-  the dead cookie is held by the browser the sign-in did happen in: displacement deleted the
-  session it names, and the response that would have overwritten it never arrived. That is the
-  dead cookie the sign-out rule above exists to avoid, and at each of these ends it is harmless:
-  the handle names no row, so it opens nothing and every route answers it `401`.
-  [Guessing] The client needs nothing new for it — read from the code, not run: a `401` reaches
-  `sessionExpiryInterceptor` like any other, and `endSession()` carries no
-  `EXPECTS_UNAUTHENTICATED`, so even a sign-out press ends the tab's session and lands on
-  `/welcome`. The outcome goes through the judgement's re-read, which carries the same dead cookie
-  and is refused in turn, so it does not change. **Do not "fix" it by relaxing the lookup** — that is this rule's own counterexample.
-  See [erasure.md](erasure.md).
 - **Source**: `[SOURCE: discussion]`
 
 ---
@@ -1250,6 +1269,10 @@ required members. A third writer is a decision rather than a refactor.
     which is `null` or `{ "takesEffectAtUtc": … }` — the shape `GET /api/me/session` answers. The
     cookie is written through `SessionCookieWriter` on the established arm only, after the handler
     returned, so the `404` displaces nothing either.
+  - **A race recorded rather than handled.** [Guessing] Reasoned, not run — nothing in the suite
+    drives that interleaving: an erasure committing between the discovery read and the save removes
+    the credential the session names, so the insert fails its foreign key with `23503` and the
+    request answers `500`; a retry finds no credential and answers `404`.
 - **Enforced in**: `EstablishLockedSessionHandler` and the route in `SessionEndpoints`.
   `EstablishLockedSessionHandlerTests` pins the order over one log of calls, on an account holding a
   passkey beside its federated credential and a stranger's account filed before it — a handler that
@@ -1268,8 +1291,8 @@ required members. A third writer is a decision rather than a refactor.
   still answering `"kind": "full"` on `GET /api/me/session`.
   `LockedSignIn_OverALiveLockedSession_ReplacesIt` and `LockedSignIn_OverAnEndedSession_Succeeds`
   hold the two cookies that are not refused, and
-  `LockedSignIn_OverItsOwnAccountsEndedSession_DeletesThatSessionAndItsHandle` holds the sweep
-  taking the ended one; `SessionRepositoryTests.FindByTokenHashAsync_ReturnsAnUntrackedEntity`
+  `LockedSignIn_OverItsOwnAccountsEndedSession_DeletesThatSessionAndItsHandle` holds the
+  ended-session sweep taking the ended one; `SessionRepositoryTests.FindByTokenHashAsync_ReturnsAnUntrackedEntity`
   holds the cause on the tracker.
   `LockedSignIn_WithAnotherAccountsLockedCookie_OpensEverythingOnTheTokensAccount` holds that a
   replaced locked cookie lends the new session nothing: the row and the schedule are the token's
@@ -1280,10 +1303,6 @@ required members. A third writer is a decision rather than a refactor.
 - **Counterexample**: keying the lookup on the address. The `404` test's second case sends an
   unregistered subject carrying an address an account holds; a lookup on the address opens a locked
   session on an account the provider never named.
-- **Note** — **a race recorded rather than handled.** An erasure committing between the discovery
-  read and the save removes the credential the session names, so the insert fails its foreign key
-  with `23503` and the request answers `500`; a retry finds no credential and answers `404`. Nothing
-  in the suite drives that interleaving.
 - **Source**: `[SOURCE: discussion]`
 
 ---
@@ -1319,6 +1338,13 @@ required members. A third writer is a decision rather than a refactor.
     that should have worked, while an opt-**in** gate whose marker was forgotten hands budget
     content to a locked session with nothing going red. **The derivation is what matters, not the
     tally**: which polarity a marker takes follows from which of its two failures is audible.
+  - **The schedule route is the release valve** for somebody holding nothing but a provider
+    sign-in. The sign-in that brings them to it is `POST /api/locked-session`, which answers the
+    account's scheduled instant beside the session. In the browser, `/release` starts its trip,
+    sends its request on the return, and then files the schedule with
+    `MeApiService.scheduleErasure`. The **immediate** erasure, `POST /api/me/erasure`, is refused to
+    a locked session like everything else. Why a schedule needs no passkey, and why a full session
+    must not file one, is argued in [erasure.md](erasure.md).
 - **Enforced in**: `FullSessionRequirement` and its handler, carried on the fallback authorization
   policy beside `RequireAuthenticatedUser` and beside the **session cookie scheme, named
   explicitly** — so it reaches every route declaring no policy of its own, which is everything
@@ -1415,14 +1441,6 @@ required members. A third writer is a decision rather than a refactor.
 - **Counterexample**: refusing a locked session by publishing no ambient budget for it. It looks
   equivalent and is not — the export reads `budgets` by `user_id`, so it would sail through, and
   every other route would fail with a raw exception rather than a refusal.
-- **Note**: the schedule route is the release valve for somebody holding nothing but a provider
-  sign-in. The sign-in that brings them to it exists on the server — `POST /api/locked-session`,
-  which answers the account's scheduled instant beside the session. In the browser, `/release`
-  starts its trip, sends its request on the return, and then files the schedule with
-  `MeApiService.scheduleErasure`. The **immediate**
-  erasure, `POST /api/me/erasure`, is refused to a locked session like everything else. Why a
-  schedule needs no passkey, and why a full session must not file one, is argued in
-  [erasure.md](erasure.md).
 - **Source**: `[SOURCE: discussion]`
 
 ## Workflows & State Transitions
@@ -1432,9 +1450,10 @@ stateDiagram-v2
     [*] --> Established : a credential authenticates its owner
     Established --> Revoked : someone ends this session, or the credential that opened it
     Established --> Expired : expires_at_utc passes with nobody revoking anything
-    Established --> [*] : the account is erased, or displaced when the browser presenting it establishes a session (the row is deleted)
-    Revoked --> [*] : swept when the account next establishes a session, displaced when the browser presenting it does, or deleted with its credential or the account
-    Expired --> [*] : swept when the account next establishes a session, displaced when the browser presenting it does, or deleted with its credential or the account
+    Expired --> Revoked : a revocation stamps an expired, unrevoked row
+    Established --> [*] : the account is erased, its credential is deleted, or displaced when the browser presenting it establishes a session (the row is deleted)
+    Revoked --> [*] : taken by the ended-session sweep when the account next establishes a session, displaced when the browser presenting it does, or deleted with its credential or the account
+    Expired --> [*] : taken by the ended-session sweep when the account next establishes a session, displaced when the browser presenting it does, or deleted with its credential or the account
 ```
 
 | Transition | Triggered by | Validations |
@@ -1442,9 +1461,11 @@ stateDiagram-v2
 | → Established | `Session.Establish(credential, createdAtUtc, expiresAtUtc)`, reached from `RegisterAccountHandler` once a registration ceremony verifies — over the **passkey** credential it just created, never the recovery-codes one — from `CompleteAssertionHandler` once a passkey assertion verifies, from `RedeemRecoveryCodeHandler` once a presented verifier matches a stored hash, from `GenerateRecoveryCodesHandler` when replacing a set ended at least one of that set's sessions, and from `EstablishLockedSessionHandler` once a provider token's subject matches a federated credential — the one path whose session is `Locked` | the credential is required; the expiry must be after the creation instant; the kind is derived from the credential's type and cannot be supplied |
 | Established → Revoked | `Session.Revoke(revokedAtUtc)`, reached two ways: through `RevokeSessionsForCredentialHandler`, which `RevokePasskeyHandler`, `GenerateRecoveryCodesHandler` and `ChangeEmailHandler` each call before deleting a credential, and through `RevokeSessionHandler`, which `POST /api/me/session/revocation` calls to end the caller's own | none. Already revoked is a no-op keeping the first instant, which is what makes a retry honest about having ended nothing new |
 | Established → Expired | the clock | none. `IsActiveAt` reads the expiry as well as the revocation, with an exclusive boundary: a session is live up to its expiry and not at it |
-| Revoked / Expired → deleted (swept) | `SessionRepository.AddAsync`, in the save that writes a new session and its handle, reached from `CompleteAssertionHandler`, `RedeemRecoveryCodeHandler`, `GenerateRecoveryCodesHandler` when it re-establishes, and `EstablishLockedSessionHandler`. **Not** from `RegisterAccountHandler`, which writes through `IRegistrationRepository` onto an account that holds no session yet | the row is not `IsActiveAt` the new session's `CreatedAtUtc` — any revocation, or an expiry at or before that instant; `user_isolation` keeps it to the published account; the handle leaves by the cascade from `sessions`. A failed save deletes nothing and stores nothing, and a row another request deleted or revoked first is re-read, up to three attempts. The next request presenting the cookie finds no token row and answers `401` — **the sign-out route included**; see the ended-session rule |
+| Expired → Revoked | `Session.Revoke(revokedAtUtc)` on a row whose expiry has passed — `RevokeSessionsForCredentialHandler` loads a credential's unrevoked sessions whatever their expiry | none. The row was already ended; the stamp adds the instant and counts in `sessionsEnded` — see the revocation rule's Example |
+| Revoked / Expired → deleted (ended-session sweep) | `SessionRepository.AddAsync`, in the save that writes a new session and its handle, reached from `CompleteAssertionHandler`, `RedeemRecoveryCodeHandler`, `GenerateRecoveryCodesHandler` when it re-establishes, and `EstablishLockedSessionHandler` | the row is not `IsActiveAt` the new session's `CreatedAtUtc` — any revocation, or an expiry at or before that instant; `user_isolation` keeps it to the published account; the handle leaves by the cascade from `sessions`. A failed save deletes nothing and stores nothing, and a row another request deleted or revoked first is re-read, up to three attempts. The next request presenting the cookie finds no token row and answers `401` — **the sign-out route included**; see the ended-session rule |
 | Established / Revoked / Expired → deleted (displaced) | `SessionRepository.RemoveAsync`, called by `DisplaceSessionHandler`, which `SessionCookieWriter` runs in a dependency scope of its own once an establishing handler has returned — on each of the five establishing paths' established arm, before the new cookie is written | the row is the one the incoming cookie's handle names, through `AuthenticateSessionHandler`, live or ended; that handler publishes the row's owner into the child scope, so `user_isolation` admits it whichever account owns it; the handle leaves by the cascade from `sessions`. A handle naming no row deletes nothing, and a row revoked under the delete is re-read, up to three attempts. A failed delete answers `500` after the new session committed and writes no cookie. Whether a row was removed does not change the response — see the displacement rule |
-| Established → deleted | `EraseAccountHandler` deleting the user row; the session and its `session_tokens` rows leave by the cascade `users → credentials → sessions → session_tokens`, in the erasure's own transaction. A revoked or expired row leaves the same way | none, and nothing is stamped: a `revoked_at_utc` would be a remnant. The cascade runs as the referencing table's owner, so the erasure needs no `DELETE` grant on either table — see [erasure.md](erasure.md). The next request presenting the cookie finds no token row and answers `401` — **the sign-out route included**, which makes this one of the ends where the cookie stays on the client until its `Expires`; a swept session, a deleted credential and a lost establishing response are others the ended-session rule lists. Harmless, because it names nothing; do not answer it by relaxing the lookup — see the ended-session rule |
+| Established / Revoked / Expired → deleted (its credential deleted) | the `ON DELETE CASCADE` from `credentials`, when `RevokePasskeyHandler`, `GenerateRecoveryCodesHandler` or `ChangeEmailHandler` deletes the credential that established it; each revokes that credential's sessions first, so a live row arrives here revoked | none; the handle leaves by the cascade from `sessions`. The next request presenting the cookie finds no token row and answers `401` — see the ended-session rule |
+| Established / Revoked / Expired → deleted (erased) | `EraseAccountHandler` deleting the user row; the session and its `session_tokens` rows leave by the cascade `users → credentials → sessions → session_tokens`, in the erasure's own transaction | none, and nothing is stamped: a `revoked_at_utc` would be a remnant. The cascade runs as the referencing table's owner, so the erasure needs no `DELETE` grant on either table — see [erasure.md](erasure.md). The next request presenting the cookie finds no token row and answers `401` — **the sign-out route included**, which makes this one of the ends where the cookie stays on the client until its `Expires`; a session the ended-session sweep took, a deleted credential and a lost establishing response are others the ended-session rule lists. Harmless, because it names nothing; do not answer it by relaxing the lookup — see the ended-session rule |
 
 There is no transition back. Nothing un-revokes a session and nothing extends one.
 
@@ -1479,8 +1500,11 @@ it rather than a reviewer.
 
 ## Decision Trees
 
-The one multi-branch decision in this area is the kind derivation, written out in `Session.KindFor`
-with a throwing discard arm and restated declaratively by `CK_sessions_kind_matches_credential`:
+Three of this area's branching decisions are written out here: the kind derivation, displacement,
+and the session judgement.
+
+**The kind derivation**, written out in `Session.KindFor` with a throwing discard arm and restated
+declaratively by `CK_sessions_kind_matches_credential`:
 
 ```
 IF the establishing credential's type is `passkey`      ← arms are mutually exclusive
@@ -1491,6 +1515,46 @@ ELSE IF it is `federated`
   THEN the session's kind is `Locked`
 ELSE                                                    ← an unenumerated future type
   THEN `Session.KindFor` throws; the constraint refuses the row at the database either way
+```
+
+**Displacement**, run by `SessionCookieWriter` on an establishing path — see the displacement rule:
+
+```
+IF the establishing handler refused, or established no session   ← arms are mutually exclusive
+  THEN the writer does not run; nothing is displaced and no cookie is written
+ELSE IF the request carried no session cookie, or one `SessionCookie.TryReadTokenHash` refuses
+  THEN nothing is displaced; the new cookie is written
+ELSE IF the cookie's handle names no row — never issued, or already gone
+  THEN nothing is displaced; the new cookie is written
+ELSE                                    ← the row exists, live or ended, on whichever account
+  THEN delete it, its handle by the cascade; a concurrent revocation is re-read, up to three attempts
+  IF the delete throws
+    THEN `500` after the new session committed; no cookie is written
+  ELSE
+    THEN the new cookie is written
+```
+
+**The session judgement**, `sessionExpiryInterceptor` handing a refusal to
+`SessionService.judgeRefusal` — see the interceptor rule:
+
+```
+IF the response is not a `401`, the request did not go to this API,
+   or it carries `EXPECTS_UNAUTHENTICATED`                      ← not judged
+  THEN nothing; the error passes on
+ELSE IF the request was sent in an earlier visit
+  THEN `'stale'`; nothing is written
+ELSE IF the tab is not `authenticated`, or holds no budget
+  THEN `ended()` without asking; `'ended'`
+ELSE                                    ← one marked `GET /api/me` per visit; a later 401 joins it
+  IF the visit moved while the re-read was out
+    THEN its answer publishes nothing
+  ELSE IF the answer is a `200` naming this tab's budget
+    THEN `'kept'`; nothing is written
+  ELSE                                  ← another budget, no budget, a refusal, no answer
+    THEN `ended()`; `'ended'`
+
+On `'ended'` the interceptor navigates to `/welcome`. The error is re-thrown in every arm — a judged
+one once the verdict is in — and nothing is retried.
 ```
 
 ## Integration Points
@@ -1506,8 +1570,8 @@ ELSE                                                    ← an unenumerated futu
   satisfies every constraint in the schema and changes only which credential a later revocation
   sweeps. **It runs no ended-session sweep**, and needs none: the account id is derived from this
   registration's own challenge and the `users` row is inserted in the same save, so no session can
-  already exist under that account. A sweep there would be a read and a delete over a set that is
-  empty by construction. **Displacement does run there**, as a step after the ladder rather than
+  already exist under that account. An ended-session sweep there would be a read and a delete over a
+  set that is empty by construction. **Displacement does run there**, as a step after the ladder rather than
   inside it: the endpoint hands the committed session's handoff to `SessionCookieWriter`, so the
   account is still one save and `RegisterAccountHandler` knows nothing of it. The browser
   registering can hold a cookie of another account, one of the cases the writer's own dependency
@@ -1516,8 +1580,8 @@ ELSE                                                    ← an unenumerated futu
   passkey does. The two routes divide differently than the names suggest: a **redemption** opens a
   session and revokes nothing, while a **regeneration** revokes the replaced set's sessions and —
   when it ended any — opens one over the new set in their place, so it is the one path that does
-  both. The condition is the sweep's own count, which is why that file argues the `sessionsEnded`
-  contract from the other side.
+  both. The condition is the revocation sweep's own count, which is why that file argues the
+  `sessionsEnded` contract from the other side.
 - **[Account Keys](account-keys.md)** — `GET /api/me/account-keys` reads **no session at all**, and
   the sign-out route this file argues is once again the only one that reads the `session_id` claim its
   own request's authentication produced. That route briefly narrowed its answer to the credential the
@@ -1587,8 +1651,8 @@ ELSE                                                    ← an unenumerated futu
 - **A new cookie overwrites the old one, and overwriting it ends nothing — so the old session is
   displaced first.** Every establishing path writes `__Host-budgetoid-session` over whatever the
   browser held. Left to the overwrite, the session the old cookie named would stay live, held by no
-  browser, until it expired or a sweep of its credential ended it — the recovery-code
-  regeneration's own sweep is one — and the ended-session sweep could not reach it. So
+  browser, until it expired or a revocation sweep of its credential ended it — the recovery-code
+  regeneration's is one — and the ended-session sweep could not reach it. So
   `SessionCookieWriter` deletes that session, live or ended, on whichever account owns it, before
   it writes the new cookie; see the displacement rule. The locked sign-in refuses to overwrite a
   live full session, and so displaces nothing there; see its rule above.
@@ -1670,25 +1734,25 @@ ELSE                                                    ← an unenumerated futu
     is green with the revocation call deleted, and therefore proves nothing.
   - **On the recovery-code path a second mutation produces the same wrong number**: swapping the
     revocation with the delete also reports `0`, because the cascade has already taken the session
-    rows and the sweep matches nothing. So the count discriminates ordering as well as presence.
+    rows and the revocation sweep matches nothing. So the count discriminates ordering as well as
+    presence.
 - **Between the revocation and the delete, the tracked sessions are discarded, and on `sessions`
   nothing notices when they are not.** Revoking loads every unrevoked `Session` into the change
   tracker. Remove the credential with those dependents still tracked and EF cascades into the copies
   it can see and emits its own `DELETE FROM sessions`. The role holds `DELETE` there for the
   ended-session sweep and for displacement, so that statement succeeds and removes the rows the
-  database's cascade would
-  have taken: the outcome is the same. Measured: removing the second `DiscardTrackedEntities()` in
-  `RevokePasskeyHandler` or `GenerateRecoveryCodesHandler` reddens no integration test, and only the
-  unit replay and placement tests notice. The discard stays because the statements past it are
-  written to an empty tracker, and because the cascade a tracked `Session` drags behind it does not
-  stop at `sessions`. Same mechanism `EraseAccountHandler` documents for `budgets`, which still holds
-  no `DELETE`.
-  - **The `DELETE` the sweep and displacement need costs this trap its alarm on `sessions`.** Like
-    `recovery_code_hashes`, which is granted `DELETE` too, the mistake there succeeds silently rather
-    than raising `42501` — see [recovery-codes.md](recovery-codes.md). The `42501` a table holding no
-    `DELETE` raises is a diagnostic the grant matrix buys, not an inconvenience it imposes, and on
-    this chain `session_tokens` is the table still buying it.
-  - **`session_tokens` is where the alarm still sounds.** A session carries a handle, so the cascade
+  database's cascade would have taken: the outcome is the same. Measured: removing the second
+  `DiscardTrackedEntities()` in `RevokePasskeyHandler` or `GenerateRecoveryCodesHandler` reddens no
+  integration test, and only the unit replay and placement tests notice. The discard stays because
+  the statements past it are written to an empty tracker, and because the cascade a tracked
+  `Session` drags behind it does not stop at `sessions`. Same mechanism `EraseAccountHandler`
+  documents for `budgets`, which holds no `DELETE`.
+  - **On `sessions` this trap raises no alarm, because the ended-session sweep and displacement
+    need `DELETE` there.** Like `recovery_code_hashes`, which is granted `DELETE` too, the mistake
+    there succeeds silently rather than raising `42501` — see [recovery-codes.md](recovery-codes.md).
+    The `42501` a table holding no `DELETE` raises is a diagnostic the grant matrix buys, not an
+    inconvenience it imposes, and on this chain `session_tokens` is the table buying it.
+  - **On `session_tokens` the trap raises `42501`.** A session carries a handle, so the cascade
     a tracked `Session` drags behind it reaches one more relation, and the role holds no `DELETE`
     there. A `SessionToken` tracked under a session EF removes makes EF send its own delete on
     `session_tokens`, and the request dies with `42501`. **The failure names a permission and the
@@ -1705,11 +1769,11 @@ ELSE                                                    ← an unenumerated futu
       stops biting and conclude it no longer applies. It does; the read simply stopped being the
       shape that triggers it.
 - **Revoked and expired rows stay until the account's next sign-in.** The ended-session sweep takes
-  them in the save that writes the next session, and only their credential or the account leaving,
-  or displacement by a sign-in in a browser still presenting one's cookie, takes them sooner — the
-  MUST NOT on `DELETE` says where else a sweep could run and why it does not. So a signed-out session stays readable, and its cookie still gets the sign-out route's `204`,
-  until then; afterwards that cookie gets `401` on every route. An account that never signs in
-  again keeps its last batch. A registration sweeps nothing, because no session can predate it.
+  them in the save that writes the next session, and their credential or the account leaving, or
+  displacement by a sign-in in a browser still presenting one's cookie, can take them sooner — the
+  ended-session sweep's rule says where else it could run and why it does not. So a signed-out
+  session stays readable, and its cookie still gets the sign-out route's `204`, until then;
+  afterwards that cookie gets `401` on every route.
 - **`RevokeSessionsForCredentialHandler`'s three callers do not all mean the same thing by the
   number.** To `RevokePasskeyHandler` and `ChangeEmailHandler` it is evidence and nothing more; to
   `GenerateRecoveryCodesHandler` it is also the condition a re-established session is written on.
@@ -1717,10 +1781,11 @@ ELSE                                                    ← an unenumerated futu
   `revoked_at_utc is null` to a live-at-now reading — changes behaviour on one path while looking
   like a reporting fix on all three. All three reach it through the command handler rather than
   straight to `ISessionRepository`, because the handler is where the clock is read, so one decision
-  to end access is stamped as one instant however many rows it touches. **`ChangeEmailHandler` is the
-  one caller that sweeps the federated credential**, and it does so only when the Google identity
-  moves. The locked sign-in opens sessions over exactly that credential, so the sweep is what ends
-  them when the identity they were opened on moves — see [email-change.md](email-change.md).
+  to end access is stamped as one instant however many rows it touches. **`ChangeEmailHandler` is
+  the one caller whose revocation sweep reaches the federated credential**, and it runs one only
+  when the Google identity moves. The locked sign-in opens sessions over exactly that credential, so
+  that revocation sweep is what ends them when the identity they were opened on moves — see
+  [email-change.md](email-change.md).
 - **The expiry is decided by the caller, and the five callers read one value.** `Session.Establish`
   validates only that the expiry is after the creation instant; the number — **14 days** — is
   `SessionPolicy.Lifetime` in `Application/Sessions`, which all five handlers add to the instant
@@ -1730,11 +1795,10 @@ ELSE                                                    ← an unenumerated futu
   - **The equality is the rule, and one value is what makes it one.** A recovery sign-in that
     expired sooner would tell somebody who has just lost their device that the way back in they were
     issued is worth less than the one they lost; the regeneration path is held to the same number
-    because its caller cleared a passkey gate, stronger than whatever opened the session its sweep
-    took. **Any two of them differing is a defect rather than a decision**, and sharing the value is
-    the only shape in which a single edit cannot separate them — which is exactly what happened when
-    the fourth path arrived: `RegisterAccountHandler` inherited the interval by construction rather
-    than by anybody remembering.
+    because its caller cleared a passkey gate, stronger than whatever opened the session its
+    revocation sweep took. **Any two of them differing is a defect rather than a decision**, and
+    sharing the value is the only shape in which a single edit cannot separate them —
+    `RegisterAccountHandler` takes the interval by construction rather than by anybody remembering.
   - **The locked sign-in shares it by decision, not by force.** Nothing in the domain makes a
     locked session's interval match a full one's; "locked sessions last as long as full ones" is a
     product rule like the recovery paths' equality. `EstablishedSessionLifetimeTests` drives it

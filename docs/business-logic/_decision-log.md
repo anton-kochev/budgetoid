@@ -8,6 +8,49 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-10-06 — A 401 is judged before it ends a tab's session
+
+**Context:** once a sign-in displaces the session the browser's old cookie named, a request another
+tab sent under that cookie can come back `401` while the cookie jar already holds a live session.
+The interceptor read every unmarked `401` from this API as the end of the tab's session, so a
+sign-in in one tab could sign another tab out of the account it was still inside and lock its keys
+— [Guessing] reasoned, not run in a browser.
+
+**Decision:**
+- **The session judgement decides, and the interceptor only hands over.**
+  `sessionExpiryInterceptor` passes a qualifying `401` and the visit token it read as the request
+  left to `SessionService.judgeRefusal`, which owns the verdict. [sessions.md](sessions.md) owns
+  the rule.
+- **A `401` from an earlier visit changes nothing.** A tab holding no full session, or no budget,
+  ends without asking.
+- **Otherwise one marked `GET /api/me` is sent, at most one in flight per visit.** A `200` naming
+  the tab's budget keeps the session and writes nothing; anything else ends it.
+
+**Alternatives considered:**
+- *Re-read `GET /api/me/session` and keep the session on any `200`* — rejected: that read carries
+  no identity, so another account's session of the same kind passes it. Measured: that candidate
+  reddened 18 specs.
+- *Fail to `unreachable` when the re-read cannot answer* — rejected: the server has already
+  refused the request being judged, and a tab left signed in stays on screens whose every read is
+  refused.
+- *Key the flight on the generation rather than the visit* — rejected: a schedule request's `200`
+  inside the visit would wave a real ending through as stale. Measured: a mutation of the visit
+  keying reddens its own test.
+- *Mark the rotation begin `EXPECTS_UNAUTHENTICATED`* — rejected: the begin would then need a probe
+  of its own to find an ended session. It stays unmarked and reads its own `refusal` member, which
+  the driver publishes as `refused`.
+
+**Consequences:** a tab whose request was refused under a cookie another tab's sign-in replaced
+stays signed in when the jar's session is the same account, and ends when it is another account. A
+locked tab cannot be judged, because `GET /api/me` refuses a locked session, so it ends on any
+unmarked `401`.
+
+**Affected areas:** [sessions.md](sessions.md), [key-rotation.md](key-rotation.md),
+[erasure.md](erasure.md), [email-change.md](email-change.md), [export.md](export.md),
+[account-keys.md](account-keys.md).
+
+---
+
 ## 2026-10-05 — Signing in deletes the session the browser's old cookie named
 
 **Context:** every sign-in writes its cookie over whatever cookie the browser held, and overwriting
@@ -82,7 +125,7 @@ expired session of the old set only if no sign-in swept it first.
 **Affected areas:** [sessions.md](sessions.md), [users-and-ownership.md](users-and-ownership.md),
 [recovery-codes.md](recovery-codes.md), [erasure.md](erasure.md),
 [email-change.md](email-change.md), [registration.md](registration.md),
-[adversarial-properties.md](../engineering/adversarial-properties.md),
+[passkeys.md](passkeys.md), [adversarial-properties.md](../engineering/adversarial-properties.md),
 [data-isolation.md](../engineering/data-isolation.md).
 
 ---

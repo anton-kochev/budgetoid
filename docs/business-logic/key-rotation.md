@@ -124,9 +124,9 @@ is staged, drives its `seals` off `key_rotation_seals` rather than off the accou
 tells a finished run from a live one by **the epoch** rather than by the staging row's existence,
 and writes `Cache-Control: no-store` on both answers. It declares the same three absences as the
 routes beside it; and the client's transport for all four — `KeyRotationApiService`, four members
-over `BaseApiService`, carrying `EXPECTS_UNAUTHENTICATED` on none of them because the session judge,
-`SessionService.judgeRefusal`, settles an ended session for each, while on the begin a 401 may
-instead be a declined passkey that the body's own `refusal` member names
+over `BaseApiService`, carrying `EXPECTS_UNAUTHENTICATED` on none of them because the session
+judgement, `SessionService.judgeRefusal`, settles an ended session for each, while on the begin a 401
+may instead be a declined passkey that the body's own `refusal` member names
 ([argued below](#beginning-a-run-what-it-holds-and-none-of-it-visible-in-the-result)) — beside
 [`vectors/key-rotation-wire-v1.json`](vectors/key-rotation-wire-v1.json), which freezes the whole
 member set of each of the fourteen messages those four routes carry. That file has two readers and
@@ -640,10 +640,10 @@ whose one marked re-read of `GET /api/me` keeps the session only when the answer
 budget, and otherwise ends it and takes the tab to `/welcome`. The error reaches the driver only
 once that verdict is in, so a declined passkey arrives with its session standing — unless the
 re-read fails, which ends a session that was live — and the member alone is what tells it from any
-other 401. Marked, the begin would need what the erasure
-cancellation carries — an unmarked probe before it names any 401 without the member — because the
-interceptor would no longer see the ended session first. [sessions.md](sessions.md) holds the
-judgement's rule.
+other 401; the driver publishes that one as `refused` (see [components.md](../design/components.md),
+Key rotation section). Marked, the begin would need what the erasure cancellation carries — an
+unmarked probe before it names any 401 without the member — because the interceptor would no longer
+see the ended session first. [sessions.md](sessions.md) holds the session judgement's rule.
 
 **A second begin replaces the first and is not a conflict.** When a completion refuses because the live
 factor set moved — a passkey registered or revoked while a run was in flight — the only way forward is

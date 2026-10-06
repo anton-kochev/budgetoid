@@ -485,51 +485,46 @@ erDiagram
     Widening the response later is additive; narrowing it — or dropping this member because "the
     cascade handles it" — is breaking, and removes the only observation of the rule.
   - **It is also the condition the replacement's own session is written on**, so the number is
-    load-bearing twice: as evidence that the sweep ran, and as the decision the rule below is keyed
-    on. Changing what it counts is never a local edit — see that rule, and
-    [sessions.md](sessions.md), which owns the sweep.
+    load-bearing twice: as evidence that the revocation sweep ran, and as the decision the rule
+    below is keyed on. Changing what it counts is never a local edit — see that rule, and
+    [sessions.md](sessions.md), which owns the revocation sweep.
 - **Enforced in**: `GenerateRecoveryCodesHandler` calls `RevokeSessionsForCredentialHandler` and
   then `IRecoveryCodeRepository.DeleteSetAsync`, in that order, through the command handler rather
   than straight to `ISessionRepository` — the handler is where the clock is read, so one decision to
   end access is stamped as one instant.
   - **Two mutations produce the same wrong number**, which is what makes the assertion sharp:
     deleting the revocation call reports `0`, and swapping it with the delete reports `0` as well,
-    because the cascade has already taken the session rows and the sweep matches nothing.
+    because the cascade has already taken the session rows and the revocation sweep matches nothing.
   - **Between the two calls the tracked sessions are discarded**, and that is a second reason rather
-    than the first restated: the sweep loads every unrevoked `Session` into the change tracker, and
-    removing the `Credential` with those dependents still tracked makes EF emit its own
-    `DELETE FROM sessions`. **On `sessions` that mistake raises nothing.** The role holds
-    `DELETE` there for the ended-session sweep and for displacement — acts different from this
-    file's sweep, which revokes; see [sessions.md](sessions.md#must-not) — so EF's statement succeeds and removes the
-    rows the database's cascade would have taken. Measured: with that grant, removing this second
-    `DiscardTrackedEntities()` reddens no integration test, and only the handler's unit replay and
-    placement tests notice. The discard stays, because the statements past it are written to an
-    empty tracker, and because a `SessionToken` tracked under one of those sessions would still die
-    with `42501`: `session_tokens` holds no `DELETE`. **That SQLSTATE names a privilege and the
-    cause is the change tracker; do not answer it with a grant on `session_tokens`.**
+    than the first restated: the revocation sweep loads every unrevoked `Session` into the change
+    tracker, and removing the `Credential` with those dependents still tracked makes EF emit deletes
+    of its own. What that costs on `sessions` and on `session_tokens`, why the discard stays, and
+    why a `42501` there is never answered with a grant are the change-tracker gotcha in
+    [sessions.md](sessions.md#edge-cases--known-gotchas).
 - **Source**: `[SOURCE: user-story]`
 
 ---
 
-- **Rule**: Replacing a set that was carrying live sessions **opens one session over the new set**;
-  replacing a set that was carrying none opens nothing. The condition is `sessionsEnded > 0`.
+- **Rule**: A replacement whose revocation sweep revoked at least one session of the replaced set
+  **opens one session over the new set**; a replacement that revoked none opens nothing. The
+  condition is `sessionsEnded > 0`.
 - **Why**: the person this route is for very often lost their authenticator, redeemed a code,
   registered a replacement passkey, and is regenerating **while signed in on the session that
-  redemption opened** — so the sweep above takes their own session. Without this rule they are
-  handed ten fresh codes and thrown out of the flow in the same response, at the worst possible
-  moment.
+  redemption opened** — so the revocation sweep above takes their own session. Without this rule
+  they are handed ten fresh codes and thrown out of the flow in the same response, at the worst
+  possible moment.
   - **What that costs is the flow, not the account — the word to avoid is *locked out*.** The caller
     has just proved possession of a passkey to pass the gate, so a new session is always one
     assertion away. Being ejected from an account-recovery flow at its last step is the whole of the
     harm and it is enough; a rule defended by an overstatement is one a reader stops believing.
   - **Stated about the *set* rather than the caller**: nothing on this request presents a session —
-    the proof is a WebAuthn assertion — so the server cannot know whose session it swept. It asks
-    instead whether the set it replaced was carrying any at all.
+    the proof is a WebAuthn assertion — so the server cannot know whose session it revoked. It asks
+    instead whether revoking the replaced set's sessions revoked any at all.
   - **The reading is generous in exactly one direction, and that is the deliberate part.** **No
-    false negatives**: a live session over the replaced set is always swept, so anybody signed out
+    false negatives**: a live session over the replaced set is always revoked, so anybody signed out
     here is signed back in. **Two false positives**: a live session on another device, and a session
-    unrevoked but past its expiry — the sweep narrows on `revoked_at_utc is null` and says nothing
-    about expiry. Each moves the calling browser onto a session over the new set. That browser
+    unrevoked but past its expiry — the revocation sweep narrows on `revoked_at_utc is null` and says
+    nothing about expiry. Each moves the calling browser onto a session over the new set. That browser
     reached this route on a full session of its own — a passkey session, say — and the new cookie
     displaces it, so it is deleted rather than left live beside the new one; see
     [sessions.md](sessions.md).
@@ -537,35 +532,33 @@ erDiagram
     `RecoveryCodeGenerationTests.Generation_ThatReestablishes_DeletesTheCallersPasskeySession` holds
     the first case: the caller's passkey session is deleted and the new cookie opens a live session.
     [Guessing] The expired-but-unrevoked case is read from the same rules; no test drives it.
-  - **So the count depends on the account's history, not only on the set's.** The ended-session
-    sweep in [sessions.md](sessions.md#must-not) deletes the account's expired rows when a session
-    is established on the account, so an expired session of the replaced set is in the count only
-    if no session was established between its expiry and this call. The second false positive needs
-    that gap. A session still live when this call reads the set is unaffected, because the
-    ended-session sweep keeps every row live at the instant it judges, so the no-false-negatives
-    half holds. None of this is a reason to narrow the revocation's predicate — the counterexample
-    below says why.
+  - **So the count depends on the account's history, not only on the set's**: an expired session of
+    the replaced set is in it only while its row still stands. The revocation rule's Example in
+    [sessions.md](sessions.md#business-rules--invariants) owns that reading, and the second false
+    positive needs that row. The no-false-negatives half holds, because a session still live when
+    this call reads the set always counts. None of this is a reason to narrow the revocation's
+    predicate — the counterexample below says why.
   - **The session is `Full` and lasts 14 days**, derived by `Session.Establish` from the new set's
     own `Credential` rather than named by this handler. The interval matching the other establishing
     paths is the rule rather than a coincidence: the caller cleared a passkey gate to get here,
-    which is stronger than whatever opened the session the sweep took, so a shorter lifetime would
-    say the way back in they were left with is worth less than the one they were signed in on. See
-    [sessions.md](sessions.md), which owns the lifetime.
+    which is stronger than whatever opened the session the revocation sweep took, so a shorter
+    lifetime would say the way back in they were left with is worth less than the one they were
+    signed in on. See [sessions.md](sessions.md), which owns the lifetime.
 - **Enforced in**: `GenerateRecoveryCodesHandler`, which writes the session through
   `ISessionRepository` — never through `IRecoveryCodeRepository`, which has no right to write
   `sessions` — **after** `AddSetAsync` and inside the same transactional delegate, stamped from the
-  same instant as the sweep, the new credential and the ten hash rows. Every other placement fails
+  same instant as the revocation sweep, the new credential and the ten hash rows. Every other placement fails
   concretely: before the insert the row names a credential that does not exist yet (`23503` on every
   request); beside the revocation the second discard drops the queued row, so the response describes
   a session nobody wrote, with no SQLSTATE to say so; inside the replacement branch before
   `DeleteSetAsync` it lands over the **old** credential and leaves with its cascade; outside the
   delegate it is not atomic with the set at all.
   `HandleAsync_WhenTheReplacedSetHadALiveSession_LeavesTheAccountOneLiveSession` states it over the
-  account's live sessions rather than over the sweep's count, so no rearrangement of the sweep
-  satisfies it, and three negatives pin the condition — no previous set, a previous set that had
+  account's live sessions rather than over the revocation sweep's count, so no rearrangement of
+  that sweep satisfies it, and three negatives pin the condition — no previous set, a previous set that had
   opened no session, and a previous set whose sessions were already revoked.
 - **Example** — under a replayed unit of work the rule converges rather than accumulating: a second
-  attempt sees its own committed set as the previous one, sweeps the session it opened itself,
+  attempt sees its own committed set as the previous one, revokes the session it opened itself,
   deletes, re-inserts and opens another — one set and one live session. *"Never establish on a
   retry"* would leave the person with nothing.
 - **Counterexample**:
@@ -575,8 +568,8 @@ erDiagram
     told about it.
   - **Do not tighten the condition to "live at the handler's instant".** The number belongs to
     `RevokeSessionsForCredentialHandler`, and `RevokePasskeyHandler` reports the same number through
-    the same sweep while meaning only *evidence* by it. Narrowing it here is a change to what the
-    sweep counts, on both paths, dressed up as a change to this rule.
+    the same revocation sweep while meaning only *evidence* by it. Narrowing it here is a change to
+    what that sweep counts, on both paths, dressed up as a change to this rule.
 - **Source**: `[SOURCE: user-story]`
 
 ---
@@ -877,7 +870,7 @@ ELSE                                                               ← first iss
   and it needs no new ceremony value: each is an act reachable only by the account
   holder that a stolen session must not be able to take.
 - **[Registration](registration.md)** — the **other** write path that accepts a set, and the one
-  that issues an account's first. It replaces nothing, sweeps nothing and reports no
+  that issues an account's first. It replaces nothing, revokes nothing and reports no
   `sessionsEnded`. What it adds beyond this file's validation is one rule: the passkey's factor
   identifier must differ from all ten codes'.
 - **[Sessions](sessions.md)** — this area holds **two** of the five paths that establish a session:
@@ -913,12 +906,11 @@ ELSE                                                               ← first iss
   `Credential` would make EF cascade into the copies it can see and emit its own
   `DELETE FROM recovery_code_hashes`. The role **is** granted `DELETE` here, so the statement would
   **silently succeed**: the rows leave by the application instead of the database's cascade, the
-  request answers `200`, and no SQLSTATE says so. `sessions` behaves the same way, since it holds
-  `DELETE` for the ended-session sweep and displacement; `session_tokens`, the table below it, holds none and still
-  dies loudly with `42501` — see the change-tracker bullet in the `sessionsEnded` rule above. What holds it is a comment on `IRecoveryCodeRepository.DeleteSetAsync`
-  and its call site, and nothing else: no test can distinguish the two paths, because the table is
-  empty afterwards either way. The way this breaks is a future reader adding a *"load the codes so
-  we can count them"* read.
+  request answers `200`, and no SQLSTATE says so. The same trap on `sessions` and `session_tokens`
+  is the change-tracker gotcha in [sessions.md](sessions.md#edge-cases--known-gotchas). What holds
+  it here is a comment on `IRecoveryCodeRepository.DeleteSetAsync` and its call site, and nothing
+  else: no test can distinguish the two paths, because the table is empty afterwards either way.
+  The way this breaks is a future reader adding a *"load the codes so we can count them"* read.
   - **The redemption path tracks a `RecoveryCodeHash` on purpose, and that is not the same
     mistake.** It removes one row it read itself, and a `recovery_code_hashes` row is a leaf —
     nothing references one — so there is no cascade for EF to imitate. It needs only the one replay
@@ -1057,12 +1049,13 @@ ELSE                                                               ← first iss
     secrets — and the codes never enter a live region. See the recovery-code hand-off chapter in
     [components.md](../design/components.md).
 - **Both sessions this area opens are real, and both hand back a cookie.** A redemption sets one for
-  the code's owner; a regeneration sets one over the new set **only when its sweep ended a live
-  session**, and a first issue *on this route* sets none — that condition is the rule rather than a
+  the code's owner; a regeneration sets one over the new set **only when its revocation sweep
+  revoked at least one session**, and a first issue *on this route* sets none — that condition is the rule rather than a
   detail, and a handler minting unconditionally would pass every other test on this path.
   - **A set issued by registration always comes with a session, and that is not a counterexample.**
     That request establishes one unconditionally, over the **passkey** it created and never over the
-    recovery-codes credential — so there is no sweep and nothing for this rule to be keyed on.
+    recovery-codes credential — so there is no revocation sweep and nothing for this rule to be
+    keyed on.
   - Neither response body carries the handle or a session id. The cookie is `HttpOnly` precisely so
     nothing else is a handle; each response says only what its session *is*, its kind and its
     expiry.

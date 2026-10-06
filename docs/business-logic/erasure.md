@@ -248,9 +248,9 @@ role holds no `DELETE` there of any shape.
   through the same scoped context, which leaves the `Budget` entity tracked. Removing the `User`
   with that dependent still in the tracker makes EF cascade to the copy it can see and emit its own
   `DELETE FROM budgets` — and the role holds `SELECT`, `INSERT` and `UPDATE (name)` on `budgets` and
-  deliberately no `DELETE`, so the request dies with `42501` before it deletes anything. **The failure names a
-  permission and the cause is the change tracker.** Answering it with a grant would widen the role's
-  reach, fail `AppRoleGrantMatrixTests`, and leave the real fault in place.
+  deliberately no `DELETE`, so the request dies with `42501` before it deletes anything. **The
+  failure names a permission and the cause is the change tracker.** Answering it with a grant would
+  widen the role's reach, fail `AppRoleGrantMatrixTests`, and leave the real fault in place.
 - **Enforced in**: `IPersistenceState.DiscardTrackedEntities()`, called as the first line inside the
   `ITransactionalExecutor` delegate, with the reason written on the call. Every test in
   `AccountErasureEndpointTests` that expects `204` fails with `42501` without it, including the one
@@ -440,14 +440,14 @@ role holds no `DELETE` there of any shape.
      ended-session sweep, which removes the account's rows already ended, and displacement, which
      removes the one session a browser's incoming cookie names — see
      [sessions.md](sessions.md#must-not). It holds no `DELETE` on `session_tokens`, whose rows leave
-     by the cascade from `sessions`. Revoking first would only make the rows eligible for the sweep,
-     and the sweep waits for a sign-in an erased account never has; displacement waits for a browser
-     presenting one of those cookies to sign in. So the rows leave as the cascade of the `users`
-     delete, and the erasure uses neither act's grant. **The change-tracker cost is not a reason here**, though it is one on
-     the credential-revocation path, where a second `DiscardTrackedEntities()` sits between the
-     revocation and the delete: `EraseAccountHandler` already discards the tracker before its
-     deletes, and EF maps `Session` to `Credential` rather than to `User`, so a user delete would not
-     walk into tracked sessions.
+     by the cascade from `sessions`. Revoking first would only make the rows eligible for the
+     ended-session sweep, and that sweep waits for a sign-in an erased account never has;
+     displacement waits for a browser presenting one of those cookies to sign in. So the rows leave
+     as the cascade of the `users` delete, and the erasure uses neither act's grant. **The
+     change-tracker cost is not a reason here**, though it is one on the credential-revocation path,
+     where a second `DiscardTrackedEntities()` sits between the revocation and the delete:
+     `EraseAccountHandler` already discards the tracker before its deletes, and EF maps `Session` to
+     `Credential` rather than to `User`, so a user delete would not walk into tracked sessions.
   4. **Authentication re-reads both rows on every request and keeps nothing between requests.**
      `AuthenticateSessionHandler` looks up `session_tokens` by digest and then reads the `sessions`
      row, per request, through the request's own scoped context — both reads untracked, so neither
@@ -462,21 +462,22 @@ role holds no `DELETE` there of any shape.
   `GET /api/currencies` before the act (`200`, `200`, `403`), and requires `401` from all three
   after it. One composite foreign key carries the cascade for every credential type, so the spread
   is not a property of the cascade; it is a cheap guard against a later erasure that deletes
-  sessions itself, filters by credential type or session kind, and misses one. A survivor account carries the
-  same spread and must still answer `200`, `200` and `403`, so an erasure that ended every `Locked`
-  session in the database, or every session a set opened, cannot pass. Dropping the `sessions → credentials` edge reds it, and so does an authentication
-  path that caches what a token resolved to.
+  sessions itself, filters by credential type or session kind, and misses one. A survivor account
+  carries the same spread and must still answer `200`, `200` and `403`, so an erasure that ended
+  every `Locked` session in the database, or every session a set opened, cannot pass. Dropping the
+  `sessions → credentials` edge reds it, and so does an authentication path that caches what a token
+  resolved to.
   - **The federated arm is a session a real sign-in opens.** `POST /api/locked-session` opens
     exactly this one — see [sessions.md](sessions.md). The test seeds it rather than signing in, for
     the same guard as the other two: such a delete keyed on the kinds that read budget content
     would skip exactly this one, and the seed costs one row.
-  - **The token half is held by the sweep, not by that test.** `session_tokens` is a row of the
-    file's `OwnedTables`, so `…Erase_ForAFullyFurnishedAccount_LeavesNoRowInAnyTable` requires it
-    empty after an erasure and `…Erase_LeavesAnotherAccountUntouched` requires the survivor's
-    unmoved. The per-session test cannot see a lost token cascade: a token whose session is gone
-    already fails the session read and answers `401`, so from the wire a stray handle and a deleted
-    one look the same. Dropping the `session_tokens → sessions` edge reds the sweeps and leaves that
-    test green.
+  - **The token half is held by the file's `OwnedTables` census, not by that test.**
+    `session_tokens` is a row of `OwnedTables`, so
+    `…Erase_ForAFullyFurnishedAccount_LeavesNoRowInAnyTable` requires it empty after an erasure and
+    `…Erase_LeavesAnotherAccountUntouched` requires the survivor's unmoved. The per-session test
+    cannot see a lost token cascade: a token whose session is gone already fails the session read and
+    answers `401`, so from the wire a stray handle and a deleted one look the same. Dropping the
+    `session_tokens → sessions` edge reds those two census tests and leaves that test green.
 - **Counterexample**: borrowing revoke-then-delete from the credential-revocation path, because
   [sessions.md](sessions.md) says a credential-removal path must revoke explicitly. That rule exists
   so a surviving account can be told when access ended — `sessionsEnded` in the response. Here
@@ -643,9 +644,9 @@ role holds no `DELETE` there of any shape.
   tab's withdrawal, the account's erasure cascading, or the save's own retry after a lost reply — or
   none was ever filed. The `204` says nothing about the account itself: an immediate erasure in
   another tab that commits between the gate and the delete is answered `204` too, a window two
-  passkey touches wide that is accepted until something carries schedules out. A locked session is refused `403` before the handler
-  runs; no live session, or a refused assertion, is `401`, the refusal identical to the immediate
-  erasure's. It ends no session and writes no cookie.
+  passkey touches wide that is accepted until something carries schedules out. A locked session is
+  refused `403` before the handler runs; no live session, or a refused assertion, is `401`, the
+  refusal identical to the immediate erasure's. It ends no session and writes no cookie.
   - **The gate runs first, every time, and outside any transaction** — before the schedule is read
     and even when nothing is scheduled, so the nonce is spent either way. Not to hide whether a
     schedule stands — any full session reads that from `GET /api/me/session`. Two smaller reasons:
@@ -774,11 +775,9 @@ role holds no `DELETE` there of any shape.
       gotcha on the request's own session row argues why — so the browser keeps it until its
       `Expires`, which is the deleted session row's own expiry. It names nothing, and it answers `401`
       everywhere, the sign-out route included: that route admits an *ended* session, and one the
-      cascade took is not ended but absent. [sessions.md](sessions.md) records it among the ends
-      where that route answers `401`; the others it lists are an ended session that the
-      ended-session sweep deleted when the account next signed in, a session whose credential was
-      deleted from another device, and a session displacement deleted when the response carrying
-      the browser's new cookie was lost.
+      cascade took is not ended but absent. The rule on ended sessions in
+      [sessions.md](sessions.md#business-rules--invariants) records it among the ends where that
+      route answers `401`.
     - **The rotation-epoch record.** `rotation-epoch-record.ts` keeps one `localStorage` key per
       budget id, and the erased budget's entry stays, keyed on a budget that no longer exists. It is
       not cleared, by decision: the record only ever rises, custody is its single writer, and the
@@ -950,13 +949,13 @@ ELSE
   `erasure_schedules`, and its withdrawal `DELETE`; nothing there takes `UPDATE`.
   `AppRoleGrantMatrixTests` pins the set in both directions, so a grant added to make an erasure
   problem go away fails a test rather than shipping.
-  - **Three of the role's other `DELETE` grants look like they belong to erasure and do not.**
-    `credentials` holds one for removing a single credential — passkey revocation, replacing a
+  - **Some of the role's other `DELETE` grants look like they belong to erasure and do not.** Among
+    them, `credentials` holds one for removing a single credential — passkey revocation, replacing a
     recovery-code set, and retiring the federated credential on an email change —
     `recovery_code_hashes` for redeeming a code, and `sessions` for the ended-session sweep and
-    displacement.
-    Erasure uses none of them: it empties all three tables through the cascade from `users`, and
-    would still work if all three grants were revoked tomorrow.
+    displacement; `AppRoleGrantMatrixTests` pins the whole set. Erasure uses none of them: it empties
+    those tables through the cascade from `users`, and would still work if those grants were revoked
+    tomorrow.
 - **Row-level security** — `user_isolation` scopes the `users` delete, `budget_isolation` scopes the
   `transactions` delete. Both are `FOR ALL`, so they constrain a delete exactly as they constrain a
   read. `user_isolation` on `erasure_schedules` hides another account's schedule and refuses an
@@ -987,9 +986,9 @@ ELSE
   of `GET /api/me` — one that, failing, ends a live session — and the dialog would hear its own
   verdict only after the session judgement had run on it; marked, the dialog reads that verdict
   itself and no re-read is spent. The flow tells the two readings apart with one **unmarked**
-  `GET /api/me` (`MeApiService.getMe`): a `401` there is the interceptor's to judge, and the dialog
-  says nothing; a `200`, or a probe that cannot answer, is `refused`. A `401` on the challenge is the
-  interceptor's to judge too. See [sessions.md](sessions.md) for the token's rule.
+  `GET /api/me` (`MeApiService.getMe`): a `401` there is one the interceptor hands to the session
+  judgement, and the dialog says nothing; a `200`, or a probe that cannot answer, is `refused`. A
+  `401` on the challenge goes the same way. See [sessions.md](sessions.md) for the token's rule.
   - **The schedule's caller is `ReleaseFlowService`, on `/release`**, through
     `MeApiService.scheduleErasure`. That request is **unmarked**: the route judges nothing but the
     session it was sent with, so a `401` is that session having ended, and the interceptor's. It is
@@ -1038,9 +1037,9 @@ ELSE
   for one: on the `204`, `ErasureFlowService` calls `SessionService.ended()` and navigates to
   `/welcome`. Every other tab and device holding a cookie for the account learns at its next
   unmarked request, whose `401` `sessionExpiryInterceptor` hands to the session judgement; its
-  re-read is refused in turn, and the session ends the same way. That is the
-  correct outcome and not a gap, since a cleared cookie would be one more thing to get right on a
-  path whose whole point is that it leaves nothing behind.
+  re-read is refused in turn, and the session ends the same way. That is the correct outcome and not
+  a gap, since a cleared cookie would be one more thing to get right on a path whose whole point is
+  that it leaves nothing behind.
 - **`archived_at` is permitted by the schema scan and forbidden on `users` by a different test.**
   Two rules meet here and neither alone is the whole answer, so somebody reading only the vocabulary
   sees a gap and widens the pattern — which takes a plausible product feature down with it. The
@@ -1054,20 +1053,21 @@ ELSE
   about this client when it says nothing was erased. On the `204` it calls `SessionService.ended()`
   and then navigates to `/welcome`.
   - **The challenge's failures read three ways.** A `401` says nothing: the challenge is unmarked,
-    so the `401` is `sessionExpiryInterceptor`'s to judge. An ending verdict takes the tab to
-    `/welcome`; a kept one — [Guessing] a request that carried a cookie another tab's sign-in had
-    displaced, reasoned and not run — leaves the press ended in silence over a live session, a gap
-    the design book records as work in [components.md](../design/components.md#erasure-dialog). A
-    `400` or `403` is `unrecognised`. Everything else — a response that never arrived, a `5xx` — is `unstarted`,
-    whose sentence names no cause, because every one of them has the same next step (try again in a
-    minute). `challengeFailureOf` in `erasure-outcome.ts` owns the reading.
+    so `sessionExpiryInterceptor` hands the `401` to the session judgement. An ending verdict takes
+    the tab to `/welcome`; a kept one — [Guessing] a request that carried a cookie another tab's
+    sign-in had displaced, reasoned and not run — leaves the press ended in silence over a live
+    session, a gap the design book records as work in
+    [components.md](../design/components.md#erasure-dialog). A `400` or `403` is `unrecognised`.
+    Everything else — a response that never arrived, a `5xx` — is `unstarted`, whose sentence names
+    no cause, because every one of them has the same next step (try again in a minute).
+    `challengeFailureOf` in `erasure-outcome.ts` owns the reading.
   - **The erasing request's failures read three ways too.** A `400` or `403` is `unrecognised`.
     Everything else but a `401`, a response that never arrived included, is `undetermined`, because
     the erasure may have committed; `erasureFailureOf` owns that reading. A `401` has two readings —
     the gate declined the assertion, or the session had already ended before the gate ran — and
     neither erased anything through this request, so the flow resolves it with **one unmarked
-    `GET /api/me`** before it says anything. A `401` there is the interceptor's to judge, and the
-    dialog says nothing either way: an ending verdict leaves for `/welcome`, and a kept one leaves
+    `GET /api/me`** before it says anything. A `401` there is one the interceptor hands to the
+    session judgement, and the dialog says nothing either way: an ending verdict leaves for `/welcome`, and a kept one leaves
     the commit live again over a live session — the same gap as the challenge's. A `200`, or a probe
     that cannot answer, is `refused` — the erasing request's `401` already proved it erased nothing.
     The flow stays `erasing` while the probe is out, so the commit does not reopen over an answer

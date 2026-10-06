@@ -87,17 +87,17 @@ response body is a value in a log.
 - **Judge the provider token before the passkey**, so a refused token spends no nonce. → the order
   rule below.
 - **Write the retired credential's delete, the replacement's insert and the address in one save,
-  inside one transaction with the session sweep.** → the one-save rule below.
+  inside one transaction with the revocation sweep.** → the one-save rule below.
 - **Revoke the retired credential's sessions before deleting it**, and report how many ended.
-  → the sweep rule below.
+  → the revocation-sweep rule below.
 
 ### MUST NOT
 
 - **Read the new subject or address from anywhere but the provider's principal** — not from
   `HttpContext.User`, whose `sub` is the account id, and not from the body.
 - **Merge the provider's principal into the session's.** → the two-principals rule below.
-- **Return a refusal from the transactional delegate.** Every refusal throws, or the sweep commits
-  behind it. → the one-save rule below.
+- **Return a refusal from the transactional delegate.** Every refusal throws, or the revocation
+  sweep commits behind it. → the one-save rule below.
 - **Rewrite a credential's subject in place.** `credentials` holds no `UPDATE` grant of any shape.
 - **Name an account in the command.** The account is the session's, read from `IUserContext`.
 - **Name the address or the subject in any refusal body.**
@@ -189,9 +189,9 @@ response body is a value in a log.
   `bool.TryParse` as `true`. The missing-claim check runs first.
 - **Why**: two copies of three checks is how one gate starts admitting `"1"` as verified while the
   other refuses it. The verdict is shared; the response is not. Registration and the locked sign-in
-  answer by title alone, through `RegistrationClaimGate`; this route answers with a `refusal` word, because here a `401` has three causes with three
-  different next steps — sign in to Google again, choose an address Google verifies, retry the
-  passkey.
+  answer by title alone, through `RegistrationClaimGate`; this route answers with a `refusal` word,
+  because here a `401` has three causes with three different next steps — sign in to Google again,
+  choose an address Google verifies, retry the passkey.
 - **Enforced in**: `ProviderAuthorizationGate` maps `ProviderClaims.Refusal.MissingClaims` and a
   failed authentication to `refusal: "provider_token"`, and `UnverifiedEmail` to
   `refusal: "email_unverified"`, each under its own title. `EmailChangeEndpointTests` drives the
@@ -228,7 +228,7 @@ response body is a value in a log.
     owner-scoped, so another account's passkey answers nothing.
 - **Enforced in**: `ChangeEmailHandler.HandleAsync`, its first call.
   `ChangeEmailHandlerTests.HandleAsync_WhenTheAssertionFails_ReadsAndWritesNothing` asserts that a
-  refused assertion reaches no lookup, no repository, no executor and no sweep.
+  refused assertion reaches no lookup, no repository, no executor and no revocation sweep.
   `EmailChange_WithAnotherAccountsPasskey_IsRefused401Assertion_AndChangesNeitherAccount` asserts
   both accounts survive.
 - **Counterexample**: dropping the gate because "the provider already re-authenticated them". The
@@ -288,22 +288,17 @@ response body is a value in a log.
 ---
 
 - **Rule**: Retiring the federated credential **revokes its sessions, then deletes it**, and the
-  response reports the count as `sessionsEnded`. The sweep is keyed on the **retired** credential.
-  The requesting session was opened by a passkey and survives.
+  response reports the count as `sessionsEnded`. The revocation sweep is keyed on the **retired**
+  credential. The requesting session was opened by a passkey and survives.
 - **Why**: the rule every credential-removal path follows, from [sessions.md](sessions.md). The
   cascade from `credentials` removes the same session rows either way, so the count is the only
-  evidence the sweep ran. Keyed on the filed credential it would report zero; keyed on the account
-  it would sign the person out of the browser in their hand.
-  - **A second `DiscardTrackedEntities()` sits between the sweep and the save.** The sweep loads the
-    retired credential's sessions into the change tracker; removing the credential with them tracked
-    makes EF emit its own `DELETE FROM sessions`. The role holds `DELETE` there for the
-    ended-session sweep and for displacement — acts different from this rule's sweep, which
-    revokes; see
-    [sessions.md](sessions.md#must-not) — so that statement succeeds and removes the rows the
-    database's cascade would have taken, and nothing raises. The discard stays, because the save
-    past it is written to an empty tracker, and because a `SessionToken` tracked under one of those
-    sessions would still make EF delete it on `session_tokens`, which holds no `DELETE`, and the
-    request would die with `42501`. The answer to that is the discard, never a grant.
+  evidence the revocation sweep ran. Keyed on the filed credential it would report zero; keyed on
+  the account it would sign the person out of the browser in their hand.
+  - **A second `DiscardTrackedEntities()` sits between the revocation sweep and the save.** The
+    revocation sweep loads the retired credential's sessions into the change tracker, and removing
+    the credential with them tracked makes EF emit deletes of its own. What that costs on `sessions`
+    and on `session_tokens`, why the discard stays, and why a `42501` there is never answered with a
+    grant are the change-tracker gotcha in [sessions.md](sessions.md#edge-cases--known-gotchas).
 - **Enforced in**: `ChangeEmailHandler`, through `RevokeSessionsForCredentialHandler`.
   `HandleAsync_WithANewSubject_RevokesTheRetiredCredentialsSessionsBeforeApplying` compares the call
   order and names the swept credential. `HandleAsync_WithANewSubject_ReportsTheSessionsItEnded` seeds
@@ -324,10 +319,10 @@ response body is a value in a log.
 
 ---
 
-- **Rule**: The sweep and the save share **one transaction**, and every refusal leaves the delegate
-  by **throwing**.
-- **Why**: the sweep commits on a save of its own before the change is applied. A delegate that
-  *returned* a refusal would hand the executor a commit of that sweep, signing the person's other
+- **Rule**: The revocation sweep and the save share **one transaction**, and every refusal leaves
+  the delegate by **throwing**.
+- **Why**: the revocation sweep commits on a save of its own before the change is applied. A
+  delegate that *returned* a refusal would hand the executor a commit of that sweep, signing the person's other
   browsers out of a Google credential the response says is still theirs.
   - **Replay hygiene**: the delegate discards tracked entities as its first line, because the
     execution strategy replays it against a database that rolled back and a change tracker that did
@@ -377,7 +372,7 @@ response body is a value in a log.
   address back, and change it again only if it is not the one chosen. `ConflictKind` carries the
   argument for each.
   - **`provider_identity_in_use` is reached three ways**: a pre-check before any transaction opens,
-    so the common case needs no sweep to roll back; a `SubjectTaken` save whose re-read finds another
+    so the common case needs no revocation sweep to roll back; a `SubjectTaken` save whose re-read finds another
     account on the subject, or nobody; and an `EmailTaken` save whose re-read finds another account.
   - **`SubjectTaken` and `EmailTaken` are both ambiguous, and a re-read of the subject settles
     each.** `EmailTaken` is ambiguous as registration's is: one save can breach the subject and the
@@ -784,8 +779,8 @@ The rules from here down are the web client's.
   changing request — nothing posted until the passkey has answered.
 - **Why**: every word raised before the changing request exists makes *nothing changed* a fact about
   this client. How each answer reads:
-  - **The challenge.** It is unmarked, so a `401` is the interceptor's to judge, and the flow says
-    nothing over it. On an ending verdict the tab leaves for `/welcome`; on a kept one — [Guessing]
+  - **The challenge.** It is unmarked, so a `401` is one the interceptor hands to the session
+    judgement, and the flow says nothing over it. On an ending verdict the tab leaves for `/welcome`; on a kept one — [Guessing]
     a request that carried a cookie another tab's sign-in had displaced, reasoned and not run — the
     press ends in silence over a live session, a gap the design book records as work in
     [components.md](../design/components.md#changing-the-email-address). **Every other way it fails
@@ -794,8 +789,8 @@ The rules from here down are the web client's.
   - **The ceremony.** `cancelled`, `no-prf`, `failed` and `duplicate` keep the answer;
     `unsupported`, raised before the challenge or by the ceremony, drops it.
   - **A `401` on the changing request** is read only after one unmarked `GET /api/me`: a `401` there
-    is the interceptor's to judge, and the flow says nothing and drops the answer whatever the
-    verdict — on a kept one that is the same gap as the challenge's; anything else lets `refusal`
+    is one the interceptor hands to the session judgement, and the flow says nothing and drops the
+    answer whatever the verdict — on a kept one that is the same gap as the challenge's; anything else lets `refusal`
     decide — `provider_token`, `email_unverified`, `assertion` — and a member missing or unknown to
     this bundle is `failed`.
   - **A `409`** reads `conflictKind` the same way; `account_identity_moved` also re-reads the address
@@ -977,17 +972,17 @@ ELSE open the transaction
 ```
 
 Every arm from the passkey gate down has spent the challenge. Every refusal inside the transaction
-rolls the sweep back.
+rolls the revocation sweep back.
 
 ## Integration Points
 
 - **[Registration](registration.md)** — the other routes that read a provider token. They reach
   the scheme through their group's **policy**, because their caller holds no session; the locked
   sign-in reaches it the same way for the same reason — see [sessions.md](sessions.md). This route
-  reaches it through a **filter**, beside a session. The claim judgement is shared through `ProviderClaims`; the
-  response shapes are not.
+  reaches it through a **filter**, beside a session. The claim judgement is shared through
+  `ProviderClaims`; the response shapes are not.
 - **[Sessions](sessions.md)** — the fallback policy and `FullSessionRequirement` gate the route; the
-  sweep is `RevokeSessionsForCredentialHandler`, and this is one of its callers.
+  revocation sweep is `RevokeSessionsForCredentialHandler`, and this is one of its callers.
 - **[Passkeys](passkeys.md)** — the `reauthentication` pool and `PasskeyReauthentication`, shared
   with erasure, passkey revocation, recovery-code generation and the rotation begin. Every passkey
   refusal in the product carries the constant `refusal: "assertion"` from
@@ -1043,12 +1038,12 @@ rolls the sweep back.
   compare the hand-off whole, so a third member on it reddens; a separate private field keeping the
   decoded claims beside it would redden nothing, and `assertedEmail` reading one member is a property
   of the code, not of a test.
-- **`sessionsEnded` counts the sessions a provider sign-in opened.** The sweep can only find
-  sessions the federated credential opened, which are the locked sessions `POST /api/locked-session`
-  establishes — see [sessions.md](sessions.md). The `/release` screen starts that sign-in; every
-  test here that expects a non-zero count still seeds the locked session through the database. The
-  count is of rows still standing: an expired locked session the ended-session sweep took, when a
-  session was later established on the account, is not in it.
+- **`sessionsEnded` counts the sessions a provider sign-in opened.** The revocation sweep can only
+  find sessions the federated credential opened, which are the locked sessions
+  `POST /api/locked-session` establishes — see [sessions.md](sessions.md). The `/release` screen
+  starts that sign-in; every test here that expects a non-zero count still seeds the locked session
+  through the database. The count is of rows still standing, which the revocation rule's Example in
+  [sessions.md](sessions.md#business-rules--invariants) owns.
 - **An erasure racing an email change answers `500`.** The account is gone either way, so no honest
   `409` exists. A change that moves the Google identity fails on `23503 FK_credentials_users_user_id`
   — the batch surfaces the `INSERT`'s foreign-key error before the `DELETE`'s row count — pinned by

@@ -1111,7 +1111,7 @@ the same shape one row wider — the credential, the public key, the signature c
 keys and the manifest promotion in one save, no transaction. Replacing a card of recovery codes has
 a transaction already, and its promotion sits **inside** the handler's retried delegate for a
 reason [recovery-codes.md](recovery-codes.md) owns. Revoking a passkey has a transaction too, and
-**two `SaveChanges` inside it** — the session sweep's and the delete's — so on that path the
+**two `SaveChanges` inside it** — the revocation sweep's and the delete's — so on that path the
 obligation has to name one of the two: the promotion rides **the delete's**, because commit
 atomicity is not statement order and only the delete's save is the one that knows whether the
 credential is going. The factor row and the manifest naming it move together in one unit of
@@ -1347,13 +1347,11 @@ cost of root-providing is
 that ending custody has to be a method rather than a lifetime, because an injector nobody destroys
 cannot forget anything on its own.
 
-**Ending custody has one owner, and it is `SessionService.ended()`.** Its callers are
-`SessionService.judgeRefusal`, on a `401` `sessionExpiryInterceptor` hands it that the judgement
-confirms or that reaches a tab it cannot judge; the Settings screen's sign-out; the release
-screen's, `ReleaseFlowService.leave()`; and `ErasureFlowService` on the erasing request's `204` —
-and the last is the case this placement was for: it was added by
-somebody thinking about erasure rather than about key material, and it clears the keys with no line
-of its own. Placed in the callers instead, the next path would not, and the symptom is an ended
+**Ending custody has one owner, and it is `SessionService.ended()`.** Its callers are listed once,
+in the session-status rule of [sessions.md](sessions.md#business-rules--invariants), and one of them
+is the case this placement was for: `ErasureFlowService` calls it on the erasing request's `204`,
+was added by somebody thinking about erasure rather than about key material, and clears the keys
+with no line of its own. Placed in the callers instead, the next path would not, and the symptom is an ended
 session whose content key is still readable from the root injector for the life of the tab, with
 nothing red either way. **Not an `effect()` over the session status**, which is the tidier shape
 and is wrong twice: it fires on construction, so whether it wipes a set already adopted is decided
@@ -1465,7 +1463,7 @@ state whose nearest word is worse than no word at all** — reported as `unopene
 *present another factor*, which over this state sends somebody through an entire recovery card on a
 door that cannot open; the gate below is where that trade is argued in full. The
 `401`/`403` reading is written out in `AccountKeyCustodyService` rather than borrowed from
-`SessionService.readingOf`, which makes the same judgement four lines away: importing it is the one
+`SessionService.readingOf`, which draws the same distinction four lines away: importing it is the one
 thing this class may not do, because that edge closes the cycle and puts the rule above one call
 away from being undone by somebody reusing what was already there. The words differ on purpose too —
 `anonymous` is a statement about *who is asking*, `unauthenticated` is a statement about *this
@@ -2438,7 +2436,7 @@ not.
 
 **One factor leaves on the third, whose transaction holds two saves — so there "the same
 unit of work" has to name which of them.**
-`RevokePasskeyHandler` sweeps the credential's sessions in one `SaveChanges` and deletes
+`RevokePasskeyHandler` revokes the credential's sessions in one `SaveChanges` and deletes
 the credential in another, both inside one transaction, and the promotion rides **the
 delete's**. Both commit together, which is exactly what makes the wrong arrangement look
 sound: commit atomicity is a fact about the transaction and statement order is a different
@@ -2787,8 +2785,9 @@ gets back out.
    exists, and therefore one of the two that can be run twice. And a finished key rotation reaches
    it by handing over the generation it has just had promoted, through `adoptRotated`: keys as
    objects like registration's, and the whole of step 4's gate like an unlock's, because unlike
-   registration it has a response to be judged against. It ends at a sign-out, at a `401`, and
-   at a page load — **nothing about it is written anywhere a reload survives**. See
+   registration it has a response to be judged against. It ends wherever `SessionService.ended()`
+   runs — [sessions.md](sessions.md) lists those callers — and at a page load: **nothing about it
+   is written anywhere a reload survives**. See
    [The one class that holds them](#the-one-class-that-holds-them) and
    [The third way into custody](#the-third-way-into-custody).
 

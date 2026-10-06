@@ -962,8 +962,8 @@ a nonce the server persisted must not be spent by a browser that was never going
   request carries the assertion's payload and nothing else — never the key-encryption key the
   ceremony also yields.
 - **The cancelling request is marked as expecting a `401`**; the challenge and the probe below are
-  not, so a `401` on either is the interceptor's, which ends the session only on a `401` the
-  session judge confirms, or on any `401` in a tab it cannot judge.
+  not, so a `401` on either is one the interceptor hands to the session judgement, which ends the
+  session only on a `401` it confirms, or on any `401` in a tab it cannot judge.
 - **It is never retried** — not by the flow, and not by any interceptor the request passes through.
 - **Abandoning is leaving the screen.** The screen's teardown aborts a press that has not posted.
   One already out is left to land, and its `204` still reaches `SessionService`, so the notice
@@ -1048,9 +1048,10 @@ finish* rather than *was cancelled*. `duplicate` folds into `ceremony-failed`, t
 exactly `assertion` — the constant every declined passkey in the product answers — is the gate
 declining the passkey, and a session that had already ended is turned away before the gate, so that
 body cannot come from one. **Any other `401` is read after one unmarked `GET /api/me`**: a `401`
-there that the session judge confirms is the interceptor's — the tab goes to Welcome and the
-section says nothing — and anything else is `undetermined`, never `refused`, because nothing judged
-the passkey. **A `401` the judge keeps is *anything else*, so it is `undetermined` too**, and its
+there is one the interceptor hands to the session judgement, and one it confirms takes the tab to
+Welcome while the section says nothing — and anything else is `undetermined`, never `refused`,
+because nothing judged the passkey. **A `401` the session judgement keeps is *anything else*, so it
+is `undetermined` too**, and its
 sentence offers the press again over a session that is still live. [Guessing] That is a cancelling
 request and a probe that both carried a cookie another tab's sign-in had just displaced: nothing was
 withdrawn, and the next press is a whole new act. What ships does not do this yet, and this
@@ -1060,7 +1061,7 @@ ceremony lets the authenticator offer a passkey made for a different one.
 
 **`unrecognised` is a `400` or a `403`**, on the challenge or on the cancelling request, raised
 before any handler judged anything. **`unstarted` is every other way the challenge fails** except a
-`401` the session judge confirms, which is the interceptor's, and the section says nothing over it.
+`401` the session judgement confirms, and the section says nothing over that one.
 A `401` it keeps is `unstarted`: nothing was posted, and the session is live.
 
 **`undetermined` keeps the control live, and that is the erasure dialog's rule inverted on
@@ -1163,9 +1164,9 @@ result giving way to a schedule filed again and a second whole act, no focus for
 pressed for, the rescue to the result or the heading, the four holds, their order and the handler's
 gate, and every control Cancel holds.
 
-**The departure, named as work: a `401` the session judge keeps ends the press with no line.** The
-flow hears the original `401` after the verdict whether the judge ended the session or kept it, and
-cannot tell which, so it reads a kept `401` on the probe or on the challenge as the interceptor's
+**The departure, named as work: a `401` the session judgement keeps ends the press with no line.**
+The flow hears the original `401` after the verdict whether the session judgement ended the session
+or kept it, and cannot tell which, so it reads a kept `401` on the probe or on the challenge as the interceptor's
 and says nothing. Cancel is live again over a session that is still live, and nothing says the
 press ended — where the chapter says `undetermined` for the probe and `unstarted` for the challenge.
 [Guessing] Reasoned from the code, not run: the race that produces a kept `401` is another tab's
@@ -1509,15 +1510,15 @@ the four are raised before the changing request exists, and `assertion-refused` 
 that request away before anything is written. The act-neutral half of each sentence is unchanged,
 so the product says one thing about a passkey check wherever it asks for one.
 
-**`unstarted` is every way the challenge request fails but a `401` the session judge confirms, a
-refused one included.** A
+**`unstarted` is every way the challenge request fails but a `401` the session judgement confirms,
+a refused one included.** A
 `5xx`, no answer, and a `400` or `403` the server judged all read `unstarted`, and the waiting state
 stays: nothing that could change anything has been sent, so *nothing changed* is a fact and the
 Google answer is still good. The erasure dialog reads a `400` or `403` as `unrecognised` and offers a
 reload; this chapter does not borrow that word, because here a reload costs the Google answer and
-sends the person back through the trip to get it again. A `401` on the challenge is the
-interceptor's to judge: one the session judge confirms takes the tab to Welcome with nothing said
-here, and one it keeps is `unstarted`, because the session is live and nothing was sent that could
+sends the person back through the trip to get it again. A `401` on the challenge is one the
+interceptor hands to the session judgement: one it confirms takes the tab to Welcome with nothing
+said here, and one it keeps is `unstarted`, because the session is live and nothing was sent that could
 change anything.
 
 **`unsupported` is not borrowed, and it follows registration rather than Unlock.** A browser that
@@ -1583,12 +1584,14 @@ expecting a `401`, and every `401` it collects is read only after one unmarked `
 erasure dialog's shape, for its reason: unmarked, the gate's `401` would cost a re-read of
 `GET /api/me` — one that, failing, ends a live session — and the flow would hear its own verdict
 only after the session judgement had run on it; unchecked, an ended session would be told its
-passkey was refused. A `401` on the probe is the interceptor's: one the session judge confirms
-takes the tab to Welcome with nothing said here; anything else lets the member decide the word.
+passkey was refused. A `401` on the probe is one the interceptor hands to the session judgement:
+one it confirms takes the tab to Welcome with nothing said here; anything else lets the member
+decide the word.
 
 **A double race is not silent.** [Guessing] Reasoned from the code, not run: when the changing
 request and the probe both carried a cookie another tab's sign-in had just displaced, both are
-refused while the jar already holds a live session of this account, and the judge keeps it. That
+refused while the jar already holds a live session of this account, and the session judgement
+keeps it. That
 `401` is *anything else* above: the member decides the word, and a `401` carrying none is `failed`
 — nothing changed, and Change offers the trip again. A press never ends with no line over a session
 that is still live. What ships does not do this yet, and this chapter's *What ships today* records
@@ -1651,9 +1654,9 @@ order, named by the confirm control. Nothing is communicated by colour alone.
 ### What ships today
 
 **One departure from this chapter is known, and it is work.** Every outcome line renders the
-table's sentence, `changed-unread` included, but a `401` the session judge keeps ends the press with
-no line. The flow hears the original `401` after the verdict whether the judge ended the session or
-kept it, and cannot tell which. So it reads the probe's `401` as an ended session, says nothing and
+table's sentence, `changed-unread` included, but a `401` the session judgement keeps ends the press
+with no line. The flow hears the original `401` after the verdict whether the session judgement
+ended the session or kept it, and cannot tell which. So it reads the probe's `401` as an ended session, says nothing and
 drops the answer, and the section is back at **Change email address** with no line in the region,
 over a session that is still live. A challenge refused the same way ends the same way, where the
 chapter says `unstarted` and a waiting state that stays. Nothing changed either way, and the way
@@ -2977,15 +2980,15 @@ this line.
 **`unauthenticated` keeps every other `401` a run's request collects, and its sentence is false for
 this one.** *Stopped accepting this rotation from this browser* and *sign out and sign in again*
 describe a browser the server no longer trusts. A declined passkey leaves the session live — unless
-the session judge's re-read fails, which ends it — and signing out changes nothing about which
+the session judgement's re-read fails, which ends it — and signing out changes nothing about which
 passkey answers. Another press is a genuinely different attempt, because the authenticator chooses
 which passkey answers, so the line offers the press.
 
 **There is no probe here, unlike the erasure cancellation, because the interceptor has already
 asked.** The begin is not marked as expecting a `401`, so `sessionExpiryInterceptor` hands its `401`
-to the session judge before the run reads it. One the judge confirms takes the tab to Welcome with
-nothing said here; one it keeps reaches the run with the session standing, and the member decides
-between the two words. [key-rotation.md](../business-logic/key-rotation.md) argues why the begin
+to the session judgement, `SessionService.judgeRefusal`, before the run reads it. One the session
+judgement confirms takes the tab to Welcome with nothing said here; one it keeps reaches the run
+with the session standing, and the member decides between the two words. [key-rotation.md](../business-logic/key-rotation.md) argues why the begin
 stays unmarked.
 
 **Both halves of `refused` are borrowed.** *Budgetoid didn’t accept that passkey* is the opening
@@ -3238,7 +3241,7 @@ ceremony before a `resume` that carries the name.
 
 - **`unauthenticated` can render over a session that is still live.** A `401` on a chunk, on the
   completion, or on a begin whose body carries no `refusal` member reaches the run after the
-  session judge's verdict. One the judge confirms takes the tab to Welcome; one it keeps leaves the
+  session judgement's verdict. One it confirms takes the tab to Welcome; one it keeps leaves the
   section on screen, and the run reads it as `unauthenticated` — so *sign out and sign in again* is
   said to somebody whose browser the server still trusts. [Guessing] Reasoned from the code, not
   run: the race that produces a kept `401` is another tab's sign-in displacing the cookie the
@@ -3969,10 +3972,11 @@ opens — [erasure.md](../business-logic/erasure.md)'s decision tree. But the ro
 fallback authorization policy, so a session that had already ended — expired, revoked, or erased
 from another tab — is answered `401` before the gate runs. Both mean this request erased nothing,
 and the flow tells them apart before it publishes anything, with **one unmarked `GET /api/me`**: a
-`401` there is `sessionExpiryInterceptor`'s to judge, and on one the session judge confirms the
-session ends, the tab goes to Welcome, and the dialog says nothing; a `200`, or a probe that cannot
-answer, leaves `refused`. **So does a `401` the judge keeps**, because the judge has just found the
-session live, which is the reading this line rests on — and the commit is offered again under it.
+`401` there is one `sessionExpiryInterceptor` hands to the session judgement, and on one the session
+judgement confirms the session ends, the tab goes to Welcome, and the dialog says nothing; a `200`,
+or a probe that cannot answer, leaves `refused`. **So does a `401` the session judgement keeps**,
+because the session judgement has just found the session live, which is the reading this line rests
+on — and the commit is offered again under it.
 [Guessing] That is an erasing request and a probe that both carried a cookie another tab's sign-in
 had just displaced, refused before the gate, so nothing was erased. What ships does not do this
 yet, and *What ships today* below records the gap.
@@ -3985,9 +3989,10 @@ made for a different account, which is why *for this account* is in the sentence
 of `GET /api/me` — one that, failing, ends a session that is still live — and the dialog would hear
 its own verdict only after the session judgement had run on it. Marked, the dialog reads that
 verdict itself and no re-read is spent. The probe after it is **not** marked, and neither is the
-challenge request before it: a `401` on either is the interceptor's to judge, which is exactly what
-it owns — and on an ending verdict the screen leaving takes the overlay with it, below. So on an
-ending verdict the dialog says nothing on a `401` from the challenge either; on one the judge keeps,
+challenge request before it: a `401` on either is one the interceptor hands to the session
+judgement, which is exactly what it owns — and on an ending verdict the screen leaving takes the
+overlay with it, below. So on an ending verdict the dialog says nothing on a `401` from the
+challenge either; on one the session judgement keeps,
 the challenge's `401` is `unstarted`, because nothing was minted and the session is live.
 
 **`unstarted` is every other way the challenge request fails, and its sentence names no cause.** A
@@ -4052,8 +4057,8 @@ ended session. [erasure.md](../business-logic/erasure.md) records the risk.
 **It lives no longer than the screen that opened it.** A router navigation alone does not close a
 Material dialog — measured, with `navigateByUrl` — so the Settings screen closes it in its own
 teardown, which every navigation off the screen passes through: the tab going to Welcome after a
-`204`, and the interceptor sending there a session its judge has ended. **The browser's Back is the exception
-that closes it first**: the CDK disposes the overlay on `popstate` before the screen goes, whatever
+`204`, and the interceptor sending there a session the session judgement has ended. **The browser's
+Back is the exception that closes it first**: the CDK disposes the overlay on `popstate` before the screen goes, whatever
 `disableClose` says, which is why the screen abandons a press when its overlay closes from outside,
 per *The dismiss* above, and not only when it is torn down.
 
@@ -4064,7 +4069,7 @@ from this tab, then the navigation, because the guard on the way out reads the s
 the router is asked. Nothing is kept for the moment in between: there is no account left to read.
 
 **Other devices find out at their next request.** The erasure deleted every session on the account,
-so each of them answers `401`, the session judge ends that tab's session — its re-read, where it
+so each of them answers `401`, the session judgement ends that tab's session — its re-read, where it
 sends one, is refused too — and `sessionExpiryInterceptor` takes the tab to Welcome, which says
 nothing there either. Nothing is pushed to them.
 
@@ -4099,8 +4104,9 @@ the target, and not what ships; see below.
 
 **Three departures, each named as work rather than smoothed over by moving the target.**
 
-- **A `401` the session judge keeps ends the press with no line.** The flow hears the original
-  `401` after the verdict whether the judge ended the session or kept it, and cannot tell which, so
+- **A `401` the session judgement keeps ends the press with no line.** The flow hears the original
+  `401` after the verdict whether the session judgement ended the session or kept it, and cannot
+  tell which, so
   it reads a kept `401` on the probe or on the challenge as an ended session and says nothing. The
   commit is live again over a session that is still live, and nothing says the press ended — where
   this chapter says `refused` for the probe and `unstarted` for the challenge. [Guessing] Reasoned
@@ -4786,15 +4792,16 @@ touches nothing the account holds. Outline and not Destructive, because nothing 
 | Answer | Word | Copy | What stays |
 | --- | --- | --- | --- |
 | `200` with an instant that reads | `scheduled` | The result sentence, below | *Scheduled*; focus moves to the result sentence |
-| `401` | — | *nothing* | The session judge ends a locked session without a re-read, and `sessionExpiryInterceptor` takes the tab to Welcome |
+| `401` | — | *nothing* | The session judgement ends a locked session without a re-read, and `sessionExpiryInterceptor` takes the tab to Welcome |
 | `403` | `unrecognised` | "Budgetoid couldn’t read this request, so nothing was scheduled. Reload the page and try again." | *Nothing scheduled* |
 | Anything else — no answer, a `5xx`, a `200` whose instant does not read | `undetermined` | "Budgetoid didn’t hear back, so this may already be scheduled. Press again to check — asking twice never changes the date." | *Nothing scheduled*; **the commit stays live** |
 
 The copy is the specification, not an example of it. Every line but the result is inside the
 region, `--bud-over`.
 
-**The schedule request is not marked as expecting a `401`.** A `401` there is the interceptor's, and
-this screen says nothing over it. The session judge cannot confirm it against the account, because
+**The schedule request is not marked as expecting a `401`.** A `401` there is one the interceptor
+hands to the session judgement, and this screen says nothing over it. The session judgement cannot
+confirm it against the account, because
 the route that names one refuses a locked session, so it ends the session without asking.
 
 **An instant reads only with its offset.** A value with `Z` or a numeric offset is an instant; one

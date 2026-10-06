@@ -184,6 +184,13 @@ the *set*, so it is authenticated once.
     nothing; a set of codes with no hashes can never be redeemed; an account with no manifest reads
     back as one that has never had a factor set; and a session with no handle is a person told they
     are signed in whose next request is a `401`.
+    - **It runs no ended-session sweep, and has nothing to sweep.** The four other establishing
+      paths write their session through `SessionRepository.AddAsync`, which deletes the account's
+      ended sessions in the same save — see the ended-session sweep's rule in
+      [sessions.md](sessions.md#business-rules--invariants). This one writes through
+      `RegistrationRepository`, onto an account whose id is derived from this registration's own
+      challenge and whose `users` row is inserted in this same save, so no session can already
+      exist under it.
   - **Enforced in**: `RegistrationRepository.RegisterAsync`, which adds every entity and calls
     `SaveChangesAsync` once. EF orders the statements from the foreign keys between the entity
     types, so `users` precedes `credentials` whatever order they were added in; what the single save
@@ -195,12 +202,6 @@ the *set*, so it is authenticated once.
     the challenge it answered. A third commit follows the save when the browser's incoming cookie
     names a session: displacement deletes it, in the endpoint, after the handler returned. *Of the
     account*, in the rule above, is doing real work.
-  - **It runs no ended-session sweep, and has nothing to sweep.** The four other establishing paths
-    write their session through `SessionRepository.AddAsync`, which deletes the account's ended
-    sessions in the same save — see [sessions.md](sessions.md#must-not). This one writes through
-    `RegistrationRepository`, onto an account whose id is derived from this registration's own
-    challenge and whose `users` row is inserted in this same save, so no session can already exist
-    under it.
 
 - **The request MUST carry a set of exactly ten submissions, and the passkey's factor identifier
   MUST differ from all ten.**
@@ -297,11 +298,11 @@ the *set*, so it is authenticated once.
     run earlier, a refused registration would sign the browser out of the session it presented.
     Measured: displacing before the handler reddens the `AccountRegistrationTests` case where a
     registration whose address is taken leaves the presented session live.
-  - **Displacement is a step after the ladder, never a rung of it.** The browser registering can
-    hold a cookie, and the session it names is always another account's — this one did not exist
-    until the save committed — so nothing inside the registration's own save could reach it. The
-    endpoint deletes it after the handler returned, through `SessionCookieWriter`, and
-    `RegisterAccountHandler` knows nothing of it. See [sessions.md](sessions.md).
+    - **Displacement is a step after the ladder, never a rung of it.** The browser registering can
+      hold a cookie, and the session it names is always another account's — this one did not exist
+      until the save committed — so nothing inside the registration's own save could reach it. The
+      endpoint deletes it after the handler returned, through `SessionCookieWriter`, and
+      `RegisterAccountHandler` knows nothing of it. See [sessions.md](sessions.md).
   - **Enforced in**: the endpoint hands the returned handoff to
     `SessionCookieWriter.WriteEstablishedAsync`, after the `await`, which displaces the session the
     incoming cookie names and only then issues the new cookie.

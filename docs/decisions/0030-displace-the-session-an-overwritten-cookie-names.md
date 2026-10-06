@@ -94,8 +94,7 @@ then is the new cookie written. No grant changes.**
    `PasskeyCeremonyTests.PasskeySignIn_OverItsOwnLiveSession_DeletesTheSessionTheCookieNamed`,
    `RecoveryCodeRedemptionTests.Redemption_OverItsOwnLiveSession_DeletesTheSessionTheCookieNamed`
    and `LockedSignInEndpointTests.LockedSignIn_OverALiveLockedSession_DeletesTheReplacedSession`
-   stayed green. `Generation_ThatReestablishes_DeletesTheCallersPasskeySession`, also
-   same-account, was not reported under that run.
+   stayed green.
 
 5. **One reader of the cookie.** The digest comes from `SessionCookie.TryReadTokenHash`, the reader
    `SessionCookieAuthenticationHandler` uses, so a value that reader refuses to decode is not one
@@ -171,17 +170,9 @@ cookie named another account, that sign-in may never come.
 ## Consequences
 
 - **What remains as a sign-in record, after this and ADR 0029.** A live row is normally held by a
-  browser. It can still be held by none, and these are the ways known, not a closed list: the new
-  session of an establishment whose displacement failed, the new session of one whose response was
-  lost, and the session of a browser that dropped its cookie without signing out — cleared site
-  data, a closed private window. [Guessing] That last case is reasoned, not run: such a browser
-  tells the server nothing. [Guessing] Two more are reasoned from the code and not run. Two
-  establishing requests from one browser at once, such as two tabs, both carry the old cookie: one
-  displaces its session, the other finds nothing, and the browser keeps one of the two new cookies,
-  so the other new session is held by nobody. And a client that disconnects after the commit and
-  before displacement cancels the request's token, which cancels displacement: the old session
-  survives and the new one is orphaned. Each such row stays live until it expires or a revocation
-  ends it. An ended row stands until the account next establishes a session, until a browser still
+  browser, but a session can outlive the browser that held it, and neither displacement nor the
+  sweep guarantees otherwise; such a row stays live until it expires or a revocation ends it. An
+  ended row stands until the account next establishes a session, until a browser still
   presenting its cookie establishes one, or until its credential or the account is deleted. An
   account that never signs in again keeps its last batch. `n_tup_del` on `sessions` counts every
   delete on the table — measured on a PostgreSQL 17 container, a delete later rolled back included —
@@ -191,8 +182,8 @@ cookie named another account, that sign-in may never come.
 - **The failure window.** If the delete throws, the request answers `500` after the new session
   committed, and no cookie is written, because the exception handler clears the response. The new
   session stands with no browser holding it, and the old one survives in the browser still
-  presenting it. What reaches this is a failure underneath — the database, or the retries running
-  out — or a cancelled request, whose client has already gone, the last residue above. Measured:
+  presenting it. A failure underneath reaches this — the database, or the retries running out.
+  Measured:
   swallowing a failure turned that `500` into a `200` with the old session left live, so it stays
   loud.
 - **A lost establishing response is another end.** Displacement has already deleted the session

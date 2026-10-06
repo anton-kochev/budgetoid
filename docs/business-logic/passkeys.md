@@ -201,17 +201,17 @@ erDiagram
     **inside** the delegate and **after the second `ChangeTracker.Clear()`**, because an entity
     loaded ahead of a clear is detached and its promotion is then silently never emitted; it is
     promoted there and handed to `PasskeyRepository.DeletePasskeyAsync`. **This path has two
-    `SaveChanges` inside one transaction** — the session sweep's and the delete's — and the
+    `SaveChanges` inside one transaction** — the revocation sweep's and the delete's — and the
     promotion must ride the delete's. Both commit together, but commit atomicity and statement order
     are two different facts, and a reader holding only the first will move the promotion to the
-    sweep's save, where the epoch advances in a statement that does not know whether the credential
-    is going. The answers are the registration rule's: an epoch that is not one greater than the
-    stored one is a `400`; one that *was* one greater when this request read it and has since moved
-    is a `409 factor_set_moved`, raised as the **existing** `ConflictKind.FactorSetMoved` and never
-    a kind of its own; a missing manifest row is a `500` and never a first-manifest repair. **The
-    grant needs no widening for it** — this promotion is `UPDATE (manifest, rotation_epoch)`,
-    exactly the two columns `app-role-grants.sql` already names. [account-keys.md](account-keys.md) owns every one
-    of those rules.
+    revocation sweep's save, where the epoch advances in a statement that does not know whether the
+    credential is going. The answers are the registration rule's: an epoch that is not one greater
+    than the stored one is a `400`; one that *was* one greater when this request read it and has
+    since moved is a `409 factor_set_moved`, raised as the **existing**
+    `ConflictKind.FactorSetMoved` and never a kind of its own; a missing manifest row is a `500` and
+    never a first-manifest repair. **The grant needs no widening for it** — this promotion is
+    `UPDATE (manifest, rotation_epoch)`, exactly the two columns `app-role-grants.sql` already
+    names. [account-keys.md](account-keys.md) owns every one of those rules.
 
 - **A registration MUST NOT complete unless the client reports a `prf` extension result of true.**
   Both registering legs carry it, at the same position in their own ladders. → the PRF rule below.
@@ -221,20 +221,21 @@ erDiagram
     not exist. Contrast `sessions`, where revocation writes a column precisely so the row stays
     accountable.
     - **The company the grant keeps.** `webauthn_challenges` is not the only identity table
-      holding `DELETE`. The others are `users`, the root every owned row cascades from;
+      holding `DELETE`. Among the others are `users`, the root every owned row cascades from;
       `credentials`, which holds it for **removing one credential** — revocation, replacing a
       recovery-code set, and retiring the federated credential on an email change — rather than
       erasure
       ([ADR 0014](../decisions/0014-scope-the-credential-delete-in-the-application.md));
       `recovery_code_hashes`, whose grant rests on **this** table's sentence word for word
-      ([ADR 0017](../decisions/0017-consume-a-recovery-code-by-deleting-its-row.md)); `sessions`,
-      for the ended-session sweep and displacement ([sessions.md](sessions.md)); and
-      `erasure_schedules`, for withdrawing a schedule ([erasure.md](erasure.md)). Two of them —
-      `credentials` and `recovery_code_hashes` — have their delete scoped by the application
-      alone. Being exempt from row-level security is only half of why: `webauthn_challenges` is
-      exempt too and is not among them, because it carries no owner column at all, so its delete has
-      nothing to be scoped *by*. What singles those two out is holding an owner column **and** no
-      policy to check it against.
+      ([ADR 0017](../decisions/0017-consume-a-recovery-code-by-deleting-its-row.md)); and
+      `sessions`, for the ended-session sweep and displacement ([sessions.md](sessions.md)).
+      `erasure_schedules` holds one too, for withdrawing a schedule ([erasure.md](erasure.md)),
+      though a schedule says when an account ends rather than who is asking.
+      `AppRoleGrantMatrixTests` pins the whole set. Of the tables named here, `credentials` and
+      `recovery_code_hashes` have their delete scoped by the application alone. Being exempt from
+      row-level security is only half of why: `webauthn_challenges` is exempt too and is not among
+      them, because it carries no owner column at all, so its delete has nothing to be scoped *by*.
+      What singles those two out is holding an owner column **and** no policy to check it against.
   - **Enforced in**: the `DELETE` grant on `webauthn_challenges` in `app-role-grants.sql`, with the
     paragraph beside it carrying this argument, and `ConsumeAsync` deleting the matched row.
 
@@ -856,11 +857,11 @@ factor, and an account identifier derived from the challenge it just spent —
   account from it.** A session cookie beside the assertion is still read: by the session scheme,
   as on every request, and once the new session is established, to displace the session it names
   — see [sessions.md](sessions.md). The handler never takes the account from either read. The
-  rule the handler enforces is unchanged — **the account comes from the verified passkey, never from
-  the request** — and its reason did not leave with the provisioning middleware it was first written
-  against, which had already put a *different* account on the request. A presented session cookie
-  still can: the session scheme publishes the account its handle names before the handler runs,
-  the residue whose gotcha [sessions.md](sessions.md) carries on a refused request. Keep it.
+  rule the handler enforces is that **the account comes from the verified passkey, never from the
+  request**, and its reason is that something above the handler can already have put a *different*
+  account on the request. A presented session cookie does: the session scheme publishes the account
+  its handle names before the handler runs, the residue whose gotcha [sessions.md](sessions.md)
+  carries on a refused request. Keep it.
   Somebody signing into their own account with somebody else's passkey is the failure, and the
   handler is the layer that refuses it whatever runs above.
   `Assertion_PresentedWithAnotherUsersBearerToken_EstablishesTheSessionForThePasskeysOwner` pins the
@@ -870,7 +871,8 @@ factor, and an account identifier derived from the challenge it just spent —
   extend the window. Two independent numbers would produce a ceremony a person completes and the
   server then refuses.
 - **An expired challenge is not deleted on consumption.** `ConsumeAsync` leaves it for the sweep
-  rather than doing work on behalf of a caller presenting bytes that are already worthless.
+  rather than doing work on behalf of a caller presenting bytes that are already worthless. That is
+  the challenge sweep on each options call, not either sweep of `sessions`.
 - **Revoking a passkey removes its row; nothing marks it revoked.** The role holds `DELETE` on
   `credentials`, and the database's own cascade — running as the table owner, not as this role —
   takes the public key, the signature counter and the sessions with it. There is deliberately no
@@ -926,8 +928,8 @@ factor, and an account identifier derived from the challenge it just spent —
   produces — so the two orderings of one pair of requests are indistinguishable to the caller, which
   is what makes a client's retry safe. Deliberately not a 409, which invites a retry at work already
   done, and not an internal retry, which would re-run the lookup and reach this same 404 a round
-  trip later. Not a 200 either: the response carries `sessionsEnded`, and this request's sweep
-  matched rows the winner had already stamped. Translated in Infrastructure and not in the handler,
+  trip later. Not a 200 either: the response carries `sessionsEnded`, and this request's revocation
+  sweep matched rows the winner had already stamped. Translated in Infrastructure and not in the handler,
   like the same catch in `UserRepository.DeleteAsync`: naming EF's exception in
   `RevokePasskeyHandler` would put the EF assembly on `Application.csproj`, against a dependency
   direction that runs Infrastructure → Application. Driven from `PasskeyRepositoryTests`, which
