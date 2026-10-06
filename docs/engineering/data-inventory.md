@@ -151,12 +151,14 @@ decision and its alternatives are in
 `AccountErasureEndpointTests` takes every entry not filed `Nobody` and counts that table's rows of
 the erased account, and of a survivor where a test has one, by the entry's owner column — the user
 id for `User`, the budget id for `Budget` — either side of an erasure, naming each table that is
-`unseeded`, `survived` or `moved`. So a table
-is judged there the day its owner is written, with no edit to how the gate enumerates. **Detecting
-it costs no test edit; going back to green can cost one**: until the arrangement writes a row of the
-new table the gate reports it `unseeded`, and the cure is a seed row in that file. Two limits come
-with the column: a row naming the account through some other column is outside its count, and a
-table whose delete rule blocks the erasure fails it as a non-`204` rather than by name.
+`unseeded`, `survived` or `moved`. So a table is judged there the day its owner is written, with no
+edit to how the gate enumerates. **Detecting it costs no test edit; going back to green can cost
+two**: until the arrangement writes a row of the new table the gate reports it `unseeded`, and the
+cure is a seed row in that file — and `ErasureAtomicityTests`, which seeds its account through its
+own helpers and asserts every table it counts held rows before the act, needs a seed row of its
+own. Two limits come with the column: a row naming the account through some other column is
+outside its count, and a table whose delete rule blocks the erasure fails it as a non-`204` rather
+than by name.
 [erasure.md](../business-logic/erasure.md) owns the gate and argues both.
 
 ## Every narrative column is checked for ciphertext, and the check is four facts

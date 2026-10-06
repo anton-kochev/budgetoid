@@ -82,8 +82,10 @@ role holds no `DELETE` there of any shape.
   `AccountErasureEndpointTests.Erase_ForAFullyFurnishedAccount_LeavesNoRowInAnyTable`, counts each
   table the data inventory says an account owns, scoped to the erased account by that table's owner
   column, and names every table still holding a row of it.
-  `ErasureAtomicityTests.Erasure_WhenNothingFails_RemovesEveryOwnedRow` counts every relation in a
-  database holding one account, unscoped and by whole table. → the coverage rule below.
+  `ErasureAtomicityTests.Erasure_WhenNothingFails_RemovesEveryOwnedRow` counts, unscoped and by
+  whole table, the relations `RowLevelSecurityCoverage.DiscoverAsync` returns for a database holding
+  one account — all but views, partitioned parents and the tables its
+  `TablesOutsideTheTransactionBoundary` names. → the coverage rule below.
 - **Run as one database transaction, deleting every row it covers or leaving every one exactly as it
   found them** — a half-finished erasure is worse than none: the person cannot tell what survived,
   and nothing in the product would be left to tell them. → the atomicity rule below.
@@ -275,12 +277,16 @@ role holds no `DELETE` there of any shape.
     names the constraint rather than the table. The remedy is the deletion-order rule above. The
     defects are not folded into that assertion's message on purpose: after a rollback every table
     still holds its rows, so the list would name every table as survived and point at none.
-  - **A new owned table is detected without a test edit, and going back to green can cost one.**
+  - **A new owned table is detected without a test edit, and going back to green can cost two.**
     Before its owner is written, `TableOwnerCoverageTests` names a newly mapped table undecided. Once
     it is, and unless an arrangement this file already runs happens to write a row there, this gate's
-    first line for it is `unseeded`, and the cure is one seed row in the test's
-    `SeedIdentityRowsAsync` — never an exclusion. NFR-023 asks for no test edit beyond the inventory
-    entry, so it is met here for detection and only partly for repair.
+    first line for it is `unseeded`, and the cure is a seed row in the test's
+    `SeedIdentityRowsAsync` — never an exclusion. **It costs a second seed row in a second file.**
+    `ErasureAtomicityTests` furnishes its account through its own `FurnishAccountAsync` and
+    `SeedIdentityRowsAsync`, and both of its whole-database tests assert that every table they count
+    held rows before the act, so the new table reds that guard too until one of those two writes a
+    row of it. NFR-023 asks for no test edit beyond the inventory entry, so it is met here for
+    detection and only partly for repair.
   - **Scoping is by one column per table.** A row naming the account through some other column, and
     not through the owner column the inventory writes, is outside every count here. Whole-database
     emptiness is `ErasureAtomicityTests.Erasure_WhenNothingFails_RemovesEveryOwnedRow`'s question,
@@ -435,9 +441,10 @@ role holds no `DELETE` there of any shape.
     never will, because a list of refused words cannot enumerate the words nobody has thought of.
     What catches those is the row count, which reads no names at all.
   - **The row-shaped half is carried elsewhere and deliberately not duplicated here.**
-    `ErasureAtomicityTests.Erasure_WhenNothingFails_RemovesEveryOwnedRow` enumerates every relation
-    that stores rows of its own — ordinary tables, materialized views and foreign tables — and
-    asserts each is empty after a successful erasure. Views and partitioned parents are excluded
+    `ErasureAtomicityTests.Erasure_WhenNothingFails_RemovesEveryOwnedRow` enumerates the relations
+    that store rows of their own — ordinary tables, materialized views and foreign tables — less the
+    tables `TablesOutsideTheTransactionBoundary` names, and asserts each is empty after a successful
+    erasure but `currencies` and `__EFMigrationsHistory`. Views and partitioned parents are excluded
     because they would report rows already counted underneath them, not because their rows are safe.
     A materialized view is counted for the opposite of the obvious reason: nothing in a request
     writes to it, so an erasure does not reach it either, and a reporting matview over

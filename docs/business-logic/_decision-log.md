@@ -32,11 +32,12 @@ writes a `key_rotations` row and a `key_rotation_seals` row so those two tables 
   the erasure back, every table still holds its rows and the list names all of them.
 
 **Consequences:** a new owned table is named by the unit tier until its owner is written and by this
-gate as `unseeded` until the arrangement writes a row of it, and a seed row added for that is a test
-edit NFR-023 asks not to need. A table whose `RESTRICT` or `NO ACTION` edge blocks the erasure fails
-as a non-`204`, not by name. A row naming the account only through a column other than the table's
-owner column is outside the gate's count; `ErasureAtomicityTests` still asks whole-database
-emptiness.
+gate as `unseeded` until the arrangement writes a row of it. `ErasureAtomicityTests` seeds through
+its own helpers and asserts every table it counts held rows before the act, so it needs a seed row
+too: two test edits NFR-023 asks not to need. A table whose `RESTRICT` or `NO ACTION` edge blocks
+the erasure fails as a non-`204`, not by name. A row naming the account only through a column other
+than the table's owner column is outside the gate's count; `ErasureAtomicityTests` still asks
+whole-database emptiness.
 
 **Affected areas:** [erasure.md](erasure.md),
 [data inventory](../engineering/data-inventory.md).

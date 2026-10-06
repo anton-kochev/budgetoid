@@ -351,8 +351,8 @@ public sealed class TableOwnerCoverageTests
         string[] tooShort =
         [
             .. ownedByNobody
-                .Where(entry =>
-                    (entry.OwnedByNobodyBecause?.Trim().Length ?? 0) < MinimumNobodyReasonLength)
+                .Where(entry => string.IsNullOrWhiteSpace(entry.OwnedByNobodyBecause)
+                                || entry.OwnedByNobodyBecause.Length < MinimumNobodyReasonLength)
                 .Select(entry => entry.Table)
                 .Order(StringComparer.Ordinal),
         ];
@@ -411,9 +411,6 @@ public sealed class TableOwnerCoverageTests
     [Arguments(nameof(TableOwnerEntry.Nobody), "table", null)]
     [Arguments(nameof(TableOwnerEntry.Nobody), "table", "")]
     [Arguments(nameof(TableOwnerEntry.Nobody), "table", "   ")]
-    [Arguments(nameof(TableOwnerEntry.Nobody), "because", null)]
-    [Arguments(nameof(TableOwnerEntry.Nobody), "because", "")]
-    [Arguments(nameof(TableOwnerEntry.Nobody), "because", "   ")]
     public async Task Factory_WithABlankArgument_ThrowsArgumentException(
         string factory,
         string blankParameter,
@@ -434,6 +431,35 @@ public sealed class TableOwnerCoverageTests
 
         // Assert — the ArgumentException family: a null may surface as ArgumentNullException.
         await Assert.That(act).Throws<ArgumentException>();
+    }
+
+    [Test]
+    public async Task Nobody_WithANullReason_ThrowsArgumentNullException()
+    {
+        // Arrange
+        string? because = null;
+
+        // Act
+        Func<TableOwnerEntry> act = () => TableOwnerEntry.Nobody(ProbeTable, because!);
+
+        // Assert
+        await Assert.That(act).Throws<ArgumentNullException>();
+    }
+
+    [Test]
+    [Arguments("")]
+    [Arguments("   ")]
+    public async Task Nobody_WithABlankReason_DoesNotThrow(string because)
+    {
+        // Arrange — guarded for null only, as ColumnClassificationEntry.Excluded argues: refusing a
+        // blank here would read as though the reason had been judged; the shipped-list floor judges it.
+        string table = ProbeTable;
+
+        // Act
+        Func<TableOwnerEntry> act = () => TableOwnerEntry.Nobody(table, because);
+
+        // Assert
+        await Assert.That(act).ThrowsNothing();
     }
 
     // DisagreementsWith

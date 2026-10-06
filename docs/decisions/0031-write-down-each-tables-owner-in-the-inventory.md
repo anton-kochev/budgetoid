@@ -65,22 +65,39 @@ tier's column-by-kind test.
 **NFR-023 is met for detection and is partial for repair.** A new mapped table is reported by name
 in the unit tier the day it is mapped, with no test edited; the edit it asks for is its entry here.
 A reader that checks **rows** rather than names — one that has to see a row of the account in a
-table before an erasure to say the erasure removed it — cannot be satisfied by the entry alone. Going
-back to green on such a reader costs one seed row in its fixture, and that is a test edit NFR-023
-asks not to need.
+table before an erasure to say the erasure removed it — cannot be satisfied by the entry alone. The
+erasure tests hold two such readers: `AccountErasureEndpointTests` reports the new table `unseeded`,
+and both whole-database tests in `ErasureAtomicityTests` assert that every table they count held
+rows before the act. Each file seeds its account through its own helpers, so going back to green
+costs a seed row in each of the two, and those are test edits NFR-023 asks not to need.
 
 **The owner column is one column per table, so a reader scoping by it sees that column only.** A row
 that names an account through some other column and not through its owner column is outside any
 count scoped this way. Whole-database emptiness is a different question, and
 `ErasureAtomicityTests.Erasure_WhenNothingFails_RemovesEveryOwnedRow` asks it: it counts the
-relations `DiscoverAsync` returns, before and after a successful erasure of a database's one account.
+relations `DiscoverAsync` returns — less views, partitioned parents and the tables its
+`TablesOutsideTheTransactionBoundary` names — before and after a successful erasure of a database's
+one account.
+
+**A table mapping both owner columns is counted by `budget_id` alone.** The column fact reads
+`budget_id` before `user_id`, so such a table agrees with the catalog only when filed `Budget`, and
+the unit tier pins every `Budget` entry to `budget_id`; were that column nullable, a row with no
+budget and the erased person's `user_id` would fall outside `AccountErasureEndpointTests`' count,
+and an erasure leaving it would pass there. No mapped table carries both today, and closing it is
+pending hardening.
 
 **A table carrying neither owner column and filed `Nobody` agrees with the catalog by construction.**
 The reconciliation cannot tell a table genuinely owned by nobody from an owned table keyed some other
 way; both read `None` off their columns. For that case the reason is the hold, and the floor on it
 claims only that something was written — the same limit ADR 0024 records for an excluded column.
 Such a table also lands in `RowLevelSecurityCoverage`'s unclassifiable bucket unless an exemption
-names it, which raises the question of isolation rather than of erasure.
+names it, which raises the question of isolation rather than of erasure. The erasure's backstop for
+the hole is `ErasureAtomicityTests`' unscoped whole-database count, which never reads the owner
+list: an owned table filed `Nobody` is still counted there and still has to be empty after a
+successful erasure, provided the arrangement seeds a row of it — and the file's non-vacuity guard
+stays red until it does. That is why the file keeps its own hand lists,
+`TablesOutsideTheTransactionBoundary` and `TablesAnErasureDoesNotOwn`, and must not be rewritten to
+read `TableOwners`: an oracle taken from the list under test agrees with it by construction.
 
 **This extends ADR 0024 and leaves its "the inventory replaces nothing" standing.** The owner axis
 reads `RowLevelSecurityCoverage`'s discovery and does not replace it: that type still decides which

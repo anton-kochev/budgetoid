@@ -25,9 +25,18 @@ public enum OwnedBy
 /// One mapped table with whose rows it holds, and the column that names the owner.
 /// </summary>
 /// <remarks>
+/// <para>
 /// There is no public constructor, for the reason <see cref="ColumnClassificationEntry" /> gives at
 /// its own: a table owned by nobody is meant to be reachable only through the factory that takes a
 /// reason, and an owned table only through one that takes its owner column.
+/// </para>
+/// <para>
+/// The reason is guarded the way <see cref="ColumnClassificationEntry.Excluded" /> guards its own:
+/// against null and nothing else. A factory refusing a blank reason would read as though the
+/// reason's content had been judged, and nothing here judges it. What holds it is the 80-character
+/// floor the unit tier applies to every <see cref="OwnedBy.Nobody" /> entry of the shipped list,
+/// the same floor an excluded column's reason meets.
+/// </para>
 /// </remarks>
 public sealed record TableOwnerEntry
 {
@@ -91,13 +100,16 @@ public sealed record TableOwnerEntry
 
     /// <summary>Names a table whose rows belong to no account, with the argument for it.</summary>
     /// <param name="table">The table name as the model maps it.</param>
-    /// <param name="because">Why no account owns what the table holds.</param>
+    /// <param name="because">
+    /// Why no account owns what the table holds; checked for null only, as the type's remarks argue.
+    /// </param>
     /// <returns>The entry.</returns>
-    /// <exception cref="ArgumentException">Either argument is null, empty or whitespace.</exception>
+    /// <exception cref="ArgumentException"><paramref name="table" /> is null, empty or whitespace.</exception>
+    /// <exception cref="ArgumentNullException"><paramref name="because" /> is null.</exception>
     public static TableOwnerEntry Nobody(string table, string because)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(table);
-        ArgumentException.ThrowIfNullOrWhiteSpace(because);
+        ArgumentNullException.ThrowIfNull(because);
 
         return new(table, OwnedBy.Nobody, null, because);
     }
@@ -177,8 +189,10 @@ public static class TableOwnerCoverage
         ArgumentNullException.ThrowIfNull(owners);
         ArgumentNullException.ThrowIfNull(discovered);
 
-        // Grouped rather than keyed with ToDictionary, so a name repeated on either side is judged
-        // rather than thrown on.
+        // Grouped rather than keyed with ToDictionary, so a repeated name is not thrown on. A name
+        // repeated in owners is judged once per entry; one repeated in discovered is collapsed to its
+        // first relation and the rest are never read. That loses nothing from DiscoverAsync, which
+        // reads the one schema public, where pg_class cannot hold two relations of one name.
         Dictionary<string, DiscoveredTable> discoveredByName = discovered
             .GroupBy(table => table.Name, StringComparer.Ordinal)
             .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
