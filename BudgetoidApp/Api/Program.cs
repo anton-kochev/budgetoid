@@ -286,6 +286,14 @@ foreach (string allowedOrigin in allowedOrigins)
 // configures the data source EF builds from the string handed to UseNpgsql.
 RefuseForbiddenConnectionOptions("ConnectionStrings:budgetoid", app.Configuration.GetConnectionString("budgetoid"));
 
+// Beside it and in the same place, but outside Development only — the argument is above
+// BuildConnectionString. Kept apart from RefuseForbiddenConnectionOptions, whose three options are
+// refused in every environment and on both connection strings: this rule is neither.
+if (!app.Environment.IsDevelopment())
+{
+    RefuseWeakSslMode("ConnectionStrings:budgetoid", app.Configuration.GetConnectionString("budgetoid"));
+}
+
 // Outermost, above the exception handler, so the headers reach every response including the ones no
 // route delegate wrote. SecurityHeadersMiddleware holds the argument.
 app.UseMiddleware<SecurityHeadersMiddleware>();
@@ -449,24 +457,47 @@ static void RequireCeremonyOrigin(string allowedOrigin, string relyingPartyId)
     }
 }
 
-// Force TLS on the PostgreSQL connection outside local development. Azure Database for PostgreSQL
-// Flexible Server rejects unencrypted connections (28000: no pg_hba.conf entry ... no encryption)
-// and enforces TLS server-side, but the connection string the deployed app is handed carries only
-// the endpoint details — host, database, and the user, plus a password only where password auth is
-// used at all (in production the credential is an Entra token supplied by the Azure enrichment
-// above, not a password in the string). SslMode is absent either way, so Npgsql would otherwise
-// attempt an unencrypted connection. Rebuild the string with SslMode=Require, which (Npgsql 8+)
-// encrypts without validating the server certificate, so Azure's cert chain need not be in the
-// chiseled container's trust store.
+// Outside local development, open the PostgreSQL connection with SSL Mode=VerifyFull: encrypted, the
+// server's certificate chained to a trusted root, and the certificate's name matched against Host.
+// Azure Database for PostgreSQL Flexible Server rejects unencrypted connections (28000: no pg_hba.conf
+// entry ... no encryption), but encryption alone proves nothing about who answered. Require encrypts
+// and checks nothing, so anything on the path can present its own certificate and relay the traffic;
+// VerifyCA checks the chain but not the name, so any certificate the authority ever issued passes.
+// Only VerifyFull ties the connection to this server.
+//
+// The connection string the deployed app is handed carries only the endpoint details — host,
+// database, and the user, plus a password only where password auth is used at all (in production the
+// credential is an Entra token supplied by the Azure enrichment above, not a password in the string).
+// SSL Mode is absent, which Npgsql's builder reads as Prefer, so the absent key becomes VerifyFull
+// here. VerifyFull written out is kept. Every weaker mode the builder can name (Disable, Allow,
+// Require, VerifyCA) is refused at boot by RefuseWeakSslMode rather than overwritten: the likely edit
+// that writes one is a pasted SslMode=Require to "fix" a certificate error at bring-up, and that must
+// be loud — enforcement means rejecting (ADR 0002), and a silent upgrade would hide from its author
+// that it never took effect. An explicit Prefer is the one weaker mode forced up rather than refused,
+// by choice: it is forced to VerifyFull exactly like the absent key, and nobody writes Prefer to get
+// past a certificate error, because Prefer already accepts any certificate — refusing it would buy
+// nothing.
+//
+// With no Root Certificate set, Npgsql 10 validates VerifyFull against the operating system's store.
+// The noble-chiseled ASP.NET image ships /etc/ssl/certs/ca-certificates.crt carrying DigiCert Global
+// Root G2 and Microsoft RSA Root CA 2017, but not DigiCert Global Root CA (G1) or Baltimore
+// CyberTrust Root. Which root the server's chain ends in is not asserted here: it is settled by a
+// VerifyFull connection from the deployed image, not by this comment. The remedy for a certificate
+// failure is never a downgrade: ship the missing root in the image and point Root Certificate at it.
+//
+// Npgsql checks the certificate against the host name written in the connection string, not the
+// address it resolves to. Host must therefore stay the server's public FQDN — the private DNS zone
+// changes only what that name resolves to (ADR 0009). An IP address or the privatelink name fails
+// the check.
 //
 // Development is deliberately left untouched: the local Aspire and Testcontainers PostgreSQL images
-// have no TLS configured, and SslMode=Require against them fails with "No SSL enabled connection
+// have no TLS configured, and any encrypted mode against them fails with "No SSL enabled connection
 // from this host is configured." A null connection string is returned unchanged so the null case
 // preserves the existing fail-later behavior.
 //
 // Three Npgsql options are refused at boot, in every environment, by RefuseForbiddenConnectionOptions
-// rather than here — this function runs lazily inside the DbContext options lambda, on the first
-// resolved context rather than at boot, and returns early in Development, so a check here would do
+// rather than here — this function runs lazily inside the DbContext options lambda, once per
+// scope that resolves a context rather than at boot, and returns early in Development, so a check here would do
 // neither.
 //
 // Two of them break budget isolation and user isolation, which both ride on session settings that
@@ -489,9 +520,39 @@ static string? BuildConnectionString(string? connectionString, bool isDevelopmen
         return connectionString;
     }
 
-    NpgsqlConnectionStringBuilder connectionStringBuilder = new(connectionString) { SslMode = SslMode.Require };
+    // Unconditional: an absent key, an explicit Prefer and VerifyFull all leave here as VerifyFull. A
+    // weaker mode present at boot never reaches this line, because RefuseWeakSslMode stopped the host;
+    // one arriving later — the options are scoped, so this runs per scope and reads configuration each
+    // time, and a reload can hand it in — is forced up like Prefer rather than refused.
+    NpgsqlConnectionStringBuilder connectionStringBuilder = new(connectionString) { SslMode = SslMode.VerifyFull };
 
     return connectionStringBuilder.ConnectionString;
+}
+
+// Refuse a connection string that names an SSL Mode weaker than VerifyFull. Called outside Development
+// only; the argument is above BuildConnectionString. Parsed with Npgsql's builder, never searched as
+// text, so `sslmode=require` and any other spelling of the key resolve to the one property. Prefer is
+// not refused: the deployed string has no SSL Mode key, which this property reads as Prefer, and an
+// explicit Prefer is forced up by choice (see above BuildConnectionString). The message names the configuration key and the canonical keyword, never the
+// connection string or any value from it, which may carry a password.
+static void RefuseWeakSslMode(string configurationKey, string? connectionString)
+{
+    if (connectionString is null)
+    {
+        return;
+    }
+
+    NpgsqlConnectionStringBuilder parsed = new(connectionString);
+
+    if (parsed.SslMode is SslMode.Disable or SslMode.Allow or SslMode.Require or SslMode.VerifyCA)
+    {
+        throw new InvalidOperationException(
+            $"{configurationKey} sets 'SSL Mode' to a mode weaker than VerifyFull, which this "
+            + "application refuses outside Development: only VerifyFull checks both the server's "
+            + "certificate chain and its host name. Remove 'SSL Mode' or set it to VerifyFull. If the "
+            + "server's certificate does not validate, ship its root and set 'Root Certificate'; never "
+            + "lower the mode.");
+    }
 }
 
 // Refuse a connection string that switches on an Npgsql option this application cannot run under.

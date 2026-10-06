@@ -263,6 +263,13 @@ because every one of these is something a reader will otherwise simplify away.
 - **In production the app role has no password** — the missing `Password=` is what makes Aspire
   fetch an Entra token for the API's managed identity. Do not "complete" it.
   [ADR 0007](docs/decisions/0007-authenticate-to-postgres-with-managed-identity.md)
+- **Outside Development the database connection is `SSL Mode=VerifyFull`**, and a configured
+  `Disable`, `Allow`, `Require` or `VerifyCA` refuses boot (`RefuseWeakSslMode`) rather than being
+  overwritten. `Host=` stays the server's public FQDN — Npgsql matches the certificate against the
+  written name. A certificate failure is answered by shipping the root, **never by lowering the
+  mode**; the deploy checks the server against the API image's own trust store before shipping.
+  `DatabaseTransportSecurityTests` holds it.
+  [ADR 0032](docs/decisions/0032-verify-the-database-servers-certificate-and-hostname.md)
 - **The four security headers are written from `Response.OnStarting`, never before `await next(…)`**
   — the exception handler's `Response.Clear()` discards a direct write, so a 500 would ship bare.
   [security headers](docs/engineering/security-headers.md)

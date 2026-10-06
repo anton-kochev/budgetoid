@@ -228,7 +228,7 @@ APP_IDENTITY_OID=$(az identity show \
   --ids "$(azd env get-value CAE_AZURE_CONTAINER_REGISTRY_MANAGED_IDENTITY_ID)" \
   --query principalId -o tsv)
 TOKEN=$(az account get-access-token --resource-type oss-rdbms --query accessToken -o tsv)
-DBPROVISION_ADMIN_CONNECTION_STRING="Host=${HOST};Username=$(az ad signed-in-user show --query userPrincipalName -o tsv);Password=${TOKEN};Database=budgetoid;Ssl Mode=Require" \
+DBPROVISION_ADMIN_CONNECTION_STRING="Host=${HOST};Username=$(az ad signed-in-user show --query userPrincipalName -o tsv);Password=${TOKEN};Database=budgetoid;Ssl Mode=VerifyFull" \
 DBPROVISION_APP_IDENTITY_OBJECT_ID="$APP_IDENTITY_OID" \
   dotnet run --project BudgetoidApp/Tools/DbProvision -c Release
 
@@ -236,6 +236,15 @@ DBPROVISION_APP_IDENTITY_OBJECT_ID="$APP_IDENTITY_OID" \
 az postgres flexible-server firewall-rule delete \
   --resource-group "$RG" --server-name "$SERVER" --name AllowMigrationClient --yes
 ```
+
+`Ssl Mode=VerifyFull` is deliberate: the string carries an administrator token, and the server's
+certificate is what proves it goes to the server. If the run fails with *The remote certificate was
+rejected by the provided RemoteCertificateValidationCallback*, the chain ends in a root your machine
+does not trust or `HOST` is not the name on the certificate — never answer it by lowering the mode.
+The API would fail its database requests the same way if its own image lacked the root — the
+pipeline's certificate check runs before `azd deploy` to catch that first — and the remedy there is
+shipping the root, per [ADR 0032](docs/decisions/0032-verify-the-database-servers-certificate-and-hostname.md).
+The `psql` recipes below keep `sslmode=require`, which that ADR explains.
 
 The firewall commands are spelled for a current Azure CLI, where `--name` is the *rule* and the
 server is `--server-name`. A CLI old enough to reject `--server-name` wants `-n "$SERVER"
