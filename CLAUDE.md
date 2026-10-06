@@ -557,7 +557,9 @@ lowest capable layer, the doc describing it says why. See
 - `.ClearDefaultRoleAssignments()` on the Postgres resource is load-bearing, not tidying —
   without it `azd provision` fails on an empty ARM resource name.
 - **The database has no standing firewall rule.** `az postgres flexible-server
-  firewall-rule list` must come back empty outside a deploy.
+  firewall-rule list` must come back empty outside a deploy. The deploy's *Verify the database
+  posture* step refuses to ship the API unless it is, and unless the server refuses passwords —
+  between deploys it is still a manual check.
 - **There is no production environment right now, and `budgetoid.app` is the name the next one
   answers on.** `rg-budgetoid-prod` does not exist; only `rg-budgetoid-msi` and its pipeline
   identity survive a teardown, by design. The repository already names the target — `budgetoid.app`

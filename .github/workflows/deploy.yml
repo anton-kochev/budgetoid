@@ -237,6 +237,40 @@ jobs:
             --resource-group "$AZURE_RESOURCE_GROUP" --server-name "${{ steps.dbfw.outputs.server }}" \
             --name gh-deploy-migration --yes || true
 
+      # The delete above swallows its own failure so cleanup never masks the real error; this step
+      # is what refuses it. Two properties hold the database's network and identity story, and
+      # neither is self-maintaining: ARM deployments are incremental, so a rule an earlier template
+      # or a killed runner left behind survives, and password authentication is a server property an
+      # upgrade or a portal click can turn back on. Before the API ships, the server must have no
+      # firewall rule at all (ADR 0009) and must refuse passwords (ADR 0007). Each value is compared
+      # against what it must be, so an empty or renamed field fails rather than passing.
+      - name: Verify the database posture
+        if: always() && steps.dbfw.outputs.server != ''
+        run: |
+          SERVER="${{ steps.dbfw.outputs.server }}"
+          RULES=$(az postgres flexible-server firewall-rule list \
+            --resource-group "$AZURE_RESOURCE_GROUP" --server-name "$SERVER" --query "length(@)" -o tsv)
+          PASSWORD_AUTH=$(az postgres flexible-server show \
+            --resource-group "$AZURE_RESOURCE_GROUP" --name "$SERVER" --query "authConfig.passwordAuth" -o tsv)
+          ENTRA_AUTH=$(az postgres flexible-server show \
+            --resource-group "$AZURE_RESOURCE_GROUP" --name "$SERVER" --query "authConfig.activeDirectoryAuth" -o tsv)
+          FAILED=0
+          if [ "$RULES" != "0" ]; then
+            echo "The database carries firewall rules (count: ${RULES:-<none read>}); it must carry none outside a deploy:" >&2
+            az postgres flexible-server firewall-rule list \
+              --resource-group "$AZURE_RESOURCE_GROUP" --server-name "$SERVER" --query "[].name" -o tsv >&2 || true
+            FAILED=1
+          fi
+          if [ "$PASSWORD_AUTH" != "Disabled" ]; then
+            echo "Password authentication is '${PASSWORD_AUTH:-<none read>}'; it must be Disabled." >&2
+            FAILED=1
+          fi
+          if [ "$ENTRA_AUTH" != "Enabled" ]; then
+            echo "Microsoft Entra authentication is '${ENTRA_AUTH:-<none read>}'; it must be Enabled." >&2
+            FAILED=1
+          fi
+          exit $FAILED
+
       - name: Deploy API
         run: azd deploy --no-prompt
 
