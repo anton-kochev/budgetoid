@@ -267,7 +267,8 @@ because every one of these is something a reader will otherwise simplify away.
   `Disable`, `Allow`, `Require` or `VerifyCA` refuses boot (`RefuseWeakSslMode`) rather than being
   overwritten. `Host=` stays the server's public FQDN — Npgsql matches the certificate against the
   written name. A certificate failure is answered by shipping the root, **never by lowering the
-  mode**; the deploy checks the server against the API image's own trust store before shipping.
+  mode**; the pipeline checks the server against the API base image's trust store before it ships
+  (an `azd up` does not).
   `DatabaseTransportSecurityTests` holds it.
   [ADR 0032](docs/decisions/0032-verify-the-database-servers-certificate-and-hostname.md)
 - **The four security headers are written from `Response.OnStarting`, never before `await next(…)`**
@@ -558,8 +559,8 @@ lowest capable layer, the doc describing it says why. See
   without it `azd provision` fails on an empty ARM resource name.
 - **The database has no standing firewall rule.** `az postgres flexible-server
   firewall-rule list` must come back empty outside a deploy. The deploy's *Verify the database
-  posture* step refuses to ship the API unless it is, and unless the server refuses passwords —
-  between deploys it is still a manual check.
+  posture* step refuses to ship the API unless it is, and unless the server refuses passwords. An
+  `azd up` runs neither, so after one, and between deploys, it is still a manual check.
 - **There is no production environment right now, and `budgetoid.app` is the name the next one
   answers on.** `rg-budgetoid-prod` does not exist; only `rg-budgetoid-msi` and its pipeline
   identity survive a teardown, by design. The repository already names the target — `budgetoid.app`

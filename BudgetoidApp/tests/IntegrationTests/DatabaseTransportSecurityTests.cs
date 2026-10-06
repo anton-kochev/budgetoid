@@ -9,7 +9,7 @@ namespace IntegrationTests;
 /// <summary>
 /// Pins that a host outside Development reaches its database over TLS that validates the server's
 /// certificate and host name (<c>SSL Mode=VerifyFull</c>), and refuses to start on a connection
-/// string that asks for less.
+/// string that names a weaker mode — every one but <c>Prefer</c>, which is forced up rather than refused.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -87,9 +87,10 @@ public sealed class DatabaseTransportSecurityTests
     public async Task NonDevelopmentHost_WhoseConnectionStringNamesAWeakerSslMode_RefusesToStart(
         string option, string environment)
     {
-        // Arrange — the four modes weaker than VerifyFull that the builder can name explicitly, and
-        // Require again in a spelling the builder accepts as the same key. A refusal that searched the
-        // text for one literal spelling passes the canonical rows and misses that one. The Staging row
+        // Arrange — every mode weaker than VerifyFull that the builder can name, except Prefer, which is
+        // forced up rather than refused; and Require again in a spelling the builder accepts as the same
+        // key. A refusal that searched the text for one literal spelling passes the canonical rows and
+        // misses that one. The Staging row
         // is there so a refusal keyed on IsProduction() rather than !IsDevelopment() goes red.
         await using PostgresTestHost host = new();
         await host.StartAsync();

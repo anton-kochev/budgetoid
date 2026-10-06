@@ -549,10 +549,12 @@ failure to notice first.
    deployment that introduced the private endpoint, `AllowAllAzureIps` had to be removed by hand
    (`az postgres flexible-server firewall-rule delete --resource-group rg-budgetoid-prod
    --server-name <server> --name AllowAllAzureIps --yes`). Anything listed here between deploys is
-   either that rule returning or a window a killed runner stranded. Every deploy now refuses to ship
-   the API unless the list is empty and the server reports `passwordAuth: Disabled` and
-   `activeDirectoryAuth: Enabled` (the *Verify the database posture* step), so between deploys is
-   the one stretch left to this manual check.
+   either that rule returning or a window a killed runner stranded. A pipeline deploy refuses to
+   ship the API unless the list is empty and the server reports `passwordAuth: Disabled` and
+   `activeDirectoryAuth: Enabled` (the *Verify the database posture* step). An `azd up` from your
+   machine runs neither that step nor the pipeline's certificate check, so after any `azd up`, and
+   between deploys, this check is yours: `az postgres flexible-server show -g <rg> -n <server>
+   --query authConfig` alongside the list above.
 3. API: `curl https://<api-url>/health` → `200`. Note that this proves nothing about the database —
    the health check does not touch it. A request that reads or writes data is the only thing that
    exercises the private endpoint, and with no firewall rule standing, a successful one is proof

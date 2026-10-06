@@ -198,10 +198,16 @@ jobs:
           # trust store of its own base image, not this runner's. Check the server's certificate
           # against exactly that store, and against the name the API connects by, before anything
           # ships: a chain ending in a root the image lacks would otherwise surface as the API's first
-          # database request failing in production. The tag is the base the .NET SDK picks for
-          # Api.csproj (net10.0, ContainerFamily noble-chiseled); the image is never run, only read.
-          # The remedy for a failure here is shipping the missing root, never lowering the mode.
-          docker create --name api-base-trust mcr.microsoft.com/dotnet/aspnet:10.0-noble-chiseled /none >/dev/null
+          # database request failing in production. The tag is asked of the SDK rather than written
+          # here: the SDK derives it from Api.csproj (today `-noble-chiseled-extra`, because the
+          # project is not invariant-globalization), and a hand-written copy would drift from it
+          # without anything noticing. The image is never run, only read. The remedy for a failure
+          # here is shipping the missing root, never lowering the mode.
+          capture API_BASE_IMAGE "reading the API's base image from the SDK" \
+            dotnet msbuild BudgetoidApp/Api/Api.csproj -restore -nologo -v:q \
+              -t:ComputeContainerBaseImage -getProperty:ContainerBaseImage
+          echo "Checking the database certificate against the trust store of $API_BASE_IMAGE"
+          docker create --name api-base-trust "$API_BASE_IMAGE" /none >/dev/null
           docker cp api-base-trust:/etc/ssl/certs/ca-certificates.crt "$RUNNER_TEMP/api-base-ca.crt"
           docker rm api-base-trust >/dev/null
           if ! openssl s_client -starttls postgres -connect "${HOST}:5432" -servername "$HOST" \
@@ -240,10 +246,12 @@ jobs:
       # The delete above swallows its own failure so cleanup never masks the real error; this step
       # is what refuses it. Two properties hold the database's network and identity story, and
       # neither is self-maintaining: ARM deployments are incremental, so a rule an earlier template
-      # or a killed runner left behind survives, and password authentication is a server property an
-      # upgrade or a portal click can turn back on. Before the API ships, the server must have no
-      # firewall rule at all (ADR 0009) and must refuse passwords (ADR 0007). Each value is compared
-      # against what it must be, so an empty or renamed field fails rather than passing.
+      # created survives its removal from the template, as does a break-glass window an operator
+      # forgot to close; and password authentication is a server property an upgrade or a portal
+      # click can turn back on. Before this job ships the API, the server must have no firewall rule
+      # at all (ADR 0009) and must refuse passwords (ADR 0007). Each value is compared against what
+      # it must be, so an empty or renamed field fails rather than passing. An `azd up` from an
+      # operator's machine runs none of this.
       - name: Verify the database posture
         if: always() && steps.dbfw.outputs.server != ''
         run: |

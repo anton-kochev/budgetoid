@@ -469,26 +469,31 @@ static void RequireCeremonyOrigin(string allowedOrigin, string relyingPartyId)
 // database, and the user, plus a password only where password auth is used at all (in production the
 // credential is an Entra token supplied by the Azure enrichment above, not a password in the string).
 // SSL Mode is absent, which Npgsql's builder reads as Prefer, so the absent key becomes VerifyFull
-// here. VerifyFull written out is kept. Every weaker mode the builder can name (Disable, Allow,
-// Require, VerifyCA) is refused at boot by RefuseWeakSslMode rather than overwritten: the likely edit
-// that writes one is a pasted SslMode=Require to "fix" a certificate error at bring-up, and that must
-// be loud — enforcement means rejecting (ADR 0002), and a silent upgrade would hide from its author
-// that it never took effect. An explicit Prefer is the one weaker mode forced up rather than refused,
-// by choice: it is forced to VerifyFull exactly like the absent key, and nobody writes Prefer to get
-// past a certificate error, because Prefer already accepts any certificate — refusing it would buy
-// nothing.
+// here. VerifyFull written out is kept. Every weaker mode the builder can name except Prefer —
+// Disable, Allow, Require, VerifyCA — is refused at boot by RefuseWeakSslMode rather than
+// overwritten: the likely edit that writes one is a pasted SslMode=Require to "fix" a certificate
+// error at bring-up, and that must be loud — enforcement means rejecting (ADR 0002), and a silent
+// upgrade would hide from its author that it never took effect. An explicit Prefer is the one weaker
+// mode forced up rather than refused, by choice: it is forced to VerifyFull exactly like the absent
+// key, and nobody writes Prefer to get past a certificate error, because Prefer already accepts any
+// certificate — refusing it would buy nothing.
 //
-// With no Root Certificate set, Npgsql 10 validates VerifyFull against the operating system's store.
-// The noble-chiseled ASP.NET image ships /etc/ssl/certs/ca-certificates.crt carrying DigiCert Global
-// Root G2 and Microsoft RSA Root CA 2017, but not DigiCert Global Root CA (G1) or Baltimore
-// CyberTrust Root. Which root the server's chain ends in is not asserted here: it is settled by a
-// VerifyFull connection from the deployed image, not by this comment. The remedy for a certificate
-// failure is never a downgrade: ship the missing root in the image and point Root Certificate at it.
+// With no Root Certificate set, Npgsql 10 looks for a trust anchor in the PGSSLROOTCERT environment
+// variable, then in ~/.postgresql/root.crt, and only then falls back to the operating system's store.
+// Each of the three replaces which certificates count while the string still reads VerifyFull; none
+// of them is refused here, and the container sets none of them today. The API's base image (the SDK
+// picks aspnet:10.0-noble-chiseled-extra for this project) ships /etc/ssl/certs/ca-certificates.crt
+// carrying DigiCert Global Root G2 and Microsoft RSA Root CA 2017, but not DigiCert Global Root CA
+// (G1) or Baltimore CyberTrust Root. Which root the server's chain ends in is not asserted here: it
+// is settled by a VerifyFull connection from the deployed image, not by this comment. The remedy for
+// a certificate failure is never a downgrade: ship the missing root in the image and point Root
+// Certificate at it.
 //
 // Npgsql checks the certificate against the host name written in the connection string, not the
 // address it resolves to. Host must therefore stay the server's public FQDN — the private DNS zone
-// changes only what that name resolves to (ADR 0009). An IP address or the privatelink name fails
-// the check.
+// changes only what that name resolves to (ADR 0009). An IP address fails the check against a
+// certificate issued to a DNS name; so does the privatelink name, unless the server's certificate
+// happens to name it, which nobody has read.
 //
 // Development is deliberately left untouched: the local Aspire and Testcontainers PostgreSQL images
 // have no TLS configured, and any encrypted mode against them fails with "No SSL enabled connection
