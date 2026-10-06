@@ -22,9 +22,11 @@
 // them may be that session having ended. Unmarked, every such 401 reaches
 // `sessionExpiryInterceptor` first, and the session judge,
 // `SessionService.judgeRefusal`, settles the ended case before the driver hears
-// it: one marked re-read of `GET /api/me`, the session ended and the tab sent to
-// Welcome unless the answer names this tab's budget. So a 401 that reaches the
-// driver arrives with its session standing. On the begin it may be the
+// it: one marked re-read of `GET /api/me` — none in a tab with no budget to
+// compare — and the session ended and the tab sent to Welcome unless the
+// answer names this tab's budget. The driver still hears the 401 after an
+// ending verdict, from a tab already leaving; one the judge kept arrives with
+// its session standing. On the begin it may be the
 // re-authentication gate declining the passkey, which the body's own
 // `refusal: "assertion"` member tells apart — the driver reads it, not this
 // file; the other three routes have no gate, and the driver reads their 401 as

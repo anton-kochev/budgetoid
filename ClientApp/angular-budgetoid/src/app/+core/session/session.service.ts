@@ -161,9 +161,10 @@ export class SessionService {
   // an API that scales to zero.
   #scheduleReads = 0;
 
-  // The re-read {@link judgeRefusal} has out, and the visit it judges. A
-  // screen's reads fail together, so their 401s arrive together and join this
-  // one flight; it is dropped when it settles, so a later refusal asks again.
+  // The re-read {@link judgeRefusal} has out, and the visit it judges. A 401
+  // sent in that visit and arriving while it is out joins it rather than
+  // sending a second; the flight is dropped when it settles, so a 401
+  // arriving after that sends its own.
   #refusalFlight: {
     readonly visit: SessionToken;
     readonly verdict: Promise<RefusalVerdict>;
@@ -260,11 +261,14 @@ export class SessionService {
     await this.readBudget();
   }
 
-  // The mid-visit transition. A set rather than a re-probe: its callers have
-  // already heard the server say the session is over. For a 401 that is
-  // {@link judgeRefusal}'s re-read, not the 401 itself — since a sign-in
-  // displaces the session the old cookie named, a 401 speaks for the cookie
-  // that request carried, not for the jar.
+  // The mid-visit transition. A set rather than a re-probe: each caller has
+  // already decided the session is over, on what it had — a `204` to its own
+  // request, a 401 the judge could not keep, or, for a sign-out whose
+  // revocation failed, the person's own say-so — and a re-probe would
+  // only put a guess in that decision's place. For a 401 the deciding is
+  // {@link judgeRefusal}'s, not the 401's — since a sign-in displaces the
+  // session the old cookie named, a 401 speaks for the cookie that request
+  // carried, not for the jar.
   public ended(): void {
     this.beginVisit();
     this.publishStatus('anonymous');
@@ -285,7 +289,8 @@ export class SessionService {
 
     // **Custody ends where the session does, and it ends here rather than at
     // each caller.** Four paths end a session today —
-    // {@link judgeRefusal} on a 401 it confirms, `SettingsService.leave()`,
+    // {@link judgeRefusal} on a 401 it confirms, or on any 401 in a tab it
+    // cannot judge, `SettingsService.leave()`,
     // `ErasureFlowService` on the erasing request's 204, and
     // `ReleaseFlowService.leave()` — and the last two are the case this
     // placement was for: each was added by somebody thinking about erasure or
@@ -380,9 +385,9 @@ export class SessionService {
   }
 
   // The mirror of `ended()`, called when a leg that establishes a session has
-  // just answered — registration is the first. A set rather than a re-probe for
-  // the reason stated four lines above: the server has said what it thinks, and
-  // asking again replaces an answer with a guess. Here it would also cost a
+  // just answered — registration is the first. A set rather than a re-probe,
+  // because that leg's answer is the server saying what it thinks, and asking
+  // again replaces an answer with a guess. Here it would also cost a
   // round trip at the happiest moment of the flow and could come back
   // `unreachable`, which is a third reading of a fact the server has already
   // stated in the same breath as the cookie it set.

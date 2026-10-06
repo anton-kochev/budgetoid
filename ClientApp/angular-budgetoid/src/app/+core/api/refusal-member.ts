@@ -1,15 +1,19 @@
 // The `refusal` member of a problem document, read the one strict way.
 //
-// **One reader, because two would disagree silently.** The erasure cancellation
-// and the rotation begin each tell a declined passkey from every other `401` by
-// this member alone, and the sentence each then renders says the gate judged
-// the passkey. A reader that folded case, trimmed, or found the name through
-// the prototype would hand that sentence to a body the gate never wrote — and a
-// second copy of this function is how one caller comes to do that while the
-// other does not.
+// **Shared by the two callers that tell a declined passkey from every other
+// `401` by this member alone** — the erasure cancellation and the rotation
+// begin — and the sentence each then renders says the gate judged the passkey.
+// A reader that folded case, trimmed, or found the name through the prototype
+// would hand that sentence to a body the gate never wrote, and one function
+// for both is what keeps them from disagreeing about it silently.
+//
+// **It is not yet the only reader of the member.** `email-change-flow.service.ts`
+// and `release-flow.service.ts` each keep a lenient copy that finds it with
+// `in`, so through the prototype — the first for the same `assertion` word, the
+// second for `no_account`. Moving them onto this one is known work, not done.
 //
 // **In `+core/api`, beside the other wire readers**, because it reads the API's
-// body and depends on nothing; the rotation driver in `+core` cannot import
+// body and depends on nothing; the rotation driver in `+core` must not import
 // from a feature folder.
 
 /**

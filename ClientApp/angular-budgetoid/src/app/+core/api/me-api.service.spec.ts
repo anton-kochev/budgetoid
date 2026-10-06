@@ -1040,10 +1040,14 @@ describe('MeApiService', () => {
   //
   // `AccountKeyCustodyService` never calls anything on `SessionService`,
   // because a key that will not open is not a session that ended. Unmarked,
-  // this request routes its own 401 into `sessionExpiryInterceptor` — the
-  // single owner of "the session ended" — which calls `session.ended()` and
-  // navigates to `/welcome`. On the sign-in path that navigation races the one
-  // to `/app` and wins, being later: a person whose assertion the server just
+  // this request routes its own 401 into `sessionExpiryInterceptor`, which
+  // hands it to the session judge, `SessionService.judgeRefusal`. Straight
+  // after a sign-in the tab often holds no budget yet, and the judge ends such
+  // a tab without asking; holding one, a cookie that has not landed fails the
+  // judge's one re-read of `GET /api/me` the same way. Either way the judge
+  // calls `ended()` and the interceptor navigates to `/welcome`. On the
+  // sign-in path that navigation races the one to `/app` and wins, being
+  // later: a person whose assertion the server just
   // accepted lands anonymous on the welcome screen, with the screen saying
   // nothing at all because the sign-in did not fail. A deterministic 401 there
   // is a loop.
@@ -1452,9 +1456,12 @@ describe('MeApiService', () => {
     // **The erasing request expects a 401 and is marked so.** A 401 from it may
     // be the gate declining the assertion — or a session that had already
     // ended, turned away by the fallback authorization policy before the gate —
-    // and the dialog says either as `refused`, *nothing was erased*. Unmarked,
-    // `sessionExpiryInterceptor` reads every one as a session ending and takes
-    // the tab to `/welcome` over a sentence the dialog never got to say.
+    // and the dialog tells the two apart itself, with one unmarked probe.
+    // Unmarked, every one would go first to `sessionExpiryInterceptor`, which
+    // hands it to the session judge: a declined passkey on a live session
+    // would spend a re-read of `GET /api/me` and reach the dialog only after
+    // it, and an ended session would be ended — and the tab sent to
+    // `/welcome` — before the dialog had said anything.
     it('marks the erasing request as one whose refusal is not a session ending', () => {
       // Act
       api.eraseAccount(ASSERTION).subscribe({ error: () => undefined });
@@ -1893,8 +1900,9 @@ describe('MeApiService', () => {
     });
 
     // **Unmarked, and that is the decision.** The route judges nothing but the
-    // session it was sent with, so its 401 is a session that ended — the fact
-    // `sessionExpiryInterceptor` owns. Marked, the release screen would sit on
+    // session it was sent with, so its 401 is a question about that session —
+    // `sessionExpiryInterceptor`'s to hand to the session judge, which ends a
+    // locked session without asking. Marked, the release screen would sit on
     // an ended session saying nothing.
     it('leaves the schedule request unmarked, so its 401 is a session ending', () => {
       // Act
@@ -2144,8 +2152,11 @@ describe('MeApiService.cancelScheduledErasure', () => {
   });
 
   // A 401 here is usually the gate declining the assertion — the screen's own
-  // sentence — so the request is marked, or the interceptor takes the tab to
-  // Welcome over a sentence the section never got to say.
+  // sentence, read off the body's `refusal` member — so the request is marked
+  // and the flow reads its own verdict without spending a re-read. Unmarked,
+  // the interceptor would hand every one to the session judge first: one
+  // re-read of `GET /api/me` each, and the flow hearing the 401 only after
+  // the judge.
   it('marks the request as one whose refusal is not a session ending', () => {
     // Act
     cancel(ASSERTION).subscribe({ error: () => undefined });

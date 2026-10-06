@@ -389,11 +389,13 @@ describe('ErasureFlowService', () => {
     const erasing = await requestTo(ERASURE_URL);
 
     // Assert
-    // Two different handlings of a 401. On the challenge it is a session that
-    // really has ended, which `sessionExpiryInterceptor` owns — so unmarked.
-    // On the erasing request it may be the gate's verdict, which this flow says
-    // as `refused` — so marked, or the interceptor takes the tab to Welcome
-    // over a sentence the dialog never got to say.
+    // Two different handlings of a 401. On the challenge it is a question
+    // about the session, which `sessionExpiryInterceptor` hands to the session
+    // judge — so unmarked. On the erasing request it may be the gate's
+    // verdict, which this flow says as `refused` — so marked, and the flow
+    // reads it itself. Unmarked, the judge would see it first: a re-read of
+    // `GET /api/me` spent on a declined passkey, and an ended session ended
+    // under a sentence the dialog never got to say.
     expect(options.request.context.get(EXPECTS_UNAUTHENTICATED)).toBe(false);
     expect(erasing.request.context.get(EXPECTS_UNAUTHENTICATED)).toBe(true);
 
@@ -573,13 +575,14 @@ describe('ErasureFlowService', () => {
     await settle();
 
     // Assert
-    // **Chosen, not inherited.** A 401 on the challenge is a session that has
-    // really ended, and `sessionExpiryInterceptor` owns that fact: it ends the
-    // session, takes the tab to Welcome, and the screen's teardown takes the
-    // overlay with it. So the flow says nothing — `unstarted` would claim the
-    // server was unreachable when it answered — and does none of the
-    // interceptor's work itself: a second owner of "the session ended" is how
-    // the two drift.
+    // **Chosen, not inherited.** A 401 on the challenge is
+    // `sessionExpiryInterceptor`'s, which hands it to the session judge. On a
+    // verdict that ends the session the tab goes to Welcome and the screen's
+    // teardown takes the overlay with it; on one that keeps it, nothing was
+    // erased and the next press is a new act. So the flow says nothing —
+    // `unstarted` would claim the server was unreachable when it answered —
+    // and does none of the judge's work itself: a second owner of "the
+    // session ended" is how the two drift.
     expect(flow.failure()).toBeNull();
     expect(flow.phase()).toBe('idle');
     expect(flow.working()).toBe(false);
@@ -777,9 +780,10 @@ describe('ErasureFlowService', () => {
 
       // Assert
       // *Didn't accept that passkey* would be false: nothing judged it. The
-      // probe's own 401 is unmarked, so `sessionExpiryInterceptor` ends the
-      // session and takes the tab to Welcome — and a flow that did either
-      // itself is a second owner of that fact.
+      // probe's own 401 is unmarked, so `sessionExpiryInterceptor` hands it to
+      // the session judge, which ends the session — and the tab goes to
+      // Welcome — unless its re-read names this tab's budget. A flow that
+      // ended or navigated itself would be a second owner of that fact.
       expect(flow.failure()).toBeNull();
       expect(flow.phase()).toBe('idle');
       expect(flow.working()).toBe(false);

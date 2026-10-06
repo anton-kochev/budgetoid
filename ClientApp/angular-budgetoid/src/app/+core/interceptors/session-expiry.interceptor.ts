@@ -58,8 +58,11 @@ export const sessionExpiryInterceptor: HttpInterceptorFn = (request, next) => {
       // The navigation hangs off the verdict rather than off this pipe, so a
       // caller that unsubscribes while the verdict is out cannot leave an
       // ended session on a screen that no longer loads. The error waits for
-      // it: the flows that probe `sessionHasEnded()` in their own
-      // `catchError` must read a judged session.
+      // it, so on an ending verdict `/welcome` has been asked for before any
+      // caller hears the 401. The flows that probe `sessionHasEnded()` read
+      // only the probe's status, never the session, and on that 401 they go
+      // back to rest; heard first, a commit would come live again under a
+      // tab that is leaving.
       const judged = session.judgeRefusal(sentUnder).then((verdict) => {
         if (verdict === 'ended') {
           void router.navigateByUrl('/welcome');

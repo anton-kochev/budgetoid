@@ -1348,8 +1348,10 @@ that ending custody has to be a method rather than a lifetime, because an inject
 cannot forget anything on its own.
 
 **Ending custody has one owner, and it is `SessionService.ended()`.** Its callers are
-`sessionExpiryInterceptor` on a `401`, the Settings screen's sign-out, and `ErasureFlowService` on
-the erasing request's `204` — and the last is the case this placement was for: it was added by
+`SessionService.judgeRefusal`, on a `401` `sessionExpiryInterceptor` hands it that the judgement
+confirms or that reaches a tab it cannot judge; the Settings screen's sign-out; the release
+screen's, `ReleaseFlowService.leave()`; and `ErasureFlowService` on the erasing request's `204` —
+and the last is the case this placement was for: it was added by
 somebody thinking about erasure rather than about key material, and it clears the keys with no line
 of its own. Placed in the callers instead, the next path would not, and the symptom is an ended
 session whose content key is still readable from the root injector for the life of the tab, with

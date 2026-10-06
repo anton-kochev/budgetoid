@@ -256,8 +256,8 @@ function conflictKindOf(body: unknown): unknown {
     : undefined;
 }
 
-// `null` for a `401`: the session ended, `sessionExpiryInterceptor` acts on it,
-// and this screen says nothing over it.
+// `null` for a `401`: `sessionExpiryInterceptor` hands it to the session judge,
+// which ends a locked tab without asking, and this screen says nothing over it.
 function scheduleFailureOf(error: unknown): ReleaseScheduleFailure | null {
   if (!(error instanceof HttpErrorResponse)) {
     return 'undetermined';

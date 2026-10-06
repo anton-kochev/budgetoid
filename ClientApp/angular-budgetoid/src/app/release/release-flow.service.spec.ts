@@ -744,10 +744,10 @@ describe('ReleaseFlowService', () => {
       expect(flow.scheduling()).toBe(false);
     });
 
-    // A 401 is an ended session, and that is `sessionExpiryInterceptor`'s:
-    // it ends the session and takes the tab to Welcome. The screen says
-    // nothing over it, and a flow that ended the session itself would make
-    // two owners of one fact.
+    // A 401 is `sessionExpiryInterceptor`'s, which hands it to the session
+    // judge: a locked session is ended without a re-read, and the tab goes to
+    // Welcome. The screen says nothing over it, and a flow that ended the
+    // session itself would make two owners of one fact.
     it('says nothing and ends nothing on a 401', async () => {
       // Arrange
       const flow = startLocked();

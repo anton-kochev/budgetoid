@@ -261,9 +261,9 @@ describe('appConfig', () => {
   });
 
   // The other half of the same hole. Dropping `sessionExpiryInterceptor` from
-  // the `withInterceptors([…])` array costs the application its only owner of
-  // "the session ended" — no 401 anywhere declares the session over or leaves
-  // for `/welcome` — and nothing else notices, because both
+  // the `withInterceptors([…])` array costs the application its one path from
+  // a 401 to the session judge — no 401 anywhere is judged, so none ends the
+  // session or leaves for `/welcome` — and nothing else notices, because both
   // `session-expiry.interceptor.spec.ts` and `session.service.spec.ts` call
   // their functions directly.
   //

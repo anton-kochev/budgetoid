@@ -784,16 +784,20 @@ The rules from here down are the web client's.
   changing request — nothing posted until the passkey has answered.
 - **Why**: every word raised before the changing request exists makes *nothing changed* a fact about
   this client. How each answer reads:
-  - **The challenge.** It is unmarked, so a `401` is a session that really ended: the interceptor's,
-    and the flow says nothing. **Every other way it fails is `unstarted`** — a `5xx`, no answer, and
-    a `400` or `403` the server judged — and the Google answer stays, because nothing has been sent
-    that could change anything.
+  - **The challenge.** It is unmarked, so a `401` is the interceptor's to judge, and the flow says
+    nothing over it. On an ending verdict the tab leaves for `/welcome`; on a kept one — [Guessing]
+    a request that carried a cookie another tab's sign-in had displaced, reasoned and not run — the
+    press ends in silence over a live session, a gap the design book records as work in
+    [components.md](../design/components.md#changing-the-email-address). **Every other way it fails
+    is `unstarted`** — a `5xx`, no answer, and a `400` or `403` the server judged — and the Google
+    answer stays, because nothing has been sent that could change anything.
   - **The ceremony.** `cancelled`, `no-prf`, `failed` and `duplicate` keep the answer;
     `unsupported`, raised before the challenge or by the ceremony, drops it.
   - **A `401` on the changing request** is read only after one unmarked `GET /api/me`: a `401` there
-    is an ended session and the flow says nothing; anything else lets `refusal` decide —
-    `provider_token`, `email_unverified`, `assertion` — and a member missing or unknown to this bundle
-    is `failed`.
+    is the interceptor's to judge, and the flow says nothing and drops the answer whatever the
+    verdict — on a kept one that is the same gap as the challenge's; anything else lets `refusal`
+    decide — `provider_token`, `email_unverified`, `assertion` — and a member missing or unknown to
+    this bundle is `failed`.
   - **A `409`** reads `conflictKind` the same way; `account_identity_moved` also re-reads the address
     row, and only that row.
   - **Any other `4xx` is `failed`. A `5xx`, status `0` and a `200` that does not read are

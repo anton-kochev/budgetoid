@@ -6,9 +6,10 @@
 // — and both carry `EXPECTS_UNAUTHENTICATED` so that `sessionExpiryInterceptor`
 // reads their 401 as the route's verdict rather than as a session ending. This
 // call is the opposite on both counts: it is made by a browser holding a
-// session, and a 401 out of it *is* a session that ended and must reach the
-// interceptor unmarked. A third method over there would be a class whose stated
-// invariant had one exception in it.
+// session, and a 401 out of it says only that the session its request carried
+// is gone — no gate judges it — so it must reach the interceptor unmarked, for
+// the session judge to rule on. A third method over there would be a class
+// whose stated invariant had one exception in it.
 //
 // **`/api/passkeys/reauthentication/options` and never
 // `/api/passkeys/assertion/options`.** The two mint into different nonce pools,

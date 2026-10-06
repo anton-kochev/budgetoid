@@ -638,8 +638,9 @@ it is an ended session — it is that the ended session is already settled for i
 `sessionExpiryInterceptor` hands an unmarked 401 from this API to `SessionService.judgeRefusal`,
 whose one marked re-read of `GET /api/me` keeps the session only when the answer names this tab's
 budget, and otherwise ends it and takes the tab to `/welcome`. The error reaches the driver only
-once that verdict is in, so a declined passkey arrives with its session standing, and the member
-alone is what tells it from any other 401. Marked, the begin would need what the erasure
+once that verdict is in, so a declined passkey arrives with its session standing — unless the
+re-read fails, which ends a session that was live — and the member alone is what tells it from any
+other 401. Marked, the begin would need what the erasure
 cancellation carries — an unmarked probe before it names any 401 without the member — because the
 interceptor would no longer see the ended session first. [sessions.md](sessions.md) holds the
 judgement's rule.

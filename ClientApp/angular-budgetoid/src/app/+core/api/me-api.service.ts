@@ -455,11 +455,11 @@ function isAccountKeyEntry(entry: unknown): entry is AccountKeyEntry {
 export class MeApiService extends BaseApiService {
   // Read by a browser that believes it holds a session — the Settings screen
   // asking for the address to render. **No `EXPECTS_UNAUTHENTICATED`, and that
-  // is the decision rather than the omission**: a 401 here is the session this
-  // request carried having ended between the cold load and the screen, which is
-  // exactly the fact `sessionExpiryInterceptor` owns, and suppressing it would
-  // leave that person on a screen whose every read now fails with nothing
-  // saying why.
+  // is the decision rather than the omission**: a 401 here says the session
+  // this request carried ended between the cold load and the screen, and
+  // whether the tab's session ended with it is for `sessionExpiryInterceptor`
+  // to hand to the session judge. Suppressing it would leave that person on a
+  // screen whose every read now fails with nothing saying why.
   public getMe(): Observable<MeDto> {
     return this.get<MeDto>('api/me');
   }
@@ -617,11 +617,14 @@ export class MeApiService extends BaseApiService {
   // `AccountKeyCustodyService` is the only caller, and it never calls anything
   // on `SessionService`, because a key that will not open is not a session that
   // ended. Unmarked, this request routes its own 401 into
-  // `sessionExpiryInterceptor` — the single owner of "the session ended" —
-  // which makes that call anyway, through an edge no import graph shows. On the
-  // sign-in path the damage is immediate: the assertion answers 200,
-  // `session.established()` runs, custody's read leaves, the router is sent to
-  // `/app`, and a 401 on that read then publishes `anonymous` and navigates to
+  // `sessionExpiryInterceptor`, whose session judge,
+  // `SessionService.judgeRefusal`, can end the session anyway, through an edge
+  // no import graph shows. On the sign-in path the damage is immediate: the
+  // assertion answers 200, `session.established()` runs, custody's read
+  // leaves, the router is sent to `/app`, and a 401 on that read reaches the
+  // judge, which publishes `anonymous` — at once while the budget read
+  // `established()` starts is still out, and otherwise after a re-read that a
+  // cookie which had not landed fails too — and the interceptor navigates to
   // `/welcome`. Being later, it wins. The person lands anonymous on the welcome
   // screen holding a session cookie the server had just issued, with the screen
   // saying nothing — `SignInService` is component-provided, so its `failure()`
@@ -760,9 +763,10 @@ export class MeApiService extends BaseApiService {
   // verdict* on that request — a passkey that did not verify, a recovery code
   // that matched nothing, an erasure gate declining its assertion. This route
   // gives no such verdict: it judges nothing but the session it was sent with,
-  // so a 401 means that session had already ended, which is exactly the fact
-  // `sessionExpiryInterceptor` owns. Suppressing it would claim a verdict this
-  // route never gives, and would suppress the one reading that is true.
+  // so a 401 means that session had already ended, and what that means for
+  // the tab is `sessionExpiryInterceptor`'s to hand to the session judge.
+  // Suppressing it would claim a verdict this route never gives, and would
+  // suppress the one reading that is true.
   public endSession(): Observable<void> {
     return this.post<void>('api/me/session/revocation', null);
   }
@@ -795,14 +799,17 @@ export class MeApiService extends BaseApiService {
   // transaction opens. But the route sits behind the fallback authorization
   // policy, so a session that had already ended — expired, revoked, or erased
   // from another tab — is also answered 401, before the gate runs. Either way
-  // this request erased nothing. Unmarked, `sessionExpiryInterceptor` reads
-  // the verdict as a session ending and takes the tab to `/welcome` over a
-  // sentence the dialog never got to say. A session that really had ended is
-  // not lost by the mark: the flow resolves a 401 here with one unmarked
-  // `GET /api/me` probe, whose own 401 the interceptor acts on — and only a
-  // probe that does not find the session gone lets the dialog say `refused`,
-  // *nothing was erased*. The token rides on the method rather than on a
-  // parameter, for `getAccountKeys`'s reason: one caller, one question, one
+  // this request erased nothing. Unmarked, the gate's 401 would go to
+  // `sessionExpiryInterceptor`'s session judge first, costing at best a
+  // re-read of `GET /api/me` — one that ends a live session if it fails — and
+  // the flow would hear the 401 only after the judge had ruled. Marked, the
+  // flow reads the gate's verdict itself and no re-read is spent. A session
+  // that really had ended is not lost by the mark: the flow resolves a 401
+  // here with one unmarked `GET /api/me` probe, whose own 401 is the
+  // interceptor's to judge — and only a probe that does not answer 401 lets
+  // the dialog say `refused`, *nothing was erased*. The token rides on the
+  // method rather than on a parameter, for `getAccountKeys`'s reason: one
+  // caller, one question, one
   // meaning of a 401 to this caller. The challenge minted just before this is
   // the opposite case and stays unmarked — see
   // `reauthentication-api.service.ts`.
@@ -955,8 +962,9 @@ export class MeApiService extends BaseApiService {
   //
   // **No `EXPECTS_UNAUTHENTICATED`, for `endSession`'s reason.** The route
   // judges nothing but the session it was sent with, so a 401 is that session
-  // having ended — `sessionExpiryInterceptor`'s fact. Marked, the screen would
-  // sit on an ended session with nothing saying why.
+  // having ended — `sessionExpiryInterceptor`'s to hand to the session judge,
+  // which ends a locked tab without asking. Marked, the screen would sit on an
+  // ended session with nothing saying why.
   //
   // The body is decoded by the rules a scheduled erasure in the session read
   // answers to: exactly one member, an instant **with** its offset. An

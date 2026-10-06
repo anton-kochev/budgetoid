@@ -18,13 +18,15 @@ import { HttpContextToken } from '@angular/common/http';
 // route sits behind the fallback authorization policy, when the session had
 // already ended (expired, revoked, or erased from another tab) before the gate
 // ran. Both mean this request erased nothing, and the erasure dialog says so as
-// `refused`. Unmarked, `sessionExpiryInterceptor` reads the gate's verdict as a
-// session ending and takes the tab to `/welcome` over a sentence the dialog
-// never got to say. The mark is per request, not per route family: the
+// `refused`. Unmarked, the gate's 401 would go to `sessionExpiryInterceptor`'s
+// session judge first, costing at best a re-read of `GET /api/me` — one that
+// ends a live session if it fails — and the flow would hear the 401 only after
+// the judge had ruled. Marked, the flow reads the gate's verdict itself and no
+// re-read is spent. The mark is per request, not per route family: the
 // re-authentication challenge minted just before it stays unmarked, so a 401
-// there is the interceptor's fact. And the flow resolves a 401 on the erasing
-// request with one unmarked probe (`GET /api/me`), so a session that had
-// already ended is handed to the interceptor rather than read as a refused
+// there is the interceptor's to judge. And the flow resolves a 401 on the
+// erasing request with one unmarked probe (`GET /api/me`), so a session that
+// had already ended is handed to the interceptor rather than read as a refused
 // passkey.
 //
 // Carried on the request rather than read off a list of anonymous URLs kept

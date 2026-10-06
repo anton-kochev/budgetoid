@@ -798,20 +798,21 @@ required members. A third writer is a decision rather than a refactor.
     full session without a re-read — so an unconditional read announces a session ending to somebody
     who never had one, on every anonymous cold load. Nothing in it is awaited for the guards' sake; what the
     await buys is a screen that does not draw a list the answer would have replaced.
-  - **The reading also moves twice mid-visit, and both moves are a *set* rather than a re-probe.**
+  - **The reading also moves twice mid-visit, and neither move is a re-probe.**
     `ended()` is called by `SessionService.judgeRefusal` on a `401` the interceptor hands it and the
-    judgement confirms, by the Settings screen's sign out, by the release screen's Sign out, and by
-    `ErasureFlowService` on the erasing request's `204`. Each runs **before** the navigation to
-    `/welcome` — the interceptor navigates only once the verdict is in — because `guestGuard` reads
-    the status the moment the router asks, and a navigation made first is judged against a stale
-    session and sent back. `established()` is called by the registration flow on the `201` and by
+    judgement confirms or that reaches a tab it cannot judge, by the Settings screen's sign out, by
+    the release screen's Sign out, and by `ErasureFlowService` on the erasing request's `204`. Each
+    runs **before** the navigation to `/welcome` — the interceptor navigates only once the verdict
+    is in — because `guestGuard` reads the status the moment the router asks, and a navigation made
+    first is judged against a stale session and sent back. `established()` is called by the registration flow on the `201` and by
     the sign-in flow on the assertion's answer, and `establishedLocked()` by the release flow on the
     locked sign-in's `200`. Each time the server has just said what it thinks, in the same breath as
     the cookie it set or the refusal it answered, so asking again would replace an answer with a
     guess over a network that may itself be the problem. On the establishing side a re-probe also
     costs a round trip at the happiest moment of the flow and can come back `unreachable` — a
     **third** reading of a fact already stated.
-    - **A `401` is the one move that asks first, and it asks once rather than re-probing.** Since a
+    - **A `401` is the one move that asks first — in a tab it can judge — and it asks once rather
+      than re-probing.** Since a
       sign-in displaces the session the old cookie named, a `401` speaks for the cookie its request
       carried and not for the jar, so the refusal alone is not the server saying this tab's session
       is over. The judgement asks `GET /api/me` — not the probe's session read, which names nobody —
@@ -1048,9 +1049,9 @@ required members. A third writer is a decision rather than a refactor.
   - **The judgement is `SessionService.judgeRefusal`'s, and the interceptor hands it one value.** It
     reads `sessionToken()` as the request leaves and passes it on a qualifying `401`. The verdict is
     `'ended'`, with `ended()` already run, `'kept'` or `'stale'`, and the promise never rejects:
-    awaited inside the interceptor's `catchError`, a rejection would replace the caller's `401`. The
-    re-read is one flight per visit — a screen's reads fail together, so their `401`s join one
-    `GET /api/me` — and is dropped when it settles, so a later refusal asks again. The
+    awaited inside the interceptor's `catchError`, a rejection would replace the caller's `401`. At
+    most one re-read is in flight per visit — a `401` that arrives while one is out joins it rather
+    than sending its own — and it is dropped when it settles, so a later refusal sends a new one. The
     `SessionService judging a refusal` block in `session.service.spec.ts` pins the decision table
     over a stubbed `MeApiService`. `session-expiry.interceptor.spec.ts` pins the interceptor's half
     over a stubbed `SessionService` — the token read at send time, the navigation asked before the
@@ -1082,8 +1083,10 @@ required members. A third writer is a decision rather than a refactor.
     `getSessionOwner()`. `eraseAccount()` carries it on the rule's own terms: a `401` there is
     usually the gate declining the assertion — that route's verdict on that request — and otherwise
     a session that had already ended before the gate ran, and either way the request erased
-    nothing. Unmarked, the interceptor would take the tab to `/welcome` over a sentence the dialog
-    never got to show. **A session that really had ended is not lost by the mark**, because
+    nothing. Unmarked, the gate's `401` would cost a re-read of `GET /api/me` — one that, failing,
+    ends a session that is still live — and the dialog would hear its own verdict only after the
+    judgement had run on it. Marked, the dialog reads the gate's verdict itself and no re-read is
+    spent. **A session that really had ended is not lost by the mark**, because
     `ErasureFlowService` resolves every `401` there with one **unmarked** `GET /api/me` —
     `getMe()`, the counterexample above, used for exactly the reason it is one. A `401` on that
     probe is the interceptor's to judge: on an ending verdict the tab leaves for `/welcome` while
@@ -1537,8 +1540,9 @@ ELSE                                                    ← an unenumerated futu
     unlock is invisible to everything this file describes, and a sign-in is not the only way to
     reach an opened account. What a *factor* can open is the account keys' subject; **the session's
     own lifetime is not custody's** — the keys end at a sign-out, at an erasure's `204`, at a `401`
-    the session judgement confirms and at a page load, and every one of those but the page load
-    goes through `SessionService.ended()`, which is the part this file records.
+    the session judgement confirms or that reaches a tab it cannot judge, and at a page load, and
+    every one of those but the page load goes through `SessionService.ended()`, which is the part
+    this file records.
 - **`user_isolation`** — the policy on `sessions` is the policy every user-owned table carries, keyed
   on the same session setting: `users`, `budgets`, `sessions` itself,
   `passkey_signature_counters`, `wrapped_account_keys`, `key_rotations`, `key_rotation_seals`,

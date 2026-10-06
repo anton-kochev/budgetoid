@@ -983,12 +983,13 @@ ELSE
   from the five assertion members one by one, so nothing else the ceremony returned can ride along.
   **The erasing request carries `EXPECTS_UNAUTHENTICATED` and the challenge does not.** A `401` on
   the erasing request is the gate's verdict or a session that had already ended before the gate
-  ran, and either way this request erased nothing — so `sessionExpiryInterceptor` must not take the
-  tab to `/welcome` over a sentence the dialog never got to show. The flow tells the two readings
-  apart with one **unmarked** `GET /api/me` (`MeApiService.getMe`): a `401` there is the
-  interceptor's to act on, and the dialog says nothing; a `200`, or a probe that cannot answer, is
-  `refused`. A `401` on the challenge is a session that ended, which is the interceptor's too. See
-  [sessions.md](sessions.md) for the token's rule.
+  ran, and either way this request erased nothing. Unmarked, the gate's `401` would cost a re-read
+  of `GET /api/me` — one that, failing, ends a live session — and the dialog would hear its own
+  verdict only after the session judgement had run on it; marked, the dialog reads that verdict
+  itself and no re-read is spent. The flow tells the two readings apart with one **unmarked**
+  `GET /api/me` (`MeApiService.getMe`): a `401` there is the interceptor's to judge, and the dialog
+  says nothing; a `200`, or a probe that cannot answer, is `refused`. A `401` on the challenge is the
+  interceptor's to judge too. See [sessions.md](sessions.md) for the token's rule.
   - **The schedule's caller is `ReleaseFlowService`, on `/release`**, through
     `MeApiService.scheduleErasure`. That request is **unmarked**: the route judges nothing but the
     session it was sent with, so a `401` is that session having ended, and the interceptor's. It is
@@ -1036,7 +1037,8 @@ ELSE
   nothing, and every later request presenting it answers `401`. The tab that erased does not wait
   for one: on the `204`, `ErasureFlowService` calls `SessionService.ended()` and navigates to
   `/welcome`. Every other tab and device holding a cookie for the account learns at its next
-  unmarked request, whose `401` `sessionExpiryInterceptor` turns into the same end. That is the
+  unmarked request, whose `401` `sessionExpiryInterceptor` hands to the session judgement; its
+  re-read is refused in turn, and the session ends the same way. That is the
   correct outcome and not a gap, since a cleared cookie would be one more thing to get right on a
   path whose whole point is that it leaves nothing behind.
 - **`archived_at` is permitted by the schema scan and forbidden on `users` by a different test.**
@@ -1052,8 +1054,11 @@ ELSE
   about this client when it says nothing was erased. On the `204` it calls `SessionService.ended()`
   and then navigates to `/welcome`.
   - **The challenge's failures read three ways.** A `401` says nothing: the challenge is unmarked,
-    so `sessionExpiryInterceptor` ends the session and takes the tab to `/welcome`. A `400` or `403`
-    is `unrecognised`. Everything else — a response that never arrived, a `5xx` — is `unstarted`,
+    so the `401` is `sessionExpiryInterceptor`'s to judge. An ending verdict takes the tab to
+    `/welcome`; a kept one — [Guessing] a request that carried a cookie another tab's sign-in had
+    displaced, reasoned and not run — leaves the press ended in silence over a live session, a gap
+    the design book records as work in [components.md](../design/components.md#erasure-dialog). A
+    `400` or `403` is `unrecognised`. Everything else — a response that never arrived, a `5xx` — is `unstarted`,
     whose sentence names no cause, because every one of them has the same next step (try again in a
     minute). `challengeFailureOf` in `erasure-outcome.ts` owns the reading.
   - **The erasing request's failures read three ways too.** A `400` or `403` is `unrecognised`.
@@ -1061,8 +1066,9 @@ ELSE
     the erasure may have committed; `erasureFailureOf` owns that reading. A `401` has two readings —
     the gate declined the assertion, or the session had already ended before the gate ran — and
     neither erased anything through this request, so the flow resolves it with **one unmarked
-    `GET /api/me`** before it says anything. A `401` there is a session that had ended: the
-    interceptor ends it and leaves for `/welcome`, and the dialog says nothing. A `200`, or a probe
+    `GET /api/me`** before it says anything. A `401` there is the interceptor's to judge, and the
+    dialog says nothing either way: an ending verdict leaves for `/welcome`, and a kept one leaves
+    the commit live again over a live session — the same gap as the challenge's. A `200`, or a probe
     that cannot answer, is `refused` — the erasing request's `401` already proved it erased nothing.
     The flow stays `erasing` while the probe is out, so the commit does not reopen over an answer
     nobody has read yet.

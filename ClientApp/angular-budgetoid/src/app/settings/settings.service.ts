@@ -31,9 +31,12 @@ import { exportFilename } from './export-filename';
 // of them means nothing was saved.
 //
 // `failed` is the request: nobody answered, or the server refused to build the
-// document, and trying again later can change that. A 401 is not a fifth word —
-// `sessionExpiryInterceptor` owns "the session ended", and has taken the browser
-// to `/welcome` before this service's `catchError` runs.
+// document, and trying again later can change that. A 401 is not a fifth word.
+// `sessionExpiryInterceptor` hands it to the session judge before this
+// service's `catchError` runs: on a verdict that ends the session, `/welcome`
+// has been asked for by then and the screen goes with it; on one the judge
+// kept — such as a sign-in in another tab racing this request — it lands as
+// `failed`, and pressing again is the next step.
 //
 // The other three are the body, judged in this tab. `unrecognised` is a document
 // this bundle could not read — the strict decoder refused its shape or an

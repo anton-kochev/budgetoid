@@ -28,9 +28,10 @@ describe('challengeFailureOf', () => {
     const failure = challengeFailureOf(httpError(401));
 
     // Assert
-    // The challenge is unmarked, so a 401 on it is a session that really has
-    // ended; `sessionExpiryInterceptor` owns that fact and takes the tab to
-    // Welcome. A word here would be a second owner of it.
+    // The challenge is unmarked, so a 401 on it is `sessionExpiryInterceptor`'s
+    // to hand to the session judge, which ends the session — and the tab goes
+    // to Welcome — unless its re-read names this tab's budget. A word here
+    // would be a second owner of that judgement.
     expect(failure).toBeNull();
   });
 

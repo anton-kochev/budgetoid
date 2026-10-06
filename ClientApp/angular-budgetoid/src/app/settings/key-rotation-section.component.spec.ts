@@ -83,10 +83,6 @@ const PHASES = {
 // The run's eight, each saying what became of the *run* — which is what separates
 // them from the Account keys section's lines, which have no run to say anything
 // about.
-//
-// Typed against the union **and** `'refused'`, so the row compiles before the
-// union grows it and the case fails on the rendered text rather than taking
-// this file down. Once the union has it, `| 'refused'` is redundant.
 const RUN_REFUSALS = {
   unreachable:
     'Budgetoid couldn’t reach the server. The rotation stopped where it is — ' +
@@ -117,7 +113,7 @@ const RUN_REFUSALS = {
     'Two records in one list have the same name, so the rotation stopped ' +
     'where it is. Give one of them a new name to finish it — the records ' +
     'already re-encrypted stay that way.',
-} as const satisfies Record<KeyRotationFailure | 'refused', string>;
+} as const satisfies Record<KeyRotationFailure, string>;
 
 // The ceremony's five, from the Account keys chapter's table — four verbatim,
 // and `unknown` with its act renamed, because it is the only one of the five

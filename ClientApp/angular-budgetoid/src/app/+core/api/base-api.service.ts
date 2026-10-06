@@ -42,7 +42,7 @@ export abstract class BaseApiService {
   // session at all, so its 401 is the answer it went to fetch and must carry
   // `EXPECTS_UNAUTHENTICATED`; the Settings screen reads the same route to
   // render the account's email, from a browser that believes it holds a
-  // session, where a 401 does mean the session ended and the bounce is correct.
+  // session, where a 401 is the interceptor's to hand to the session judge.
   // A token that rides on the request is the only thing that can tell two calls
   // to one method apart, so it belongs on the call rather than on the service.
   //

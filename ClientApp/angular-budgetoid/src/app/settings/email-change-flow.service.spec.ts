@@ -987,8 +987,9 @@ describe('EmailChangeFlowService', () => {
       probe.flush(ME);
     });
 
-    // An ended session is the interceptor's: it takes the tab to Welcome, and
-    // this flow says nothing over it.
+    // The probe's 401 is the interceptor's to hand to the session judge, which
+    // takes the tab to Welcome on a verdict that ends the session; this flow
+    // says nothing over it whatever the verdict.
     it('says nothing when the probe finds the session ended', async () => {
       // Arrange
       const flow = flowWith(ANSWERED);

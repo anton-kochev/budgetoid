@@ -230,10 +230,12 @@ describe('provideAppCore', () => {
 
     it('is not read for a visitor with no session', async () => {
       // Arrange — the route is authenticated, so an anonymous visitor asking it
-      // is answered 401; `sessionExpiryInterceptor` is the single owner of "the
-      // session ended" and acts on 401 alone, so an unconditional read reports
-      // a session ending to somebody who never had one — on every cold load of
-      // the welcome screen. An anonymous cold start pays nothing.
+      // is answered 401. `sessionExpiryInterceptor` hands an unmarked 401 to
+      // the session judge, `SessionService.judgeRefusal`, which ends a tab
+      // holding no full session without asking — so an unconditional read
+      // ends a session somebody never had, and sends them to `/welcome`, on
+      // every cold load of the welcome screen. An anonymous cold start pays
+      // nothing.
       const boot = bootstrap({ status: 'anonymous' });
 
       // Act

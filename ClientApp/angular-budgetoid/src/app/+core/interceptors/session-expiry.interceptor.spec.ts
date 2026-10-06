@@ -263,18 +263,19 @@ describe('sessionExpiryInterceptor', () => {
       expect(harness.destinations()).toEqual([]);
       expect(harness.session.ended).not.toHaveBeenCalled();
       // The same object, not an equal one: the caller's own `catchError` reads
-      // the status off it, and the three flows probe `sessionHasEnded()` after.
+      // the status, and on the gate routes the `refusal` member, off it.
       expect(harness.errors).toHaveLength(1);
       expect(harness.errors[0]).toBe(answer);
       expect(harness.session.judgeRefusal).toHaveBeenCalledTimes(1);
     },
   );
 
-  // **The order is what three flows depend on.** The erasure, its withdrawal
-  // and the email change each probe `sessionHasEnded()` in their own
-  // `catchError`, so the verdict has to be in — and the navigation asked —
-  // before the error reaches them. Handed over early, the caller reads a
-  // session that has not been judged yet.
+  // **On an ending verdict, `/welcome` is asked for before any caller hears
+  // the 401.** The erasure, its withdrawal and the email change each probe
+  // `sessionHasEnded()` in their own `catchError`, and that reads only the
+  // probe's `error.status`, never the session: on a 401 the flow goes back to
+  // rest. Heard before the navigation, that rest would bring a commit live
+  // again under a tab that is leaving.
   it('hands the caller nothing until the verdict settles, and asks for the navigation first', async () => {
     // Arrange
     let settle: (verdict: RefusalVerdict) => void = () => undefined;
@@ -472,7 +473,7 @@ describe('sessionExpiryInterceptor', () => {
 
 // `GET /api/me` is read by two callers asking two different questions, and the
 // defect this block exists for is the interaction between them rather than
-// anything either file does alone. `outcomeOf` above hands the interceptor a
+// anything either file does alone. `arrange` above hands the interceptor a
 // request this spec built, so it can only ever pin what the interceptor does
 // with a context token — never whether the caller that needed one set it. Here
 // the production `SessionService`, the production `MeApiService` and the
@@ -607,11 +608,12 @@ describe('sessionExpiryInterceptor and the two readers of GET /api/me', () => {
   // The negative control for the split, and the reason the token goes on one
   // caller rather than on the service. The Settings screen reads the same route
   // to show the account's email, and it reads it from a browser that believes
-  // it holds a session: there a 401 means the session ended between the cold
-  // load and the screen, and the bounce is the correct answer. Marking
-  // `getMe()` itself — the obvious simplification — would take this behaviour
-  // away and leave that person on a screen whose every read now fails, with
-  // nothing on the page saying why.
+  // it holds a session: there a 401 is a question about that session, which
+  // the interceptor hands to the session judge, and on an ending verdict the
+  // bounce is the correct answer. Marking `getMe()` itself — the obvious
+  // simplification — would take the judgement away and leave a person whose
+  // session really ended on a screen whose every read now fails, with nothing
+  // on the page saying why.
   //
   // The tab here has never probed, so its status is `'unknown'`: there is no
   // budget to compare a re-read against, and the refusal ends the session

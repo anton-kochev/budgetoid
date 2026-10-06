@@ -123,16 +123,17 @@ export const provideAppCore = (): EnvironmentProviders =>
           // **After the probe has answered, and only for a full session.** This
           // route is budget-scoped: a locked session is answered 403, and an
           // anonymous visitor asking it is answered 401 — and
-          // `sessionExpiryInterceptor` is the
-          // single owner of "the session ended" and acts on 401 alone, so an
-          // unconditional read would report a session ending to somebody who
-          // never had one, on every cold load of `/welcome`. Sequential rather
+          // `sessionExpiryInterceptor` hands every unmarked 401 of ours to the
+          // session judge, which ends a tab that is not `authenticated`
+          // without asking, so an unconditional read would report a session
+          // ending to somebody who never had one, on every cold load of
+          // `/welcome`. Sequential rather
           // than beside the probe for exactly that: the condition is the
           // probe's answer. An anonymous cold start therefore pays nothing.
           //
           // **Awaited, and a failed read does not stop the application.**
           // `readStagedRotation()` publishes `null` rather than rejecting —
-          // the seven refusal words each say what became of a *run*, and there is
+          // the eight refusal words each say what became of a *run*, and there is
           // no run here to have become anything — so this can no more break
           // bootstrapping than the probe can, and awaiting it is what keeps a
           // screen from drawing a list before the answer that would have
