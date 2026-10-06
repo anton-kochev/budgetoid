@@ -77,8 +77,13 @@ role holds no `DELETE` there of any shape.
 ### MUST
 
 - **Leave no row in any table referencing the erased user or any budget it owned** — the
-  post-condition the feature exists to deliver, asserted by a verification query rather than by a
-  count of statements issued. `ErasureAtomicityTests.Erasure_WhenNothingFails_RemovesEveryOwnedRow`.
+  post-condition the feature exists to deliver, asserted by counting rows rather than statements
+  issued, and asked two ways. The erasure coverage gate (FR-029),
+  `AccountErasureEndpointTests.Erase_ForAFullyFurnishedAccount_LeavesNoRowInAnyTable`, counts each
+  table the data inventory says an account owns, scoped to the erased account by that table's owner
+  column, and names every table still holding a row of it.
+  `ErasureAtomicityTests.Erasure_WhenNothingFails_RemovesEveryOwnedRow` counts every relation in a
+  database holding one account, unscoped and by whole table. → the coverage rule below.
 - **Run as one database transaction, deleting every row it covers or leaving every one exactly as it
   found them** — a half-finished erasure is worse than none: the person cannot tell what survived,
   and nothing in the product would be left to tell them. → the atomicity rule below.
@@ -242,6 +247,58 @@ role holds no `DELETE` there of any shape.
 
 ---
 
+- **Rule**: The erasure coverage gate (FR-029) reads its tables from the data inventory and names
+  every one the erasure does not reach. Each `DataInventory.TableOwners` entry not filed `Nobody` is
+  counted, by the owner column the entry writes out — the user id for a `User` table, the budget id
+  for a `Budget` one — before and after the act, on the same connection with the same predicate. A
+  table is reported on one of three lines: `unseeded`, when the erased account, or a survivor
+  where the test has one, held no row there before the act; `survived`, when a row of the erased
+  account is still there after it; and `moved`, when the survivor's count changed. No list of
+  tables lives in the test.
+- **Why**: the table most likely to escape an erasure is the next one added, because the cascade
+  reaches it only if somebody drew the edge. A list kept inside the test cannot see that table, and
+  nothing compares such a list with the schema; the inventory's owner list is compared with the model
+  and with the live catalog, so a table reaches this gate once its owner is written.
+  [data inventory](../engineering/data-inventory.md) owns that list, and
+  [ADR 0031](../decisions/0031-write-down-each-tables-owner-in-the-inventory.md) argues it.
+  - **`unseeded` is a defect, not a pass.** "Nothing survived" is true of a table that held nothing
+    to begin with, so a table the arrangement left empty cannot be judged and is reported rather than
+    counted as reached. The survivor is held to the same floor, since an unchanged zero cannot show
+    that nothing of the survivor's was taken.
+  - **Every count is read on the container superuser, never on the application role.** Both policies
+    are `FOR ALL`, so a policed connection reads a surviving row as zero, exactly as it reads a
+    deleted one.
+- **Its limits, stated rather than engineered around.**
+  - **A table that blocks the erasure is not named.** A new `RESTRICT` or `NO ACTION` edge into the
+    owned graph makes the delete fail with `23503` and roll back, and the test stops on its `204`
+    assertion before the judgement runs. The failure reads as a non-`204`, and the server's `23503`
+    names the constraint rather than the table. The remedy is the deletion-order rule above. The
+    defects are not folded into that assertion's message on purpose: after a rollback every table
+    still holds its rows, so the list would name every table as survived and point at none.
+  - **A new owned table is detected without a test edit, and going back to green can cost one.**
+    Before its owner is written, `TableOwnerCoverageTests` names a newly mapped table undecided. Once
+    it is, and unless an arrangement this file already runs happens to write a row there, this gate's
+    first line for it is `unseeded`, and the cure is one seed row in the test's
+    `SeedIdentityRowsAsync` — never an exclusion. NFR-023 asks for no test edit beyond the inventory
+    entry, so it is met here for detection and only partly for repair.
+  - **Scoping is by one column per table.** A row naming the account through some other column, and
+    not through the owner column the inventory writes, is outside every count here. Whole-database
+    emptiness is `ErasureAtomicityTests.Erasure_WhenNothingFails_RemovesEveryOwnedRow`'s question,
+    asked of a database holding one account.
+  - **A table filed `Nobody` is not counted.** Today that is `currencies` and `webauthn_challenges`,
+    each with its reason in the inventory.
+- **Enforced in**: `AccountErasureEndpointTests` —
+  `…Erase_ForAFullyFurnishedAccount_LeavesNoRowInAnyTable` for one account,
+  `…Erase_LeavesAnotherAccountUntouched` with a furnished survivor, and
+  `…Erase_CalledASecondTime_IsRefusedAndCreatesNoAccount`, all three through the same judgement and
+  each asserting first that the list holds both a `User` and a `Budget` table. The list itself is
+  held by `TableOwnerCoverageTests` against the model and by
+  `DataInventoryReconciliationTests.TableOwners_AgreeWithTheOwnershipTheLiveCatalogReads` against the
+  catalog.
+- **Source**: `[SOURCE: user-story]`
+
+---
+
 - **Rule**: The handler discards the context's tracked entities before it deletes anything, and that
   call is load-bearing on the **first** attempt of the **first** request, not only under retry.
 - **Why**: authenticating the request has already resolved the identity and the ambient budget
@@ -389,7 +446,10 @@ role holds no `DELETE` there of any shape.
     assertion too.** The list feeds the shared counting helper, so it excuses a table from the
     completeness check as well as from the drift comparison it was written for — and the comment
     beside it invites exactly that as the remedy when a new table reds the guard. Splitting the two
-    effects has not been done; until it is, a table added there is a table neither gate covers.
+    effects has not been done. A table added there that the inventory files under an owner is still
+    judged by the coverage gate above, for one account's rows scoped by its owner column — but
+    nothing then asks whether a failed erasure left its rows in place, because only the drift
+    comparison asks that. A table added there and filed `Nobody` is counted by neither test.
   - **Two of the five nouns are held by the row count alone, and no name refuses them.** An
     anonymized remnant is a row that stays with its identifying columns *overwritten under their
     existing names* — an `email` holding `deleted-user-4f2a@example.invalid` is the shape it
@@ -471,13 +531,14 @@ role holds no `DELETE` there of any shape.
     exactly this one — see [sessions.md](sessions.md). The test seeds it rather than signing in, for
     the same guard as the other two: such a delete keyed on the kinds that read budget content
     would skip exactly this one, and the seed costs one row.
-  - **The token half is held by the file's `OwnedTables` census, not by that test.**
-    `session_tokens` is a row of `OwnedTables`, so
-    `…Erase_ForAFullyFurnishedAccount_LeavesNoRowInAnyTable` requires it empty after an erasure and
-    `…Erase_LeavesAnotherAccountUntouched` requires the survivor's unmoved. The per-session test
-    cannot see a lost token cascade: a token whose session is gone already fails the session read and
-    answers `401`, so from the wire a stray handle and a deleted one look the same. Dropping the
-    `session_tokens → sessions` edge reds those two census tests and leaves that test green.
+  - **The token half is held by the erasure coverage gate, not by that test.** The inventory files
+    `session_tokens` under `User` by its `user_id`, so
+    `…Erase_ForAFullyFurnishedAccount_LeavesNoRowInAnyTable` requires none of the erased account's
+    tokens left and `…Erase_LeavesAnotherAccountUntouched` requires the survivor's unmoved. The
+    per-session test cannot see a lost token cascade: a token whose session is gone already fails the
+    session read and answers `401`, so from the wire a stray handle and a deleted one look the same.
+    Dropping the `session_tokens → sessions` edge reds those two gate tests and leaves that test
+    green.
 - **Counterexample**: borrowing revoke-then-delete from the credential-revocation path, because
   [sessions.md](sessions.md) says a credential-removal path must revoke explicitly. That rule exists
   so a surviving account can be told when access ended — `sessionsEnded` in the response. Here
@@ -767,7 +828,7 @@ role holds no `DELETE` there of any shape.
 - **Rule**: The backup window is erasure's one physical limit. Erased rows persist in point-in-time
   database backups for up to seven days, and in no other location **this service holds**.
   - **That scope is the claim and is narrower than it reads at a glance.** Every gate on this page
-    answers for rows in this database: the schema vocabulary, the row count and the route table each
+    answers for rows in this database: the schema vocabulary, the row counts and the route table each
     read something the service owns. What a **browser** keeps of its own is outside all three — the
     route issues no instruction to a client, and no cascade reaches a device. After an erasure three
     things are still there.
@@ -1117,9 +1178,12 @@ ELSE
   are the gate's writes, both committed before the transaction opened, and neither returns with the
   rollback — so the person has to run the ceremony again. Correct rather than a defect, and it must
   **not** be answered by moving the gate inside the transaction.
-- **`webauthn_challenges` is not in the verification query, and that is not an oversight.** A
-  challenge belongs to a ceremony rather than to a person and carries neither `user_id` nor
-  `budget_id`, so "no row references the erased user" holds vacuously.
+- **`webauthn_challenges` is in neither erasure count, and that is not an oversight.** A challenge
+  belongs to a ceremony rather than to a person and carries neither `user_id` nor `budget_id`, so "no
+  row references the erased user" holds vacuously. The inventory files it `Nobody`, which keeps it
+  out of the coverage gate; `ErasureAtomicityTests` names it in
+  `TablesOutsideTheTransactionBoundary`, because the re-authentication gate deletes the spent nonce
+  before the transaction opens — the atomicity rule above.
 - **Erasure is the one act that changes an account's factor set and writes no manifest, and that is
   a consequence rather than an omission.** Every other path that moves a set — registration, adding
   a passkey, replacing a card of recovery codes, revoking a passkey — carries the account's new list

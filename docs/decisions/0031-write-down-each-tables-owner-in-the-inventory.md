@@ -100,7 +100,7 @@ tables are exempt from a policy by design: `credentials`, `passkey_public_keys`,
 policies would call all four nobody's. `recovery_code_hashes` is the costliest of them to lose: a
 redemption arrives anonymous and adopts the `user_id` it finds on the row, so a code an erasure
 failed to take would be a live credential naming a person who asked to be forgotten — the argument
-the erasure endpoint test already makes for keeping that table in its own list.
+the erasure endpoint test makes for counting that table.
 
 **Derive ownership from the columns, with no written list.** The catalog already reads a column
 fact, so a list looks redundant. Rejected because a derivation answers every table, including one

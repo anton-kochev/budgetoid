@@ -133,7 +133,8 @@ because every one of these is something a reader will otherwise simplify away.
   schema is enumerated in exactly one place (`MappedSchema`). It replaces none of the ten censuses
   beside it. **Every mapped table also carries exactly one owner** — *user*, *budget* or *nobody*,
   and *nobody* names its reason — written out and checked against the table's `user_id`/`budget_id`
-  columns, **never derived from RLS**, because four owned tables are exempt from it.
+  columns, **never derived from RLS**, because four owned tables are exempt from it. The erasure
+  coverage gate (FR-029) reads that list, so a new owned table fails until the erasure reaches it.
   [data inventory](docs/engineering/data-inventory.md),
   [ADR 0024](docs/decisions/0024-key-the-data-inventory-on-the-model-and-reconcile-it-against-the-catalog.md),
   [ADR 0031](docs/decisions/0031-write-down-each-tables-owner-in-the-inventory.md)

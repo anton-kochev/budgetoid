@@ -4,7 +4,8 @@ Every column of every table carries exactly one classification — **narrative**
 **excluded** — and the build fails on a column nobody classified. Beside the columns, every mapped
 table carries exactly one owner — **User**, **Budget** or **Nobody** — and the build fails on a table
 nobody decided about. The coverage tests that judge a column by its word read that word here, so
-that adding a column is a decision made once rather than a change to be remembered in five places.
+that adding a column is a decision made once rather than a change to be remembered in five places;
+the erasure coverage gate reads a table's owner here, the same way.
 
 `Infrastructure/Persistence/Inventory/` holds it: `DataInventory` (the 112 column entries, the 20
 table owners and the reader), `DataInventoryCoverage` (the comparison), `MappedSchema` (the
@@ -145,6 +146,18 @@ reads to object. `RowLevelSecurityCoverage` refuses the same table as unclassifi
 exemption names it — but that conversation is about isolation, not about whose rows these are. The
 decision and its alternatives are in
 [ADR 0031](../decisions/0031-write-down-each-tables-owner-in-the-inventory.md).
+
+**The erasure coverage gate (FR-029) reads the axis, and it uses the owner column as written.**
+`AccountErasureEndpointTests` takes every entry not filed `Nobody` and counts that table's rows of
+the erased account, and of a survivor where a test has one, by the entry's owner column — the user
+id for `User`, the budget id for `Budget` — either side of an erasure, naming each table that is
+`unseeded`, `survived` or `moved`. So a table
+is judged there the day its owner is written, with no edit to how the gate enumerates. **Detecting
+it costs no test edit; going back to green can cost one**: until the arrangement writes a row of the
+new table the gate reports it `unseeded`, and the cure is a seed row in that file. Two limits come
+with the column: a row naming the account through some other column is outside its count, and a
+table whose delete rule blocks the erasure fails it as a non-`204` rather than by name.
+[erasure.md](../business-logic/erasure.md) owns the gate and argues both.
 
 ## Every narrative column is checked for ciphertext, and the check is four facts
 
@@ -430,6 +443,9 @@ narrative and nothing whatever of the other hundred — a column nobody classifi
 neighbouring gate's verdict, not this one's. `EnvelopeBudgetingIsolationTests` reads neither the
 inventory nor the schema; its subject is IL.
 
+**The erasure coverage gate reads the owner axis and no column word** — the owner-axis section
+above says what it counts and where it stops.
+
 **The log census is a reader too, of the narrative half only.** `LogRedactionTests` searches the
 API's log records for every value of every column in `NeverLoggedColumns.All`, whose narrative half
 is `Of(Narrative)` drawn at type initialisation, and it holds its needles equal to that half plus
@@ -557,6 +573,10 @@ the gate goes red in one commit, and the fix is not one commit.
   its own table and the one its kind names; the `Nobody` reason floor; the factory guards; and
   hand-built controls for every wrong pairing `DisagreementsWith` must report, an unlisted
   relation of each kind, and ordinal names.
+- `AccountErasureEndpointTests` — the FR-029 gate: every table `TableOwners` does not file
+  `Nobody`, counted by its owner column for the erased account — and, in one case, for a survivor —
+  either side of a real erasure, with a floor that the list holds both a `User` and a `Budget`
+  table, and an `unseeded` line for a table the arrangement left empty.
 - `MappedSchemaTests` — the enumerator, including that it keeps the table with the column. Two
   columns named `name` on different tables is what proves it; an enumerator that flattens the table
   away collapses them into one, which is what its two name-scanning readers do deliberately and

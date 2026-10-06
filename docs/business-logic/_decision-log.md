@@ -8,6 +8,41 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-10-06 — The erasure coverage gate reads the inventory's owners
+
+**Context:** FR-029 wants the build red when a table holding an account's rows is added and the
+erasure does not reach it, and NFR-022 names the data inventory as what that test reads. The
+inventory now writes down each table's owner
+([ADR 0031](../decisions/0031-write-down-each-tables-owner-in-the-inventory.md)), so the question
+left was how the erasure tests read it.
+
+**Decision:** `AccountErasureEndpointTests` takes every `DataInventory.TableOwners` entry not filed
+`Nobody`, counts each table's rows of the erased account by the owner column the entry writes out —
+and of a survivor where the test has one — before and after the act, and reports `unseeded`,
+`survived` and `moved` lines naming the table. The file keeps no table list of its own; its seeder
+writes a `key_rotations` row and a `key_rotation_seals` row so those two tables can be judged.
+[erasure.md](erasure.md) owns the rule and its limits.
+
+**Alternatives considered:**
+- **Keep a table list in the test**: rejected. Nothing compares it with the schema, so a table
+  missing from it is skipped with nothing saying so.
+- **Pass a table the erased account held nothing in**: rejected. "Nothing survived" is vacuously
+  true of it, so it is reported as `unseeded` and cured by a seed row, never by an exclusion.
+- **Fold the defect list into the `204` assertion's message**: rejected. When a blocking edge rolls
+  the erasure back, every table still holds its rows and the list names all of them.
+
+**Consequences:** a new owned table is named by the unit tier until its owner is written and by this
+gate as `unseeded` until the arrangement writes a row of it, and a seed row added for that is a test
+edit NFR-023 asks not to need. A table whose `RESTRICT` or `NO ACTION` edge blocks the erasure fails
+as a non-`204`, not by name. A row naming the account only through a column other than the table's
+owner column is outside the gate's count; `ErasureAtomicityTests` still asks whole-database
+emptiness.
+
+**Affected areas:** [erasure.md](erasure.md),
+[data inventory](../engineering/data-inventory.md).
+
+---
+
 ## 2026-10-06 — A 401 is judged before it ends a tab's session
 
 **Context:** once a sign-in displaces the session the browser's old cookie named, a request another
@@ -626,7 +661,8 @@ leaves by the referential cascade `users → credentials → sessions → sessio
 erasure's own transaction, whichever credential opened the session and whatever its kind.
 `EraseAccountHandler` revokes nothing and names neither table.
 `AccountErasureEndpointTests.Erase_WithOtherSessionsOnTheAccount_AnswersEachOfThem401` holds the
-sessions and the `session_tokens` row of that file's `OwnedTables` holds the tokens.
+sessions, and the erasure coverage gate in the same file, which counts `session_tokens` because the
+inventory files it as owned, holds the tokens.
 [erasure.md](erasure.md) owns the rule; [sessions.md](sessions.md) names it as the one exception to
 revoke-then-delete.
 
@@ -647,8 +683,8 @@ revoke-then-delete.
 account records nothing, because nothing of it remains. Authentication re-reads `session_tokens` and
 then `sessions` on every request, so every device holding a cookie for the account is refused with
 `401` on its next request. The test that proves the sessions end cannot see a lost token cascade —
-a token whose session is gone already fails the session read — so the `OwnedTables` sweep is what
-holds the tokens.
+a token whose session is gone already fails the session read — so the erasure coverage gate's count
+of `session_tokens` is what holds the tokens.
 
 **Affected areas:** [erasure.md](erasure.md), [sessions.md](sessions.md).
 

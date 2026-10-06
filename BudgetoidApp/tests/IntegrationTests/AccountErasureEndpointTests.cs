@@ -7,6 +7,7 @@ using Application.Passkeys;
 using Domain.Sessions;
 using Domain.Users;
 using Infrastructure.Persistence;
+using Infrastructure.Persistence.Inventory;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 using TestSupport;
@@ -49,100 +50,6 @@ namespace IntegrationTests;
 /// </remarks>
 public sealed class AccountErasureEndpointTests
 {
-    /// <summary>
-    /// Which id a table files its owner under. The distinction is not cosmetic: an enumeration that
-    /// guessed from the column name would keep working right up until a table carried both.
-    /// </summary>
-    private enum OwnedBy
-    {
-        /// <summary>The row names the erased user, directly or through a credential of theirs.</summary>
-        User,
-
-        /// <summary>The row names a budget the erased user owns.</summary>
-        Budget,
-    }
-
-    /// <summary>
-    /// One table an account owns, with the column naming its owner and which id that column holds.
-    /// </summary>
-    private readonly record struct OwnedTable(string Name, string OwnerColumn, OwnedBy Owner);
-
-    /// <summary>
-    /// The tables an account owns. Held as one list because the point of the FR-025 assertion is
-    /// that <b>no</b> table keeps a row, and a test that enumerated its tables inline would silently
-    /// stop covering the one added next.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// <c>webauthn_challenges</c> is absent on purpose rather than by oversight: a challenge belongs
-    /// to a ceremony rather than to a person, carries neither <c>user_id</c> nor <c>budget_id</c>,
-    /// and so satisfies "no row references the erased user" vacuously. <c>currencies</c> is global
-    /// reference data and is owned by nobody.
-    /// </para>
-    /// <para>
-    /// <c>passkey_public_keys</c> and <c>passkey_signature_counters</c> are keyed on
-    /// <c>credential_id</c> and carry <c>user_id</c> beside it, which is the column asserted on here:
-    /// it is the one that says whose material this is, and it is what a stray row would still be
-    /// naming after the account it belongs to is gone.
-    /// </para>
-    /// <para>
-    /// <c>recovery_code_hashes</c> is in the list for that same reason and needs it more than either.
-    /// It is keyed on the verifier hash and carries <c>user_id</c> beside it, and unlike every other
-    /// name here it is <b>exempt from row-level security</b> — a redemption arrives anonymous and
-    /// adopts the <c>user_id</c> it finds on the row, so a code the erasure failed to take is not a
-    /// dormant remnant but a live credential naming a person who asked to be forgotten. Nothing
-    /// beneath the application is watching it, which is what makes this row of the list the one no
-    /// other layer would have caught.
-    /// </para>
-    /// <para>
-    /// <c>wrapped_account_keys</c> is keyed on <c>credential_id</c> and carries <c>user_id</c> beside
-    /// it, like the two passkey tables, and it is in the list because what it holds is the account's
-    /// content and index keys as one recovery factor wrapped them. A row the erasure failed to take is
-    /// two envelopes still filed under a person who asked to be forgotten. The application role holds
-    /// no <c>DELETE</c> on it at all, so the only thing that can remove one is the
-    /// <c>ON DELETE CASCADE</c> from <c>credentials</c> — this row of the list is what proves the
-    /// cascade really reaches it rather than that some statement was issued.
-    /// </para>
-    /// <para>
-    /// <c>session_tokens</c> is in the list because a row there is what a cookie is looked up by. It
-    /// carries <c>user_id</c> beside <c>session_id</c> and leaves only through the cascade from
-    /// <c>sessions</c>, so a stray row is a handle that still names the erased person — the
-    /// <c>sessions</c> row going is not enough on its own to prove the handle went with it.
-    /// </para>
-    /// <para>
-    /// <c>erasure_schedules</c> is in the list because a schedule that outlived its account would be
-    /// the deletion record the no-remnant rule forbids: a row saying this user existed and asked to be
-    /// erased. It is keyed on <c>user_id</c> and leaves only through the cascade from <c>users</c> —
-    /// the role holds no <c>DELETE</c> on it — so an immediate erasure of an account that also has one
-    /// scheduled has to carry the schedule away with everything else.
-    /// </para>
-    /// <para>
-    /// <b>This list is hand-written and nothing checks it against the live schema</b>, which is why
-    /// <c>wrapped_account_keys</c> could be added to the database and leave every test in this file
-    /// green while the FR-025 claim quietly covered one table less than it says.
-    /// <c>ErasureAtomicityTests</c> is the file that discovers its tables from the catalog; the next
-    /// table added here has to be added by hand, exactly as this one was.
-    /// </para>
-    /// </remarks>
-    private static readonly OwnedTable[] OwnedTables =
-    [
-        new("users", "id", OwnedBy.User),
-        new("credentials", "user_id", OwnedBy.User),
-        new("sessions", "user_id", OwnedBy.User),
-        new("session_tokens", "user_id", OwnedBy.User),
-        new("passkey_public_keys", "user_id", OwnedBy.User),
-        new("passkey_signature_counters", "user_id", OwnedBy.User),
-        new("recovery_code_hashes", "user_id", OwnedBy.User),
-        new("wrapped_account_keys", "user_id", OwnedBy.User),
-        new("erasure_schedules", "user_id", OwnedBy.User),
-        new("budgets", "user_id", OwnedBy.User),
-        new("accounts", "budget_id", OwnedBy.Budget),
-        new("category_groups", "budget_id", OwnedBy.Budget),
-        new("categories", "budget_id", OwnedBy.Budget),
-        new("payees", "budget_id", OwnedBy.Budget),
-        new("transactions", "budget_id", OwnedBy.Budget),
-    ];
-
     /// <summary>
     /// The Google subject every single-account test authenticates as. Named here rather than left to
     /// the factory's default because the furnishing helper resolves the seeded ids by looking the
@@ -218,10 +125,32 @@ public sealed class AccountErasureEndpointTests
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
     }
 
+    /// <summary>
+    /// The FR-029 gate: every table the inventory says an account owns holds none of its rows after
+    /// the erasure, and a table that still does is named.
+    /// </summary>
+    /// <remarks>
+    /// "Fails naming the table" holds for a table the erasure does not <b>reach</b> — one whose rows
+    /// survive it. It does not hold for a table whose <c>RESTRICT</c> or <c>NO ACTION</c> edge
+    /// <b>blocks</b> the erasure: the delete fails with 23503, the transaction rolls back, and this
+    /// test stops on the 204 assertion before <see cref="OwnedRowDefects" /> runs. That failure is a
+    /// non-204 here, and the server-side 23503 in the test output names the constraint rather than
+    /// the table. The remedy is the deletion-order rule in <c>docs/business-logic/erasure.md</c>. The
+    /// defects are not folded into the 204 assertion's message on purpose: after a rollback every
+    /// table still holds its rows, so the list would name every table as survived and point at none.
+    /// </remarks>
     [Test]
     public async Task Erase_ForAFullyFurnishedAccount_LeavesNoRowInAnyTable()
     {
-        // Arrange
+        // Arrange — the tables come from the inventory, never from a list in this file, so a table
+        // is judged here once the inventory writes its owner (FR-029); until then the unit tier's
+        // TableOwnerCoverageTests names it undecided, and that is its first red. Both owner kinds
+        // are asserted present first: a filter that lost one of them would sweep half the schema
+        // and still come back with nothing to report.
+        IReadOnlyList<TableOwnerEntry> owned = AccountOwnedTables();
+        await Assert.That(owned.Any(entry => entry.Owner is OwnedBy.User)).IsTrue();
+        await Assert.That(owned.Any(entry => entry.Owner is OwnedBy.Budget)).IsTrue();
+
         await using PostgresTestHost host = await StartSignedInHostAsync();
         (HttpClient client, Guid userId, Guid budgetId) = await host.Factory.CreateSignedInClientAsync(Subject);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
@@ -231,16 +160,11 @@ public sealed class AccountErasureEndpointTests
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
 
-        // The seeding is proved before the act, table by table, on the same connection and with the
-        // same predicates the assertion below uses. This half is not decoration: without it every
-        // assertion in this test is "count is zero", which an empty database satisfies.
-        IReadOnlyDictionary<string, long> before = await CountOwnedRowsAsync(admin, userId, budgetId);
-        foreach (OwnedTable table in OwnedTables)
-        {
-            await Assert.That(before[table.Name])
-                .IsGreaterThan(0L)
-                .Because($"the furnishing must put a row in {table.Name} before the erasure");
-        }
+        // Counted before the act on the same connection and with the same predicates as after it.
+        // This half is not decoration: without it every judgement below is "count is zero", which an
+        // empty database satisfies — so a table found empty here is a defect of its own.
+        AccountIds account = new(userId, budgetId);
+        ErasureSnapshot before = await SnapshotAsync(admin, owned, account, survivor: null);
 
         // The set carries more factor rows than live codes under its credential, so one of them
         // stands for a code already spent. The wrapped_account_keys count below includes that row.
@@ -255,13 +179,8 @@ public sealed class AccountErasureEndpointTests
         // Assert
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
 
-        IReadOnlyDictionary<string, long> after = await CountOwnedRowsAsync(admin, userId, budgetId);
-        foreach (OwnedTable table in OwnedTables)
-        {
-            await Assert.That(after[table.Name])
-                .IsEqualTo(0L)
-                .Because($"the erasure must leave no row in {table.Name}");
-        }
+        ErasureSnapshot after = await SnapshotAsync(admin, owned, account, survivor: null);
+        await Assert.That(OwnedRowDefects(owned, before, after)).IsEmpty();
     }
 
     /// <summary>
@@ -333,10 +252,15 @@ public sealed class AccountErasureEndpointTests
     {
         // Arrange — two furnished accounts. Without this test a handler that emptied every table in
         // the database would satisfy every other assertion in this file.
+        // The tables are the inventory's, as in Erase_ForAFullyFurnishedAccount_LeavesNoRowInAnyTable.
+        IReadOnlyList<TableOwnerEntry> owned = AccountOwnedTables();
+        await Assert.That(owned.Any(entry => entry.Owner is OwnedBy.User)).IsTrue();
+        await Assert.That(owned.Any(entry => entry.Owner is OwnedBy.Budget)).IsTrue();
+
         const string erasedSubject = "google-erased";
         const string survivorSubject = "google-survivor";
         await using PostgresTestHost host = await StartSignedInHostAsync();
-        (HttpClient erased, Guid erasedUserId, _) =
+        (HttpClient erased, Guid erasedUserId, Guid erasedBudgetId) =
             await host.Factory.CreateSignedInClientAsync(erasedSubject);
         (HttpClient survivor, Guid survivorUserId, Guid survivorBudgetId) =
             await host.Factory.CreateSignedInClientAsync(survivorSubject);
@@ -347,31 +271,21 @@ public sealed class AccountErasureEndpointTests
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
-        IReadOnlyDictionary<string, long> before =
-            await CountOwnedRowsAsync(admin, survivorUserId, survivorBudgetId);
-        foreach (OwnedTable table in OwnedTables)
-        {
-            await Assert.That(before[table.Name])
-                .IsGreaterThan(0L)
-                .Because($"the furnishing must put a survivor row in {table.Name} before the erasure");
-        }
+        AccountIds erasedAccount = new(erasedUserId, erasedBudgetId);
+        AccountIds survivorAccount = new(survivorUserId, survivorBudgetId);
+        ErasureSnapshot before = await SnapshotAsync(admin, owned, erasedAccount, survivorAccount);
 
         // Act
         HttpResponseMessage response = await EraseAsync(erased, device, erasedUserId);
 
         // Assert — the survivor's counts are compared to what they were, not merely to "more than
         // zero": an erasure that took some of another account's rows and left others would pass a
-        // non-zero check.
+        // non-zero check. The erased account is judged in the same pass, so this test also fails on
+        // an erasure that confused the two accounts and took the wrong one's rows.
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
 
-        IReadOnlyDictionary<string, long> after =
-            await CountOwnedRowsAsync(admin, survivorUserId, survivorBudgetId);
-        foreach (OwnedTable table in OwnedTables)
-        {
-            await Assert.That(after[table.Name])
-                .IsEqualTo(before[table.Name])
-                .Because($"the erasure must not move the survivor's rows in {table.Name}");
-        }
+        ErasureSnapshot after = await SnapshotAsync(admin, owned, erasedAccount, survivorAccount);
+        await Assert.That(OwnedRowDefects(owned, before, after)).IsEmpty();
     }
 
     /// <summary>
@@ -557,7 +471,12 @@ public sealed class AccountErasureEndpointTests
     [Test]
     public async Task Erase_CalledASecondTime_IsRefusedAndCreatesNoAccount()
     {
-        // Arrange
+        // Arrange — the tables are the inventory's, as in
+        // Erase_ForAFullyFurnishedAccount_LeavesNoRowInAnyTable.
+        IReadOnlyList<TableOwnerEntry> owned = AccountOwnedTables();
+        await Assert.That(owned.Any(entry => entry.Owner is OwnedBy.User)).IsTrue();
+        await Assert.That(owned.Any(entry => entry.Owner is OwnedBy.Budget)).IsTrue();
+
         await using PostgresTestHost host = await StartSignedInHostAsync();
         (HttpClient client, Guid firstUserId, Guid firstBudgetId) =
             await host.Factory.CreateSignedInClientAsync(Subject);
@@ -568,17 +487,11 @@ public sealed class AccountErasureEndpointTests
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
 
-        // The seeding is proved before the act, table by table, on the same connection and with the
-        // same predicates the assertions below use — the promise this class's remarks make about
-        // every count it asserts zero. Without it, fourteen "count is zero" assertions are all satisfied
-        // by a database the furnishing never reached.
-        IReadOnlyDictionary<string, long> before = await CountOwnedRowsAsync(admin, firstUserId, firstBudgetId);
-        foreach (OwnedTable table in OwnedTables)
-        {
-            await Assert.That(before[table.Name])
-                .IsGreaterThan(0L)
-                .Because($"the furnishing must put a row in {table.Name} before the erasure");
-        }
+        // Counted before the act on the same connection and with the same predicates as after it —
+        // the promise this class's remarks make about every count it judges zero. A table found empty
+        // here is reported by OwnedRowDefects rather than passed.
+        AccountIds first = new(firstUserId, firstBudgetId);
+        ErasureSnapshot before = await SnapshotAsync(admin, owned, first, survivor: null);
 
         await Assert.That(await ScalarAsync(admin, "select count(*) from users")).IsGreaterThan(0L);
 
@@ -587,8 +500,8 @@ public sealed class AccountErasureEndpointTests
         // caller whose session row the erasure cascaded away it answers 401 too, and the
         // EnsureSuccessStatusCode inside it would end this test before its own assertion.
         AssertionResult assertion = await AuthenticateAsync(client, device, firstUserId);
-        HttpResponseMessage first = await PostErasureAsync(client, assertion);
-        HttpResponseMessage second = await PostErasureAsync(client, assertion);
+        HttpResponseMessage firstCall = await PostErasureAsync(client, assertion);
+        HttpResponseMessage secondCall = await PostErasureAsync(client, assertion);
 
         // The same stale handle knocking on the ceremony's own door, which is the request a retrying
         // client actually makes first. Asserted separately because it is the one that used to provision.
@@ -596,22 +509,16 @@ public sealed class AccountErasureEndpointTests
             await client.PostAsync(ReauthenticationOptionsPath, content: null);
 
         // Assert
-        await Assert.That(first.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
-        await Assert.That(second.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
+        await Assert.That(firstCall.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
+        await Assert.That(secondCall.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
         await Assert.That(retriedOptions.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
 
-        IReadOnlyDictionary<string, long> afterFirst =
-            await CountOwnedRowsAsync(admin, firstUserId, firstBudgetId);
-        foreach (OwnedTable table in OwnedTables)
-        {
-            await Assert.That(afterFirst[table.Name])
-                .IsEqualTo(0L)
-                .Because($"the first erasure must leave no row in {table.Name}");
-        }
+        ErasureSnapshot after = await SnapshotAsync(admin, owned, first, survivor: null);
+        await Assert.That(OwnedRowDefects(owned, before, after)).IsEmpty();
 
-        // No rows at all, not "none belonging to the erased id". The loop above is scoped to the ids
-        // the erasure took, so a resurrected account — a different id entirely — passes every one of
-        // those fourteen assertions. This unscoped count is the only line that sees it.
+        // No rows at all, not "none belonging to the erased id". The judgement above is scoped to the
+        // ids the erasure took, so a resurrected account — a different id entirely — passes every
+        // table of it. This unscoped count is the only line that sees it.
         await Assert.That(await ScalarAsync(admin, "select count(*) from users")).IsEqualTo(0L);
         await Assert.That(await ScalarAsync(admin, "select count(*) from credentials")).IsEqualTo(0L);
         await Assert.That(await ScalarAsync(admin, "select count(*) from budgets")).IsEqualTo(0L);
@@ -873,8 +780,8 @@ public sealed class AccountErasureEndpointTests
     }
 
     /// <summary>
-    /// Adds the passkey material, the session and its token, the set of recovery codes and the wrapped account
-    /// keys, so the FR-025 enumeration has something to find in every user-owned table rather than only
+    /// Adds the passkey material, the session and its token, the set of recovery codes, the wrapped account
+    /// keys and a key rotation in flight with its seal, so the FR-029 gate has something to find in every user-owned table rather than only
     /// in the two provisioning fills.
     /// </summary>
     /// <remarks>
@@ -902,15 +809,15 @@ public sealed class AccountErasureEndpointTests
             passkey, WebAuthnCredentialIdFor(userId), CoseKey, CoseAlgorithm.Es256));
         db.PasskeySignatureCounters.Add(PasskeySignatureCounter.Start(passkey, 0));
 
-        // The account's two keys as this passkey factor holds them, in wrapped_account_keys. No
-        // before-count loop needs it: the recovery-code set below already puts factor rows on the
-        // table for every furnished account. It is kept because production never writes a passkey
-        // without its factor row, and these seeds are meant to be the shape production writes. Filed
+        // The account's two keys as this passkey factor holds them, in wrapped_account_keys. The
+        // recovery-code set below already puts factor rows on the table, so the gate does not need
+        // this one to find the table seeded; it is kept because production never writes a passkey
+        // without its factor row, and because the rotation seal below has to name a factor. Filed
         // against the passkey seeded just above rather than against the credential
         // RegisterPasskeyAsync registers, because a second row hung off that credential would collide
         // on PK_wrapped_account_keys. Either passkey or recovery-code credential is legal here, the
         // federated credential is not.
-        db.WrappedAccountKeys.Add(WrappedAccountKeys.For(
+        WrappedAccountKeys passkeyFactor = WrappedAccountKeys.For(
             passkey,
 
             // Minted here rather than derived from the owner, which is what production does: the value
@@ -920,7 +827,28 @@ public sealed class AccountErasureEndpointTests
             Guid.CreateVersion7(),
             WrappedPrivateKeyPayload(0xC0),
             EncapsulatedAccountKeysPayload(0x1D),
-            SeedInstant));
+            SeedInstant);
+        db.WrappedAccountKeys.Add(passkeyFactor);
+
+        // A content-key rotation caught mid-flight, in key_rotations, and that run's sealed copy for
+        // the passkey's factor, in key_rotation_seals. Both tables are owned in the inventory, so the
+        // erasure gate finds them empty — and reports them unseeded — without these two rows. Seeded
+        // through the factories, as ErasureAtomicityTests seeds the same pair: Begin reads the owner
+        // off the passkey and refuses any other credential type, and the seal factory takes the
+        // loaded rotation and the loaded factor and refuses when their owners disagree. The seal has
+        // two cascading parents, the rotation and the factor, so this row is what puts both edges in
+        // front of the erasure. The staged manifest is plain bytes naming the factor plus one, for the
+        // reason ErasureAtomicityTests gives at StagedManifestNaming: nothing on the server opens it,
+        // and the column checks a length band and an owner.
+        KeyRotation rotation = KeyRotation.Begin(
+            passkey,
+            Guid.CreateVersion7(),
+            (byte[])[.. passkeyFactor.FactorId.ToByteArray(), 0x02],
+            FactorManifest.MinimumRotationEpoch + 1,
+            SeedInstant);
+        db.KeyRotations.Add(rotation);
+        db.KeyRotationSeals.Add(KeyRotationSeal.For(
+            rotation, passkeyFactor, EncapsulatedAccountKeysPayload(0x3F)));
 
         // Established against the passkey rather than the federated credential because
         // CK_sessions_kind_matches_credential ties the two together; the seeded row is the full
@@ -1047,31 +975,189 @@ public sealed class AccountErasureEndpointTests
         return verifier;
     }
 
-    /// <summary>
-    /// Counts the rows each owned table holds for one account, on whichever id that table files its
-    /// owner under.
-    /// </summary>
-    private static async Task<IReadOnlyDictionary<string, long>> CountOwnedRowsAsync(
-        NpgsqlConnection connection,
-        Guid userId,
-        Guid budgetId)
-    {
-        Dictionary<string, long> counts = new(OwnedTables.Length, StringComparer.Ordinal);
+    /// <summary>The two ids an account's rows are filed under.</summary>
+    private readonly record struct AccountIds(Guid UserId, Guid BudgetId);
 
-        foreach (OwnedTable table in OwnedTables)
+    /// <summary>
+    /// Per-table row counts for the account an erasure takes and, when a test has one, for the
+    /// account it must leave alone — each keyed on the table name.
+    /// </summary>
+    private sealed record ErasureSnapshot(
+        IReadOnlyDictionary<string, long> Erased,
+        IReadOnlyDictionary<string, long>? Survivor);
+
+    /// <summary>
+    /// Every table the inventory says holds one account's rows, which is every entry not owned by
+    /// nobody. One list, because the point of the FR-029 judgement is that <b>no</b> owned table
+    /// keeps a row, and a test that enumerated its tables inline would silently stop covering the one
+    /// added next.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Read from <see cref="DataInventory.TableOwners" /> rather than written here. That list is
+    /// reconciled from both sides — <c>TableOwnerCoverageTests</c> fails on a mapped table it does not
+    /// name, and <c>DataInventoryReconciliationTests</c> fails when the owner it writes disagrees with
+    /// the owner column the live catalog finds — so once a new table's owner is written there, the
+    /// three tests that judge an erasure enumerate it with no edit to how they enumerate. It is not
+    /// free of this file: the first thing such a table produces here is an <c>unseeded</c> line
+    /// naming it, and the cure is a row in <see cref="SeedIdentityRowsAsync" />, which lives in this
+    /// file — never an exclusion.
+    /// </para>
+    /// <para>
+    /// <c>webauthn_challenges</c> and <c>currencies</c> are left out because the inventory writes
+    /// them as owned by nobody, each with its reason: a challenge belongs to a ceremony rather than
+    /// to a person and carries neither <c>user_id</c> nor <c>budget_id</c>, and the currencies are
+    /// global reference data.
+    /// </para>
+    /// <para>
+    /// <c>passkey_public_keys</c> and <c>passkey_signature_counters</c> are keyed on
+    /// <c>credential_id</c> and carry <c>user_id</c> beside it, which is the owner column the inventory
+    /// names and the one counted here: it is the one that says whose material this is, and it is what
+    /// a stray row would still be naming after the account it belongs to is gone.
+    /// </para>
+    /// <para>
+    /// <c>recovery_code_hashes</c> is counted for that same reason and needs it more than either.
+    /// It is keyed on the verifier hash and carries <c>user_id</c> beside it, and it is <b>exempt from
+    /// row-level security</b> — a redemption arrives anonymous and adopts the <c>user_id</c> it finds
+    /// on the row, so a code the erasure failed to take is not a dormant remnant but a live credential
+    /// naming a person who asked to be forgotten. Nothing beneath the application is watching it.
+    /// </para>
+    /// <para>
+    /// <c>wrapped_account_keys</c> holds the account's content and index keys as one recovery factor
+    /// encapsulated them. A row the erasure failed to take is two keys still filed under a person who
+    /// asked to be forgotten. The application role holds no <c>DELETE</c> on it at all, so the only
+    /// thing that can remove one is the referential cascade — counting it is what proves the cascade
+    /// really reaches it rather than that some statement was issued. <c>key_rotations</c> and
+    /// <c>key_rotation_seals</c> are in the same position, and the seal has two cascading parents.
+    /// </para>
+    /// <para>
+    /// <c>session_tokens</c> is what a cookie is looked up by. It carries <c>user_id</c> beside
+    /// <c>session_id</c> and leaves only through the cascade from <c>sessions</c>, so a stray row is a
+    /// handle that still names the erased person — the <c>sessions</c> row going is not enough on its
+    /// own to prove the handle went with it.
+    /// </para>
+    /// <para>
+    /// <c>erasure_schedules</c> matters because a schedule that outlived its account would be the
+    /// deletion record the no-remnant rule forbids: a row saying this user existed and asked to be
+    /// erased. The role does hold <c>DELETE</c> there — withdrawing a schedule deletes its row — but
+    /// the erasure never issues a delete of its own on the table: the row leaves through
+    /// <c>FK_erasure_schedules_users</c>' cascade from <c>users</c>, so an immediate erasure of an
+    /// account that also has one scheduled has to carry the schedule away along that edge.
+    /// </para>
+    /// </remarks>
+    private static IReadOnlyList<TableOwnerEntry> AccountOwnedTables() =>
+        [.. DataInventory.TableOwners.Where(entry => entry.Owner is not OwnedBy.Nobody)];
+
+    /// <summary>
+    /// Counts every owned table for the erased account and, when one is named, for the survivor.
+    /// </summary>
+    private static async Task<ErasureSnapshot> SnapshotAsync(
+        NpgsqlConnection connection,
+        IReadOnlyList<TableOwnerEntry> owned,
+        AccountIds erased,
+        AccountIds? survivor) =>
+        new(
+            await CountRowsAsync(connection, owned, erased),
+            survivor is { } other ? await CountRowsAsync(connection, owned, other) : null);
+
+    /// <summary>
+    /// Counts the rows each owned table holds for one account, scoped by the entry's own owner column
+    /// to the user id or the budget id as the entry's owner says.
+    /// </summary>
+    private static async Task<IReadOnlyDictionary<string, long>> CountRowsAsync(
+        NpgsqlConnection connection,
+        IReadOnlyList<TableOwnerEntry> owned,
+        AccountIds account)
+    {
+        Dictionary<string, long> counts = new(owned.Count, StringComparer.Ordinal);
+
+        foreach (TableOwnerEntry entry in owned)
         {
-            // The table and column names are compile-time constants from the private list above, not
-            // anything a caller supplies; the owner id is bound as a parameter like everywhere else.
+            string ownerColumn = entry.OwnerColumn
+                ?? throw new InvalidOperationException($"{entry.Table} is owned but names no owner column.");
+            Guid ownerId = entry.Owner switch
+            {
+                OwnedBy.User => account.UserId,
+                OwnedBy.Budget => account.BudgetId,
+                _ => throw new InvalidOperationException($"{entry.Table} is owned by {entry.Owner}, which no account is."),
+            };
+
+            // Identifiers are quoted because they come from the inventory rather than from this file;
+            // the owner id is bound as a parameter like everywhere else.
             await using NpgsqlCommand command = new(
-                $"select count(*) from {table.Name} where {table.OwnerColumn} = @owner",
+                $"select count(*) from \"{entry.Table}\" where \"{ownerColumn}\" = @owner",
                 connection);
-            command.Parameters.AddWithValue(
-                "owner",
-                table.Owner is OwnedBy.Budget ? budgetId : userId);
-            counts[table.Name] = await ReadCountAsync(command, table.Name);
+            command.Parameters.AddWithValue("owner", ownerId);
+            counts[entry.Table] = await ReadCountAsync(command, entry.Table);
         }
 
         return counts;
+    }
+
+    /// <summary>
+    /// Judges one erasure from the counts either side of it, and names every table it got wrong.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Pure, and separate from both the arrangement and the act, so any path that erases an account
+    /// can be judged by the same lines: count, act, count, and hand both snapshots here.
+    /// </para>
+    /// <para>
+    /// A table the erased account held nothing in before the act is reported rather than passed,
+    /// because "nothing survived" is vacuously true of it — that is the line a new owned table
+    /// produces here first once the inventory writes its owner (before that, the unit tier names it
+    /// undecided), and it is cured by seeding a row, never by excusing the table. The survivor's
+    /// tables are held to the same rule, since a count that stayed at zero did not stay put.
+    /// </para>
+    /// </remarks>
+    /// <returns>One line per defect, in inventory order; empty when the erasure was right.</returns>
+    private static IReadOnlyList<string> OwnedRowDefects(
+        IReadOnlyList<TableOwnerEntry> owned,
+        ErasureSnapshot before,
+        ErasureSnapshot after)
+    {
+        if (before.Survivor is null != after.Survivor is null)
+        {
+            throw new ArgumentException("Both snapshots must count the survivor, or neither may.");
+        }
+
+        List<string> defects = [];
+
+        foreach (TableOwnerEntry entry in owned)
+        {
+            string table = entry.Table;
+
+            if (before.Erased[table] == 0)
+            {
+                defects.Add(
+                    $"unseeded: {table} holds no row of the erased account before the erasure — seed one "
+                    + "in SeedIdentityRowsAsync; the gate cannot judge a table it found empty");
+            }
+            else if (after.Erased[table] > 0)
+            {
+                defects.Add(
+                    $"survived: {table} holds {after.Erased[table]} row(s) of the erased account after the "
+                    + "erasure — the erasure does not reach it");
+            }
+
+            if (before.Survivor is { } survivorBefore && after.Survivor is { } survivorAfter)
+            {
+                if (survivorBefore[table] == 0)
+                {
+                    defects.Add(
+                        $"unseeded: {table} holds no row of the survivor before the erasure — seed one in "
+                        + "SeedIdentityRowsAsync; the gate cannot judge a table it found empty");
+                }
+                else if (survivorAfter[table] != survivorBefore[table])
+                {
+                    defects.Add(
+                        $"moved: {table} held {survivorBefore[table]} of the survivor's rows and holds "
+                        + $"{survivorAfter[table]}");
+                }
+            }
+        }
+
+        return defects;
     }
 
     /// <summary>
