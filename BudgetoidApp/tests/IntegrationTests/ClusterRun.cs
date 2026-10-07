@@ -32,6 +32,14 @@ internal sealed partial class ClusterRun
     /// <summary>The first key of every lease: "bt" in ASCII, keeping these locks apart from any other user's.</summary>
     private const int LeaseClass = 0x6274;
 
+    /// <summary>
+    /// The lock every writer of the application role's <c>pg_authid</c> row takes, server-wide: "br" in
+    /// ASCII, a class of its own so no run's lease key can ever equal it.
+    /// </summary>
+    public const int RoleLockClass = 0x6272;
+
+    public const int RoleLockKey = 0;
+
     private ClusterRun(string runId) => RunId = runId;
 
     public string RunId { get; }
@@ -112,6 +120,57 @@ internal sealed partial class ClusterRun
                 await TryLockAsync(connection, "pg_advisory_unlock", run.Key);
             }
         }
+    }
+
+    /// <summary>
+    /// Takes the server-wide role lock on a dedicated connection and returns it; disposing the
+    /// connection releases the lock. Blocks until any other holder lets go.
+    /// </summary>
+    /// <remarks>
+    /// Synchronous because its one caller that matters, <c>ApiFactory.CreateHost</c>, is a synchronous
+    /// override; <see cref="HoldRoleLockAsync" /> is the same lock for async callers.
+    /// </remarks>
+    public static NpgsqlConnection HoldRoleLock(string maintenanceConnectionString)
+    {
+        NpgsqlConnection connection = new(Unpooled(maintenanceConnectionString));
+        try
+        {
+            connection.Open();
+            using NpgsqlCommand command = RoleLockCommand(connection);
+            command.ExecuteNonQuery();
+            return connection;
+        }
+        catch
+        {
+            connection.Dispose();
+            throw;
+        }
+    }
+
+    /// <inheritdoc cref="HoldRoleLock" />
+    public static async Task<NpgsqlConnection> HoldRoleLockAsync(string maintenanceConnectionString)
+    {
+        NpgsqlConnection connection = new(Unpooled(maintenanceConnectionString));
+        try
+        {
+            await connection.OpenAsync();
+            await using NpgsqlCommand command = RoleLockCommand(connection);
+            await command.ExecuteNonQueryAsync();
+            return connection;
+        }
+        catch
+        {
+            await connection.DisposeAsync();
+            throw;
+        }
+    }
+
+    private static NpgsqlCommand RoleLockCommand(NpgsqlConnection connection)
+    {
+        NpgsqlCommand command = new("select pg_advisory_lock($1, $2)", connection);
+        command.Parameters.Add(new NpgsqlParameter { Value = RoleLockClass });
+        command.Parameters.Add(new NpgsqlParameter { Value = RoleLockKey });
+        return command;
     }
 
     private static async Task<bool> TryLockAsync(NpgsqlConnection connection, string function, string runId)

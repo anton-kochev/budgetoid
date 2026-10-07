@@ -109,6 +109,42 @@ public sealed class ClusterRunTests
         }
     }
 
+    /// <summary>
+    /// The role gate is server-wide, not just process-wide: while one run's API boot writes the
+    /// application role, no other process can take the same lock.
+    /// </summary>
+    /// <remarks>
+    /// The grants script's first statement writes the role's <c>pg_authid</c> row, which every database
+    /// on the server shares. Two concurrent writers of one row fail with <c>XX000 tuple concurrently
+    /// updated</c> instead of waiting, and a second run on the same server is exactly a second writer
+    /// that the in-process semaphore cannot see.
+    /// </remarks>
+    [Test]
+    public async Task UnderRoleGate_HoldsTheServerWideRoleLockForTheWholeAction()
+    {
+        // Arrange
+        string maintenance = await SharedPostgresCluster.MaintenanceConnectionStringAsync();
+
+        // Act
+        bool takenElsewhereDuring = SharedPostgresCluster.UnderRoleGate(() => TryRoleLock(maintenance));
+
+        // Assert — only "during" is asserted. Whether the lock is free afterwards depends on every
+        // other test booting an API at that moment, and a gate that never released it would hang the
+        // suite rather than fail one test.
+        await Assert.That(takenElsewhereDuring).IsFalse();
+    }
+
+    /// <summary>Tries the role lock on a fresh connection, as another process would, and lets it go.</summary>
+    private static bool TryRoleLock(string maintenance)
+    {
+        using NpgsqlConnection connection = new(new NpgsqlConnectionStringBuilder(maintenance) { Pooling = false }.ConnectionString);
+        connection.Open();
+        using NpgsqlCommand command = new("select pg_try_advisory_lock($1, $2)", connection);
+        command.Parameters.Add(new NpgsqlParameter { Value = ClusterRun.RoleLockClass });
+        command.Parameters.Add(new NpgsqlParameter { Value = ClusterRun.RoleLockKey });
+        return (bool)command.ExecuteScalar()!;
+    }
+
     private static async Task ExecuteAsync(string connectionString, string sql)
     {
         await using NpgsqlConnection connection = new(connectionString);

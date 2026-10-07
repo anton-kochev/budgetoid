@@ -74,6 +74,13 @@ internal static class SharedPostgresCluster
     /// database here; concurrent writers of one <c>pg_authid</c> tuple fail with
     /// <c>XX000 tuple concurrently updated</c> rather than blocking.
     /// </summary>
+    /// <remarks>
+    /// The semaphore only orders this process. Every holder also takes
+    /// <see cref="ClusterRun.HoldRoleLock" />, a server-wide advisory lock, because a second run on the
+    /// same server is a second writer of the same row. The developer's own API, booting against that
+    /// server outside the suite, takes neither and can still collide with a run; that is a
+    /// <c>XX000</c> on one boot, and a restart clears it.
+    /// </remarks>
     private static readonly SemaphoreSlim RoleGate = new(1, 1);
 
     /// <summary>
@@ -182,6 +189,11 @@ internal static class SharedPostgresCluster
         RoleGate.Wait();
         try
         {
+            // The semaphore orders this process; the server-wide lock orders every process on the
+            // server. A boot only happens after a host has its database, so the cluster is up and
+            // reading its task cannot block.
+            string maintenance = MaintenanceConnectionString(ClusterConnectionString.Value.GetAwaiter().GetResult());
+            using NpgsqlConnection roleLock = ClusterRun.HoldRoleLock(maintenance);
             return action();
         }
         finally
@@ -235,8 +247,12 @@ internal static class SharedPostgresCluster
             // this call writes to pg_authid is cluster-level and therefore already correct for every
             // database cloned afterwards; what the clone needs from the script is the per-database
             // half — grants and policies — and it inherits that from the template's catalogs.
-            await DatabaseProvisioning.ApplyGrantsAsync(template);
-            await DatabaseProvisioning.AttachAppRolePasswordAsync(template, AppRolePassword);
+            // Under the server-wide role lock: another run on this server may be writing the same row.
+            await using (await ClusterRun.HoldRoleLockAsync(maintenance))
+            {
+                await DatabaseProvisioning.ApplyGrantsAsync(template);
+                await DatabaseProvisioning.AttachAppRolePasswordAsync(template, AppRolePassword);
+            }
 
             return cluster;
         }
