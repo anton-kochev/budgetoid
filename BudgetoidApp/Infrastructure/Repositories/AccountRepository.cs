@@ -111,10 +111,11 @@ public sealed class AccountRepository(BudgetoidDbContext dbContext) : IAccountRe
         // The transactions reference is the only foreign key pointing at accounts, so this name is the
         // whole of "it has transactions". Naming it also means a second referencing table, or a
         // stranger's 23503 riding along on the same SaveChanges, cannot block a legitimate delete
-        // behind a message about transactions the account does not have.
+        // behind a message about transactions the account does not have. The key is RESTRICT, which
+        // PostgreSQL 18 reports as 23001 (restrict_violation) where 17 said 23503; both are this refusal.
         catch (DbUpdateException exception) when (exception.InnerException is PostgresException
         {
-            SqlState: PostgresErrorCodes.ForeignKeyViolation,
+            SqlState: PostgresErrorCodes.ForeignKeyViolation or PostgresErrorCodes.RestrictViolation,
             ConstraintName: TransactionConfiguration.AccountForeignKeyName,
         })
         {

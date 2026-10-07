@@ -200,10 +200,13 @@ public sealed class CategoryRepository(BudgetoidDbContext dbContext) : ICategory
             SqlState: PostgresErrorCodes.UniqueViolation,
         } postgresException && postgresException.ConstraintName == indexName;
 
+    // A delete refused by a RESTRICT foreign key reports 23001 (restrict_violation) since PostgreSQL 18;
+    // 17 and a NO ACTION key report 23503. Both are the same refusal, matched by the same constraint
+    // name, and an insert or update naming a missing row is 23503 on every version.
     private static bool IsForeignKeyViolationOf(DbUpdateException exception, string constraintName) =>
         exception.InnerException is PostgresException
         {
-            SqlState: PostgresErrorCodes.ForeignKeyViolation,
+            SqlState: PostgresErrorCodes.ForeignKeyViolation or PostgresErrorCodes.RestrictViolation,
         } postgresException && postgresException.ConstraintName == constraintName;
 
     // The 409 this table can raise beside the 400 below. ConflictExceptionHandler renders this message as
