@@ -41,6 +41,14 @@ internal sealed partial class ClusterRun
 
     public const int RoleLockKey = 0;
 
+    /// <summary>
+    /// The lock every <see cref="ProvisioningSandbox" /> holds for its life: "bs" in ASCII. Shared by
+    /// ordinary sandboxes, exclusive for one whose test changes what every sandbox's checks read.
+    /// </summary>
+    private const int SandboxLockClass = 0x6273;
+
+    private const int SandboxLockKey = 0;
+
     private ClusterRun(string runId) => RunId = runId;
 
     public string RunId { get; }
@@ -213,6 +221,66 @@ internal sealed partial class ClusterRun
             await using NpgsqlCommand command = RoleLockCommand(connection);
             await command.ExecuteNonQueryAsync();
             return connection;
+        }
+        catch
+        {
+            await connection.DisposeAsync();
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Takes the sandbox lock shared on a dedicated connection and returns it; disposing the connection
+    /// releases it. Waits only while an exclusive holder has it.
+    /// </summary>
+    public static async Task<NpgsqlConnection> HoldSandboxShareAsync(string maintenanceConnectionString)
+    {
+        NpgsqlConnection connection = new(Unpooled(maintenanceConnectionString));
+        try
+        {
+            await connection.OpenAsync();
+            await using NpgsqlCommand command = new("select pg_advisory_lock_shared($1, $2)", connection);
+            command.Parameters.Add(new NpgsqlParameter { Value = SandboxLockClass });
+            command.Parameters.Add(new NpgsqlParameter { Value = SandboxLockKey });
+            await command.ExecuteNonQueryAsync();
+            return connection;
+        }
+        catch
+        {
+            await connection.DisposeAsync();
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Takes the sandbox lock exclusively on a dedicated connection and returns it, once no sandbox
+    /// holds it shared.
+    /// </summary>
+    /// <remarks>
+    /// Polled with <c>pg_try_advisory_lock</c> rather than queued with <c>pg_advisory_lock</c>, on
+    /// purpose. A queued exclusive request makes every later shared request queue behind it, so a test
+    /// holding one sandbox and creating a second would wait for this one, which waits for the first: a
+    /// hang the server cannot see as a deadlock, because one edge of the cycle is in this process.
+    /// Polling never queues, so shared holders always get in and this one waits until they drain.
+    /// </remarks>
+    public static async Task<NpgsqlConnection> HoldSandboxExclusiveAsync(string maintenanceConnectionString)
+    {
+        NpgsqlConnection connection = new(Unpooled(maintenanceConnectionString));
+        try
+        {
+            await connection.OpenAsync();
+            while (true)
+            {
+                await using NpgsqlCommand command = new("select pg_try_advisory_lock($1, $2)", connection);
+                command.Parameters.Add(new NpgsqlParameter { Value = SandboxLockClass });
+                command.Parameters.Add(new NpgsqlParameter { Value = SandboxLockKey });
+                if ((bool)(await command.ExecuteScalarAsync())!)
+                {
+                    return connection;
+                }
+
+                await Task.Delay(TimeSpan.FromMilliseconds(100));
+            }
         }
         catch
         {

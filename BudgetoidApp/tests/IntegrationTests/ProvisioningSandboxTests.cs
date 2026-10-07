@@ -77,6 +77,92 @@ public sealed class ProvisioningSandboxTests
         await Assert.That(await RoleExistsAsync(maintenance, helper)).IsFalse();
     }
 
+    /// <summary>
+    /// A test that changes something every sandbox's checks read — a PUBLIC grant on a tablespace — runs
+    /// in an exclusive sandbox, which waits until no other sandbox is alive.
+    /// </summary>
+    [Test]
+    [NotInParallel(SandboxLockTests)]
+    public async Task CreateExclusiveAsync_WaitsUntilNoOtherSandboxIsAlive()
+    {
+        // Arrange
+        ProvisioningSandbox shared = await ProvisioningSandbox.CreateAsync();
+
+        // Act
+        Task<ProvisioningSandbox> exclusive = ProvisioningSandbox.CreateExclusiveAsync();
+        bool startedWhileSharedAlive = await CompletesWithinAsync(exclusive, TimeSpan.FromMilliseconds(500));
+        await shared.DisposeAsync();
+
+        // Assert — other tests' sandboxes may still hold it up after this one ends, hence the long wait.
+        await Assert.That(startedWhileSharedAlive).IsFalse();
+        await using ProvisioningSandbox acquired = await exclusive.WaitAsync(TimeSpan.FromMinutes(2));
+    }
+
+    [Test]
+    [NotInParallel(SandboxLockTests)]
+    public async Task CreateAsync_WaitsWhileAnExclusiveSandboxIsAlive()
+    {
+        // Arrange
+        ProvisioningSandbox exclusive = await ProvisioningSandbox.CreateExclusiveAsync().WaitAsync(TimeSpan.FromMinutes(2));
+
+        // Act
+        Task<ProvisioningSandbox> shared = ProvisioningSandbox.CreateAsync();
+        bool startedWhileExclusiveAlive = await CompletesWithinAsync(shared, TimeSpan.FromMilliseconds(500));
+        await exclusive.DisposeAsync();
+
+        // Assert
+        await Assert.That(startedWhileExclusiveAlive).IsFalse();
+        await using ProvisioningSandbox acquired = await shared.WaitAsync(TimeSpan.FromSeconds(30));
+    }
+
+    /// <summary>
+    /// An exclusive sandbox that is only waiting holds nothing up. If it queued on the server, a test
+    /// holding one sandbox and creating a second would wait for the exclusive one, which waits for the
+    /// first — a hang the server cannot see as a deadlock.
+    /// </summary>
+    [Test]
+    [NotInParallel(SandboxLockTests)]
+    public async Task CreateAsync_IsNotHeldUpByAnExclusiveSandboxThatIsStillWaiting()
+    {
+        // Arrange
+        ProvisioningSandbox first = await ProvisioningSandbox.CreateAsync();
+        Task<ProvisioningSandbox> exclusive = ProvisioningSandbox.CreateExclusiveAsync();
+        Task<ProvisioningSandbox>? second = null;
+        bool secondStarted;
+        try
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(200));
+
+            // Act
+            second = ProvisioningSandbox.CreateAsync();
+            secondStarted = await CompletesWithinAsync(second, TimeSpan.FromSeconds(10));
+        }
+        finally
+        {
+            // Released in the order that unwinds even the hang this test is about, so a regression is
+            // a red test rather than a suite that never finishes.
+            await first.DisposeAsync();
+            if (second is { IsCompletedSuccessfully: true })
+            {
+                await (await second).DisposeAsync();
+            }
+
+            await (await exclusive.WaitAsync(TimeSpan.FromMinutes(2))).DisposeAsync();
+            if (second is { IsCompletedSuccessfully: false })
+            {
+                await (await second.WaitAsync(TimeSpan.FromMinutes(2))).DisposeAsync();
+            }
+        }
+
+        // Assert
+        await Assert.That(secondStarted).IsTrue();
+    }
+
+    private const string SandboxLockTests = "sandbox-lock";
+
+    private static async Task<bool> CompletesWithinAsync(Task task, TimeSpan time) =>
+        await Task.WhenAny(task, Task.Delay(time)) == task;
+
     private static async Task<T> ScalarAsync<T>(NpgsqlConnection connection, string sql)
     {
         await using NpgsqlCommand command = new(sql, connection);
