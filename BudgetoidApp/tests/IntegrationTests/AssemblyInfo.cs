@@ -9,11 +9,13 @@
 //
 // The shape in place
 //
-// One postgres:17 container serves the whole assembly. Migrations and the grants script are applied
-// once, to a template database; each test then takes a database of its own out of it with
-// CREATE DATABASE ... TEMPLATE and drops it WITH (FORCE) afterwards. SharedPostgresCluster, in
-// PostgresTestHost.cs, owns all of that, and the implementation detail belongs there rather than
-// here.
+// One PostgreSQL 18 server serves the whole assembly: the server BUDGETOID_TEST_DATABASE_URL or
+// PITHOS_POSTGRES_URL names, or a postgres:18.6 container the suite starts when neither is set.
+// Migrations and the grants script are applied once, to a template database; each test then takes a
+// database of its own out of it with CREATE DATABASE ... TEMPLATE and drops it WITH (FORCE)
+// afterwards. Every database a run creates is named under that run's prefix and lease, so two runs can
+// share a server. SharedPostgresCluster, in PostgresTestHost.cs, and ClusterRun own all of that, and
+// the implementation detail belongs there rather than here.
 //
 // Isolation is unchanged, and that was checked class by class rather than assumed. Grants, policies
 // and schema are per-DATABASE catalogs — pg_class.relacl, pg_policy, and the tables themselves — so

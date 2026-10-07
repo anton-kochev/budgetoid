@@ -49,9 +49,15 @@ internal static class SharedPostgresCluster
     public const string Image = "postgres:18.6";
 
     /// <summary>
-    /// Password the application role authenticates with inside this cluster. A constant is fine: the
-    /// container lives for one test run and is unreachable from outside it.
+    /// Password the application role authenticates with inside this cluster. A constant is fine: a
+    /// container lives for one run and is unreachable from outside it, and a named server is a
+    /// throwaway test server too (a Pithos session's database lives in memory for that session).
     /// </summary>
+    /// <remarks>
+    /// The role is server-wide, so every run on one server sets this same password, and they agree. The
+    /// developer's own API booting against that server sets its own, and a run that overlaps it can
+    /// see the application role's logins refused until the run's next boot resets it.
+    /// </remarks>
     public const string AppRolePassword = "app-test-password";
 
     /// <summary>
@@ -202,8 +208,23 @@ internal static class SharedPostgresCluster
         }
     }
 
+    /// <summary>
+    /// Finds the server — the one the environment names, or a container started here — and prepares
+    /// this run on it.
+    /// </summary>
+    /// <remarks>
+    /// A named server is used as it is: the suite never starts, stops or reconfigures it, which is why
+    /// <see cref="ServerPreflight" /> has to check it instead. A container is started with what the
+    /// preflight demands, so it always passes.
+    /// </remarks>
     private static async Task<string> StartClusterAsync()
     {
+        TestDatabaseSource source = TestDatabaseSource.FromProcess();
+        if (!source.StartsContainer)
+        {
+            return await PrepareClusterAsync(source.ConnectionString!, source.Variable!);
+        }
+
         PostgreSqlContainer container = new PostgreSqlBuilder(Image)
             .WithDatabase("budgetoid")
             .WithUsername("postgres")
@@ -212,55 +233,61 @@ internal static class SharedPostgresCluster
             // One cluster now serves every test in the assembly, so the connection budget that used
             // to be per container is shared. The default of 100 is a limit the old shape could never
             // reach and this one can.
-            .WithCommand("-c", "max_connections=500")
+            .WithCommand("-c", $"max_connections={ServerPreflight.RequiredConnections}")
             .Build();
 
         try
         {
             await container.StartAsync();
-            string cluster = container.GetConnectionString();
-            string maintenance = MaintenanceConnectionString(cluster);
-            string template = UnpooledConnectionString(WithDatabase(cluster, Run.TemplateDatabase));
-
-            // Fatal on any shortfall, before this run writes anything to the server.
-            await using (NpgsqlConnection probe = await OpenAsync(UnpooledConnectionString(maintenance)))
-            {
-                ServerPreflight.Ensure(await ServerProbe.ReadAsync(probe), "the test container");
-            }
-
-            // Lease first, then sweep: this run is live before it reclaims anyone else's leftovers,
-            // so a sweep running in another process at the same moment cannot take it for dead.
-            _lease = await Run.AcquireLeaseAsync(maintenance);
-            await ClusterRun.SweepAsync(maintenance);
-
-            // template0, not the default template1: on a server this suite does not own, template1 is
-            // whatever someone left in it, and a clone of it would carry that into every test.
-            await ExecuteAsync(maintenance, $"create database {Run.TemplateDatabase} template template0");
-
-            await using (BudgetoidDbContext db = new(
-                new DbContextOptionsBuilder<BudgetoidDbContext>().UseNpgsql(template).Options))
-            {
-                await db.Database.MigrateAsync();
-            }
-
-            // The role is created and credentialed exactly once, here, and never again. Everything
-            // this call writes to pg_authid is cluster-level and therefore already correct for every
-            // database cloned afterwards; what the clone needs from the script is the per-database
-            // half — grants and policies — and it inherits that from the template's catalogs.
-            // Under the server-wide role lock: another run on this server may be writing the same row.
-            await using (await ClusterRun.HoldRoleLockAsync(maintenance))
-            {
-                await DatabaseProvisioning.ApplyGrantsAsync(template);
-                await DatabaseProvisioning.AttachAppRolePasswordAsync(template, AppRolePassword);
-            }
-
-            return cluster;
+            return await PrepareClusterAsync(container.GetConnectionString(), "the test container");
         }
         catch
         {
             await container.DisposeAsync();
             throw;
         }
+    }
+
+    /// <param name="cluster">A superuser connection string to the server; its database is ignored.</param>
+    /// <param name="source">Where the server came from, for the preflight's message.</param>
+    private static async Task<string> PrepareClusterAsync(string cluster, string source)
+    {
+        string maintenance = MaintenanceConnectionString(cluster);
+        string template = UnpooledConnectionString(WithDatabase(cluster, Run.TemplateDatabase));
+
+        // Fatal on any shortfall, before this run writes anything to the server.
+        await using (NpgsqlConnection probe = await OpenAsync(UnpooledConnectionString(maintenance)))
+        {
+            ServerPreflight.Ensure(await ServerProbe.ReadAsync(probe), source);
+        }
+
+        // Lease first, then sweep: this run is live before it reclaims anyone else's leftovers,
+        // so a sweep running in another process at the same moment cannot take it for dead.
+        _lease = await Run.AcquireLeaseAsync(maintenance);
+        await ClusterRun.SweepAsync(maintenance);
+
+        // template0, not the default template1: on a server this suite does not own, template1 is
+        // whatever someone left in it, and a clone of it would carry that into every test.
+        await ExecuteAsync(maintenance, $"create database {Run.TemplateDatabase} template template0");
+
+        await using (BudgetoidDbContext db = new(
+            new DbContextOptionsBuilder<BudgetoidDbContext>().UseNpgsql(template).Options))
+        {
+            await db.Database.MigrateAsync();
+        }
+
+        // The role is created and credentialed exactly once, here, and never again. Everything
+        // this call writes to pg_authid is cluster-level and therefore already correct for every
+        // database cloned afterwards; what the clone needs from the script is the per-database
+        // half — grants and policies — and it inherits that from the template's catalogs.
+        // Under the server-wide role lock: another run on this server may be writing the same row.
+        await using (await ClusterRun.HoldRoleLockAsync(maintenance))
+        {
+            await DatabaseProvisioning.ApplyGrantsAsync(template);
+            await DatabaseProvisioning.AttachAppRolePasswordAsync(template, AppRolePassword);
+        }
+
+        return cluster;
     }
 
     /// <summary>
