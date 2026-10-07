@@ -892,9 +892,18 @@ public static class RowLevelSecurityCoverage
     /// </remarks>
     /// <param name="table">A table the classifier decided must be policed.</param>
     /// <returns>One sentence per defect, empty when the table is protected as its ownership requires.</returns>
-    public static IReadOnlyList<string> FindProblems(ClassifiedTable table)
+    public static IReadOnlyList<string> FindProblems(ClassifiedTable table) =>
+        FindProblems(table, AppRole.Production);
+
+    /// <summary>
+    /// <see cref="FindProblems(ClassifiedTable)" />, asking whether each policy binds
+    /// <paramref name="role" />. Internal so only the integration suite can name a role other than
+    /// <see cref="AppRole.Production" />; see <see cref="AppRole" />.
+    /// </summary>
+    internal static IReadOnlyList<string> FindProblems(ClassifiedTable table, AppRole role)
     {
         ArgumentNullException.ThrowIfNull(table);
+        ArgumentNullException.ThrowIfNull(role);
 
         DiscoveredTable relation = table.Table;
 
@@ -934,13 +943,13 @@ public static class RowLevelSecurityCoverage
         // TO PUBLIC binds every non-owner role, so it covers the app role too and is broader rather
         // than weaker; refusing it would make this check brittle about spelling instead of about
         // protection. Anything else leaves the app role unpoliced.
-        if (!policy.Roles.Contains(DatabaseProvisioning.AppRoleName)
+        if (!policy.Roles.Contains(role.Name)
             && !policy.Roles.Contains("public"))
         {
             problems.Add(
                 $"{relation.Name} is policed by '{policy.Name}', which binds "
                 + $"[{string.Join(", ", policy.Roles)}] and so does not bind "
-                + $"{DatabaseProvisioning.AppRoleName}.");
+                + $"{role.Name}.");
         }
 
         // V5. Restrictive is a different kind of rule rather than a stricter one. Permissive policies

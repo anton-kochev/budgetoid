@@ -20,9 +20,9 @@ namespace Infrastructure.Persistence.Provisioning;
 /// <para>
 /// <b>What</b> the role may do and <b>how</b> it proves who it is are separate concerns here, and
 /// the split is what lets one script run unchanged against a container, a dev machine and Azure.
-/// <see cref="ApplyGrantsAsync"/> produces a role that is allowed to log in and has no credential
+/// <see cref="ApplyGrantsAsync(string, CancellationToken)"/> produces a role that is allowed to log in and has no credential
 /// of any kind; a credential is attached afterwards by whichever environment-specific path
-/// applies — <see cref="AttachAppRolePasswordAsync"/> locally and in tests,
+/// applies — <see cref="AttachAppRolePasswordAsync(string, string, CancellationToken)"/> locally and in tests,
 /// <see cref="AttachAppRoleIdentityAsync"/> in production, where the role is bound to the API's
 /// managed identity. The consequence worth knowing: a re-provision can never reset a credential
 /// the environment owns, because provisioning does not know one.
@@ -61,7 +61,7 @@ public static class DatabaseProvisioning
     /// The role is provisioned <b>credential-free</b>: <c>LOGIN</c>, no password, no Entra label. The
     /// script executes verbatim and carries no secret, so it is identical in every environment.
     /// Attaching a credential is a separate, per-environment step — see
-    /// <see cref="AttachAppRolePasswordAsync"/> and <see cref="AttachAppRoleIdentityAsync"/>. A role
+    /// <see cref="AttachAppRolePasswordAsync(string, string, CancellationToken)"/> and <see cref="AttachAppRoleIdentityAsync"/>. A role
     /// this method just created cannot authenticate until one of them has run, which is loud rather
     /// than silent: the first login attempt fails with <c>28P01</c>.
     /// </remarks>
@@ -70,13 +70,25 @@ public static class DatabaseProvisioning
     /// application schema.
     /// </param>
     /// <param name="cancellationToken">Cancels the provisioning round-trip.</param>
-    public static async Task ApplyGrantsAsync(
+    public static Task ApplyGrantsAsync(
         string adminConnectionString,
+        CancellationToken cancellationToken = default) =>
+        ApplyGrantsAsync(adminConnectionString, AppRole.Production, cancellationToken);
+
+    /// <summary>
+    /// <see cref="ApplyGrantsAsync(string, CancellationToken)" /> for <paramref name="role" />: the same
+    /// script, rendered for that role. Internal so only the integration suite can name a role other
+    /// than <see cref="AppRole.Production" />; see <see cref="AppRole" />.
+    /// </summary>
+    internal static async Task ApplyGrantsAsync(
+        string adminConnectionString,
+        AppRole role,
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrEmpty(adminConnectionString);
+        ArgumentNullException.ThrowIfNull(role);
 
-        string sql = await ReadGrantsScriptAsync(cancellationToken);
+        string sql = role.Render(await ReadGrantsScriptAsync(cancellationToken));
 
         await using NpgsqlConnection connection = new(adminConnectionString);
         await connection.OpenAsync(cancellationToken);
@@ -93,7 +105,7 @@ public static class DatabaseProvisioning
     /// contract rather than an implementation detail: <c>ALTER ROLE</c> cannot take a bound
     /// parameter, so the value is spliced into a SQL literal, and a caller must be able to learn its
     /// secret is unusable without having touched the database at all. A rejected call therefore
-    /// leaves the role exactly as <see cref="ApplyGrantsAsync"/> left it rather than
+    /// leaves the role exactly as <see cref="ApplyGrantsAsync(string, CancellationToken)"/> left it rather than
     /// half-credentialed.
     /// </remarks>
     /// <param name="adminConnectionString">
@@ -107,18 +119,30 @@ public static class DatabaseProvisioning
     /// <exception cref="ArgumentException">
     /// The password is empty or contains a character outside the allowed alphabet.
     /// </exception>
-    public static async Task AttachAppRolePasswordAsync(
+    public static Task AttachAppRolePasswordAsync(
         string adminConnectionString,
+        string appRolePassword,
+        CancellationToken cancellationToken = default) =>
+        AttachAppRolePasswordAsync(adminConnectionString, AppRole.Production, appRolePassword, cancellationToken);
+
+    /// <summary>
+    /// <see cref="AttachAppRolePasswordAsync(string, string, CancellationToken)" /> for
+    /// <paramref name="role" />. Internal for the reason <see cref="AppRole" /> gives.
+    /// </summary>
+    internal static async Task AttachAppRolePasswordAsync(
+        string adminConnectionString,
+        AppRole role,
         string appRolePassword,
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrEmpty(adminConnectionString);
+        ArgumentNullException.ThrowIfNull(role);
         EnsureValidAppRolePassword(appRolePassword);
 
         await using NpgsqlConnection connection = new(adminConnectionString);
         await connection.OpenAsync(cancellationToken);
         await using NpgsqlCommand command = new(
-            $"ALTER ROLE {AppRoleName} WITH PASSWORD '{appRolePassword}';", connection);
+            $"ALTER ROLE {role.Name} WITH PASSWORD '{appRolePassword}';", connection);
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
@@ -208,12 +232,12 @@ public static class DatabaseProvisioning
     /// </summary>
     /// <remarks>
     /// The restricted alphabet <i>is</i> the safety argument. <c>ALTER ROLE ... WITH PASSWORD</c>
-    /// cannot take a bound parameter, so <see cref="AttachAppRolePasswordAsync"/> has to write the
+    /// cannot take a bound parameter, so <see cref="AttachAppRolePasswordAsync(string, string, CancellationToken)"/> has to write the
     /// value into a single-quoted literal; excluding the quote, the backslash and the dollar sign
     /// means a password that passes this check cannot end the literal or start a new statement.
     /// Public so that a caller holding a configured secret can reject it at the point it reads it,
     /// rather than at the point a connection is opened — and
-    /// <see cref="AttachAppRolePasswordAsync"/> calls it too, so the two entry points cannot drift
+    /// <see cref="AttachAppRolePasswordAsync(string, string, CancellationToken)"/> calls it too, so the two entry points cannot drift
     /// over what a legal password is.
     /// </remarks>
     /// <param name="appRolePassword">Candidate password for the application role.</param>

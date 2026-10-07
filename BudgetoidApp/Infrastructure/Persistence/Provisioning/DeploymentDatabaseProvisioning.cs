@@ -76,12 +76,24 @@ public static class DeploymentDatabaseProvisioning
     /// Provisioning ran, but the application role is missing, cannot log in, or reaches something
     /// the grant script did not take back.
     /// </exception>
-    public static async Task ProvisionAsync(
+    public static Task ProvisionAsync(
         string adminConnectionString,
+        Action<string>? log = null,
+        CancellationToken cancellationToken = default) =>
+        ProvisionAsync(adminConnectionString, AppRole.Production, log, cancellationToken);
+
+    /// <summary>
+    /// <see cref="ProvisionAsync(string, Action{string}, CancellationToken)" /> for <paramref name="role" />. Internal so only the integration suite can name a role other than
+    /// <see cref="AppRole.Production" />; see <see cref="AppRole" />.
+    /// </summary>
+    internal static async Task ProvisionAsync(
+        string adminConnectionString,
+        AppRole role,
         Action<string>? log = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrEmpty(adminConnectionString);
+        ArgumentNullException.ThrowIfNull(role);
 
         // Built directly over the admin connection string rather than resolved from DI, exactly as
         // the test hosts do. The context's IBudgetContext is optional precisely so a migration path
@@ -104,15 +116,15 @@ public static class DeploymentDatabaseProvisioning
         // Strictly after the migration: the grants and the policies name individual tables, so the
         // schema has to exist first.
         log?.Invoke(
-            $"Provisioning role {DatabaseProvisioning.AppRoleName} with its grant matrix and "
+            $"Provisioning role {role.Name} with its grant matrix and "
             + "row-level security policies.");
-        await DatabaseProvisioning.ApplyGrantsAsync(adminConnectionString, cancellationToken);
+        await DatabaseProvisioning.ApplyGrantsAsync(adminConnectionString, role, cancellationToken);
 
-        await VerifyRowLevelSecurityCoverageAsync(adminConnectionString, log, cancellationToken);
+        await VerifyRowLevelSecurityCoverageAsync(adminConnectionString, role, log, cancellationToken);
 
         // After the script, never before it: a widening the script converges away is no longer
         // there to report, so only what a re-run left standing refuses the deploy.
-        await VerifyAppRoleReachAsync(adminConnectionString, log, cancellationToken);
+        await VerifyAppRoleReachAsync(adminConnectionString, role, log, cancellationToken);
     }
 
     /// <summary>
@@ -180,12 +192,24 @@ public static class DeploymentDatabaseProvisioning
     /// At least one tenant-owned table is unprotected, or the schema contains a table whose tenancy
     /// nobody has decided, or a relation no policy can cover.
     /// </exception>
-    public static async Task VerifyRowLevelSecurityCoverageAsync(
+    public static Task VerifyRowLevelSecurityCoverageAsync(
         string adminConnectionString,
+        Action<string>? log = null,
+        CancellationToken cancellationToken = default) =>
+        VerifyRowLevelSecurityCoverageAsync(adminConnectionString, AppRole.Production, log, cancellationToken);
+
+    /// <summary>
+    /// <see cref="VerifyRowLevelSecurityCoverageAsync(string, Action{string}, CancellationToken)" />, judging whether each policy binds <paramref name="role" />. Internal so only the integration suite can name a role other than
+    /// <see cref="AppRole.Production" />; see <see cref="AppRole" />.
+    /// </summary>
+    internal static async Task VerifyRowLevelSecurityCoverageAsync(
+        string adminConnectionString,
+        AppRole role,
         Action<string>? log = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrEmpty(adminConnectionString);
+        ArgumentNullException.ThrowIfNull(role);
 
         SchemaClassification schema;
         await using (NpgsqlConnection connection = new(adminConnectionString))
@@ -261,7 +285,7 @@ public static class DeploymentDatabaseProvisioning
         // copies of "what a protected table looks like" have no adjudicator when they disagree.
         foreach (ClassifiedTable classified in schema.NeedingAPolicy)
         {
-            IReadOnlyList<string> found = RowLevelSecurityCoverage.FindProblems(classified);
+            IReadOnlyList<string> found = RowLevelSecurityCoverage.FindProblems(classified, role);
             if (found.Count > 0)
             {
                 unprotected.Add(classified.Table.Name);
@@ -326,12 +350,24 @@ public static class DeploymentDatabaseProvisioning
     /// The application role is missing, cannot log in, or reaches at least one thing its grant
     /// matrix does not give it.
     /// </exception>
-    public static async Task VerifyAppRoleReachAsync(
+    public static Task VerifyAppRoleReachAsync(
         string adminConnectionString,
+        Action<string>? log = null,
+        CancellationToken cancellationToken = default) =>
+        VerifyAppRoleReachAsync(adminConnectionString, AppRole.Production, log, cancellationToken);
+
+    /// <summary>
+    /// <see cref="VerifyAppRoleReachAsync(string, Action{string}, CancellationToken)" /> for <paramref name="role" />. Internal so only the integration suite can name a role other than
+    /// <see cref="AppRole.Production" />; see <see cref="AppRole" />.
+    /// </summary>
+    internal static async Task VerifyAppRoleReachAsync(
+        string adminConnectionString,
+        AppRole role,
         Action<string>? log = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrEmpty(adminConnectionString);
+        ArgumentNullException.ThrowIfNull(role);
 
         AppRoleReachSnapshot snapshot;
         await using (NpgsqlConnection connection = new(adminConnectionString))
@@ -339,7 +375,7 @@ public static class DeploymentDatabaseProvisioning
             await connection.OpenAsync(cancellationToken);
             snapshot = await AppRoleReach.DiscoverAsync(
                 connection,
-                DatabaseProvisioning.AppRoleName,
+                role.Name,
                 cancellationToken);
         }
 
