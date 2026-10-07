@@ -55,11 +55,18 @@ internal static class SharedPostgresCluster
     public const string AppRolePassword = "app-test-password";
 
     /// <summary>
-    /// The database every per-test database is cloned from. It holds the migrated schema, the grant
-    /// matrix and the isolation policies — all per-database objects, so a clone inherits them whole
-    /// and neither the migration nor the grants script has to run again per test.
+    /// This run's prefix, lease and sweep. The template every per-test database is cloned from is
+    /// <see cref="ClusterRun.TemplateDatabase" />: it holds the migrated schema, the grant matrix and
+    /// the isolation policies — all per-database objects, so a clone inherits them whole and neither
+    /// the migration nor the grants script has to run again per test.
     /// </summary>
-    private const string TemplateDatabase = "budgetoid_template";
+    private static readonly ClusterRun Run = ClusterRun.Create();
+
+    /// <summary>
+    /// The connection holding this run's lease, kept open for the life of the process. Never disposed:
+    /// the lease must outlive every test, and the process ending is what releases it.
+    /// </summary>
+    private static NpgsqlConnection? _lease;
 
     /// <summary>
     /// Serialises every run of <c>app-role-grants.sql</c> in this process. The script's first
@@ -88,7 +95,7 @@ internal static class SharedPostgresCluster
     public static async Task<string> CreateDatabaseAsync()
     {
         string cluster = await ClusterConnectionString.Value;
-        string database = $"budgetoid_t{Interlocked.Increment(ref _databaseCounter):d5}";
+        string database = Run.TestDatabase(Interlocked.Increment(ref _databaseCounter));
 
         // CREATE DATABASE ... TEMPLATE refuses a source that any session is connected to (55006). The
         // template is migrated over an unpooled connection precisely so no session lingers on it, so
@@ -101,7 +108,7 @@ internal static class SharedPostgresCluster
             {
                 await ExecuteAsync(
                     MaintenanceConnectionString(cluster),
-                    $"create database {database} template {TemplateDatabase}");
+                    $"create database {database} template {Run.TemplateDatabase}");
                 break;
             }
             catch (PostgresException exception)
@@ -113,6 +120,14 @@ internal static class SharedPostgresCluster
 
         return WithDatabase(cluster, database);
     }
+
+    /// <summary>
+    /// The cluster reached through its <c>postgres</c> database, once the cluster is up. For tests of
+    /// the run machinery itself; a test that wants a database of its own uses
+    /// <see cref="CreateDatabaseAsync" />.
+    /// </summary>
+    public static async Task<string> MaintenanceConnectionStringAsync() =>
+        MaintenanceConnectionString(await ClusterConnectionString.Value);
 
     /// <summary>
     /// Drops a per-test database and forgets the connection pool that reached it. <c>FORCE</c>
@@ -192,9 +207,17 @@ internal static class SharedPostgresCluster
         {
             await container.StartAsync();
             string cluster = container.GetConnectionString();
-            string template = UnpooledConnectionString(WithDatabase(cluster, TemplateDatabase));
+            string maintenance = MaintenanceConnectionString(cluster);
+            string template = UnpooledConnectionString(WithDatabase(cluster, Run.TemplateDatabase));
 
-            await ExecuteAsync(MaintenanceConnectionString(cluster), $"create database {TemplateDatabase}");
+            // Lease first, then sweep: this run is live before it reclaims anyone else's leftovers,
+            // so a sweep running in another process at the same moment cannot take it for dead.
+            _lease = await Run.AcquireLeaseAsync(maintenance);
+            await ClusterRun.SweepAsync(maintenance);
+
+            // template0, not the default template1: on a server this suite does not own, template1 is
+            // whatever someone left in it, and a clone of it would carry that into every test.
+            await ExecuteAsync(maintenance, $"create database {Run.TemplateDatabase} template template0");
 
             await using (BudgetoidDbContext db = new(
                 new DbContextOptionsBuilder<BudgetoidDbContext>().UseNpgsql(template).Options))
