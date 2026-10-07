@@ -42,6 +42,13 @@ namespace IntegrationTests;
 internal static class SharedPostgresCluster
 {
     /// <summary>
+    /// The PostgreSQL image every test container starts from: production's major, and the exact
+    /// version the project's <c>.pithos</c> gives the agent, so a run inside Pi and a run on the host
+    /// measure the same server.
+    /// </summary>
+    public const string Image = "postgres:18.6";
+
+    /// <summary>
     /// Password the application role authenticates with inside this cluster. A constant is fine: the
     /// container lives for one test run and is unreachable from outside it.
     /// </summary>
@@ -170,7 +177,7 @@ internal static class SharedPostgresCluster
 
     private static async Task<string> StartClusterAsync()
     {
-        PostgreSqlContainer container = new PostgreSqlBuilder("postgres:17")
+        PostgreSqlContainer container = new PostgreSqlBuilder(Image)
             .WithDatabase("budgetoid")
             .WithUsername("postgres")
             .WithPassword("postgres")

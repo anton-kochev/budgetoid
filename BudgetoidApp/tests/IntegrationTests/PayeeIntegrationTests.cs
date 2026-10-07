@@ -950,7 +950,9 @@ public sealed class PayeeIntegrationTests
 
         // Assert
         await Assert.That(caught).IsNotNull();
-        await Assert.That(caught!.SqlState).IsEqualTo(PostgresErrorCodes.ForeignKeyViolation);
+        // The key is RESTRICT, and PostgreSQL 18 reports that refusal as 23001 (restrict_violation);
+        // 17 said 23503. Production runs 18, and the repositories match both codes.
+        await Assert.That(caught!.SqlState).IsEqualTo(PostgresErrorCodes.RestrictViolation);
         await Assert.That(list["items"]!.AsArray().Count).IsEqualTo(1);
         await Assert.That(item["payeeId"]!.GetValue<Guid>()).IsEqualTo(payeeId);
         await Assert.That(item["payeeName"]!.GetValue<string>())

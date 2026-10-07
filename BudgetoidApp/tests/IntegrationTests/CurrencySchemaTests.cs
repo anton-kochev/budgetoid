@@ -123,7 +123,9 @@ public sealed class CurrencySchemaTests
         // base_currency_code references the same table under the same Restrict rule. It is null on
         // every budget today, so only the account can be refusing here; naming the constraint is
         // what keeps that true if a future provisioning change starts stamping a base currency.
-        await Assert.That(exception.SqlState).IsEqualTo(PostgresErrorCodes.ForeignKeyViolation);
+        // The key is RESTRICT, and PostgreSQL 18 reports that refusal as 23001 (restrict_violation);
+        // 17 said 23503. Production runs 18, and the repositories match both codes.
+        await Assert.That(exception.SqlState).IsEqualTo(PostgresErrorCodes.RestrictViolation);
         await Assert.That(exception.ConstraintName)
             .IsEqualTo("FK_accounts_currencies_currency_code");
 

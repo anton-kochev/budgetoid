@@ -51,7 +51,9 @@ public sealed class UserSchemaTests
         // by anything the caller did. The refusal is the rule, the name is an artifact — pinning it
         // would not strengthen this test, it would make a migration reshuffle look like a
         // regression.
-        await Assert.That(exception.SqlState).IsEqualTo(PostgresErrorCodes.ForeignKeyViolation);
+        // The key is RESTRICT, and PostgreSQL 18 reports that refusal as 23001 (restrict_violation);
+        // 17 said 23503. Production runs 18, and the repositories match both codes.
+        await Assert.That(exception.SqlState).IsEqualTo(PostgresErrorCodes.RestrictViolation);
 
         // The rows below are not an extra: a statement that fails rolls back whole, and asserting
         // that is half the rule. A refusal that had already destroyed the budget on its way to

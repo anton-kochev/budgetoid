@@ -3259,7 +3259,7 @@ public sealed class DeploymentProvisioningTests
     /// </remarks>
     private static Task<PostgreSqlContainer> StartBareContainerAsync() =>
         StartGuard.StartAsync(
-            new PostgreSqlBuilder("postgres:17")
+            new PostgreSqlBuilder(SharedPostgresCluster.Image)
                 .WithDatabase("budgetoid")
                 .WithUsername("postgres")
                 .WithPassword("postgres")
