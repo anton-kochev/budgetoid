@@ -34,10 +34,16 @@
 // ApiFactory straight over a RepositoryTestHost and so passes through no seam either host could
 // offer. Worth carrying away: the seam for this concern is ApiFactory, not the hosts.
 //
-// DeploymentProvisioningTests and NonSuperuserDeploymentProvisioningTests sit outside all of this,
-// deliberately, and build their own containers through PostgreSqlBuilder directly. What they assert
-// on is the creation of cluster-level roles that must not already exist, which a shared cluster
-// would break the instant they joined it.
+// DeploymentProvisioningTests and NonSuperuserDeploymentProvisioningTests used to sit outside all of
+// this with a container each, because they create, rename and over-grant the application role, and a
+// role is cluster-level. They now take a ProvisioningSandbox on the same server: an empty database
+// and an application role of their own, passed to internal provisioning overloads in place of
+// budgetoid_app. The one sabotage that reaches every role — a PUBLIC grant on a tablespace — runs in
+// an exclusive sandbox, in TablespaceReachTests. ProvisioningSandbox.cs carries the reasoning.
+//
+// Unbounded parallelism has one cost that is not Docker's: every API boot blocks a pool thread at the
+// gate above, and the pool grows by about one thread a second. ThreadPoolFloor.cs raises its floor
+// before the first test runs, and says what was measured.
 //
 // The template race — 55006, "source database is being accessed by other users" — is handled twice
 // over. The template is migrated over a Pooling=false connection so that no idle session lingers on
@@ -49,7 +55,8 @@
 //
 // Container-per-test: five runs, median 107.4 s, peak 44 containers. Shared cluster with a database
 // per test: five runs plus two confirmations, median 68.8 s, peak 19 containers — the remainder
-// being the two deployment classes above and Testcontainers' reaper.
+// being the two deployment classes above and Testcontainers' reaper. Those classes have since moved
+// onto sandboxes, so the peak is now the one fallback container and the reaper.
 //
 // The fixed cost a test pays before its first assertion went from ~3.4 s to ~31 ms. Container start
 // at 2696 ms, MigrateAsync at 701 ms and ApplyGrantsAsync at 11.3 ms are now paid once for the
@@ -90,16 +97,12 @@
 //
 // The second leak path this file used to send the next reader looking for
 //
-// It was looked for, and it was there. The two classes above — DeploymentProvisioningTests and
-// NonSuperuserDeploymentProvisioningTests — hold the only container starts left outside
-// SharedPostgresCluster, and both StartBareContainerAsync helpers carried the unguarded shape
-// verbatim: build, await StartAsync, return, with the caller's `await using` variable bound only
-// afterwards. Both now start through StartGuard, which disposes before rethrowing — what
-// SharedPostgresCluster.StartClusterAsync already did inline, over a wider region of its own that it
-// keeps. StartGuard.cs carries the reasoning at the code that implements it, and StartGuardTests
-// executes the branch over a fake: a catch reachable only by a broken Docker daemon is a catch no
-// test in either of those classes can enter, which is why the guard sat unexecuted for as long as it
-// was written out twice.
+// It was looked for, and it was there. The two deployment classes each carried the unguarded shape
+// verbatim in a StartBareContainerAsync helper: build, await StartAsync, return, with the caller's
+// `await using` variable bound only afterwards. A StartGuard helper closed it, disposing before
+// rethrowing. Both classes have since moved onto sandboxes, and the guard went with the last
+// container start it guarded. The only container left is SharedPostgresCluster's fallback, and
+// StartClusterAsync guards that start inline, over a wider region of its own.
 //
 // What the mechanism is was checked rather than assumed, against Testcontainers 4.12.0: a readiness
 // check that can never pass throws only after Docker has created and started the container, which is
