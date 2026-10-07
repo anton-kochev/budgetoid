@@ -230,10 +230,56 @@ internal static class SharedPostgresCluster
 
     private static async Task ExecuteAsync(string connectionString, string sql)
     {
-        await using NpgsqlConnection connection = new(UnpooledConnectionString(connectionString));
-        await connection.OpenAsync();
+        await using NpgsqlConnection connection = await OpenAsync(UnpooledConnectionString(connectionString));
         await using NpgsqlCommand command = new(sql, connection);
         await command.ExecuteNonQueryAsync();
+    }
+
+    /// <summary>
+    /// Opens a connection, retrying only a refused or timed-out TCP connect.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Every per-test database is created and dropped through this path, so it opens thousands of
+    /// unpooled connections in bursts. When Docker runs in a VM behind the host's network (Pithos runs
+    /// Pi in Docker Desktop and Testcontainers in a separate Lima VM), a rare connect in such a burst
+    /// is refused or never answered while the cluster itself is healthy: one in 3,372 was refused in
+    /// an otherwise green run, and a stress test reproduced the drops only on that path, never inside
+    /// the VM or on Docker Desktop alone.
+    /// </para>
+    /// <para>
+    /// <b>Only the connect is retried.</b> Nothing has reached the server yet, so a second attempt
+    /// cannot run a statement twice. A failure after the socket is open — authentication, a server
+    /// error, a statement — is not a transport hiccup and is thrown as it was.
+    /// </para>
+    /// </remarks>
+    private static async Task<NpgsqlConnection> OpenAsync(string connectionString)
+    {
+        for (int attempt = 1; ; attempt++)
+        {
+            NpgsqlConnection connection = new(connectionString);
+            try
+            {
+                await connection.OpenAsync();
+                return connection;
+            }
+            catch (NpgsqlException exception)
+                when (attempt < 3
+                      && exception.InnerException is System.Net.Sockets.SocketException
+                      {
+                          SocketErrorCode: System.Net.Sockets.SocketError.ConnectionRefused
+                              or System.Net.Sockets.SocketError.TimedOut
+                      })
+            {
+                await connection.DisposeAsync();
+                await Task.Delay(TimeSpan.FromMilliseconds(100 * attempt));
+            }
+            catch
+            {
+                await connection.DisposeAsync();
+                throw;
+            }
+        }
     }
 }
 
