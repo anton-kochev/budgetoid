@@ -132,16 +132,24 @@ public sealed class DatabaseTransportSecurityTests
         await Assert.That(effective).IsEqualTo(SslMode.VerifyFull);
     }
 
+    /// <summary>A port no message would contain by coincidence; nothing listens on it.</summary>
+    private const int DistinctivePort = 54_917;
+
     [Test]
     public async Task ARefusalForAWeakSslMode_NeverQuotesTheConnectionString()
     {
         // Arrange — the refusal is read by whoever reads the boot log, and the string it refuses carries
         // a password. Username, host, port and database are asserted too: a message that quoted the
-        // string with the password masked out would still be quoting it. The port is the container's
-        // randomly mapped one, asserted not to be 5432, so it cannot appear in a message by coincidence.
+        // string with the password masked out would still be quoting it. The port is set to one no
+        // message would carry by coincidence: the refusal fires before any connection, and the server's
+        // own port is 5432 whenever the suite runs on a server it did not start.
         await using PostgresTestHost host = new();
         await host.StartAsync();
-        NpgsqlConnectionStringBuilder refused = new(host.AppConnectionString) { SslMode = SslMode.Require };
+        NpgsqlConnectionStringBuilder refused = new(host.AppConnectionString)
+        {
+            SslMode = SslMode.Require,
+            Port = DistinctivePort,
+        };
 
         // Act
         Exception? failure = await CaptureStartupFailureAsync(
@@ -155,7 +163,6 @@ public sealed class DatabaseTransportSecurityTests
         await Assert.That(messages).DoesNotContain(refused.Host!);
         await Assert.That(messages).DoesNotContain(refused.Database!);
         await Assert.That(messages).DoesNotContain(refused.Username!);
-        await Assert.That(refused.Port).IsNotEqualTo(5432);
         await Assert.That(messages).DoesNotContain(refused.Port.ToString(CultureInfo.InvariantCulture));
     }
 
