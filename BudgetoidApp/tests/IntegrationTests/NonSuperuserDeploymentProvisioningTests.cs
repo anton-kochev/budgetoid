@@ -1,6 +1,5 @@
 using Infrastructure.Persistence.Provisioning;
 using Npgsql;
-using Testcontainers.PostgreSql;
 
 namespace IntegrationTests;
 
@@ -9,7 +8,7 @@ namespace IntegrationTests;
 /// role that may create roles and owns the schema, and is <b>not</b> a superuser. Azure Database for
 /// PostgreSQL hands out no superuser to anyone — the deploy identity is a member of
 /// <c>azure_pg_admin</c> — so every privilege check inside <c>app-role-grants.sql</c> is unverified by
-/// a test that runs the script as the container account.
+/// a test that runs the script as the server's superuser.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -27,8 +26,21 @@ namespace IntegrationTests;
 /// statements provisioning sends are within reach of the identity that will send them.
 /// </para>
 /// </remarks>
-public sealed class NonSuperuserDeploymentProvisioningTests
+public sealed class NonSuperuserDeploymentProvisioningTests : IAsyncDisposable
 {
+    /// <summary>
+    /// This test's database and roles on the shared server; see <see cref="ProvisioningSandbox" />.
+    /// Every role here is the sandbox's, so a deploy principal created by one test is never the one
+    /// another test is restricting.
+    /// </summary>
+    private ProvisioningSandbox? _sandbox;
+
+    private ProvisioningSandbox Sandbox =>
+        _sandbox ?? throw new InvalidOperationException("The sandbox is created before each test.");
+
+    /// <summary>The application role this file provisions, in place of <c>budgetoid_app</c>.</summary>
+    private string AppRoleName => Sandbox.Role.Name;
+
     /// <summary>
     /// The deploy principal this file provisions through: <c>LOGIN CREATEROLE</c>, owner of the
     /// application database, and no superuser attribute.
@@ -41,17 +53,17 @@ public sealed class NonSuperuserDeploymentProvisioningTests
     /// ADMIN option". The script's <c>DO</c> block creates the role itself, which is what makes this
     /// work and is also how production reaches the same state.
     /// </remarks>
-    private const string DeployAdminRole = "deploy_admin";
+    private string DeployAdminRole => Sandbox.HelperRole("deploy_admin");
 
     /// <summary>
-    /// Password for <see cref="DeployAdminRole"/>. A constant is fine: the container lives for one
-    /// test and is unreachable from outside it.
+    /// Password for <see cref="DeployAdminRole"/>. A constant is fine: the role lives for one test and
+    /// is dropped with its sandbox.
     /// </summary>
     private const string DeployAdminPassword = "deploy-admin-password";
 
     /// <summary>
     /// The session setting the isolation policies read. Setting it as a role default is the statement
-    /// that broke the deploy, and re-sending it below is what proves this container reproduces the
+    /// that broke the deploy, and re-sending it below is what proves this server reproduces the
     /// Azure restriction rather than merely running a different script successfully.
     /// </summary>
     private const string PlaceholderParameter = "app.current_budget_id";
@@ -60,10 +72,21 @@ public sealed class NonSuperuserDeploymentProvisioningTests
     /// A role holding <c>ALL WITH GRANT OPTION</c> on schema <c>public</c> and on the database, and
     /// owning neither — the part <c>azure_pg_admin</c> plays for the deploy principal on Azure.
     /// </summary>
-    private const string GrantHolderRole = "grant_holder";
+    private string GrantHolderRole => Sandbox.HelperRole("grant_holder");
 
     /// <summary>A second holder of the same grant option, for the two-holder refusal.</summary>
-    private const string SecondGrantHolderRole = "second_holder";
+    private string SecondGrantHolderRole => Sandbox.HelperRole("second_holder");
+
+    [Before(Test)]
+    public async Task CreateSandboxAsync() => _sandbox = await ProvisioningSandbox.CreateAsync();
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_sandbox is not null)
+        {
+            await _sandbox.DisposeAsync();
+        }
+    }
 
     [Test]
     public async Task ProvisionAsync_AsANonSuperuserCreateroleAdmin_ProvisionsTheDatabase()
@@ -72,30 +95,29 @@ public sealed class NonSuperuserDeploymentProvisioningTests
         // allowed to create roles, owner of the database (which in PostgreSQL 15+ is what carries
         // CREATE on schema public, so the migration and the grants have somewhere to land), and
         // without the superuser attribute that makes every privilege check below vacuous.
-        await using PostgreSqlContainer container = await StartBareContainerAsync();
-        await using (NpgsqlConnection superuser = await OpenSuperuserAsync(container))
+        await using (NpgsqlConnection superuser = await OpenSuperuserAsync())
         {
             await ExecuteAsync(
                 superuser,
                 $"create role {DeployAdminRole} with login createrole "
                 + $"password '{DeployAdminPassword}'");
-            await ExecuteAsync(superuser, $"alter database budgetoid owner to {DeployAdminRole}");
+            await ExecuteAsync(superuser, $"alter database {Sandbox.Database} owner to {DeployAdminRole}");
         }
 
-        string deployAdminConnectionString = BuildDeployAdminConnectionString(container);
+        string deployAdminConnectionString = BuildDeployAdminConnectionString();
 
         // Act
         Exception? provisioningFailure = null;
         try
         {
-            await DeploymentDatabaseProvisioning.ProvisionAsync(deployAdminConnectionString);
+            await DeploymentDatabaseProvisioning.ProvisionAsync(deployAdminConnectionString, Sandbox.Role);
         }
         catch (Exception exception)
         {
             provisioningFailure = exception;
         }
 
-        await using NpgsqlConnection admin = await OpenSuperuserAsync(container);
+        await using NpgsqlConnection admin = await OpenSuperuserAsync();
         bool deployAdminIsSuperuser = await IsSuperuserAsync(admin, DeployAdminRole);
         (bool roleExists, bool canLogin, bool hasNoPassword) = await ReadAppRoleAsync(admin);
 
@@ -116,7 +138,7 @@ public sealed class NonSuperuserDeploymentProvisioningTests
         // Taken back at once: a stored session default is itself a widening the reach verifier
         // refuses, and the counter-control has already said what it came to say.
         await ExecuteAsync(
-            deployAdmin, $"alter role {DatabaseProvisioning.AppRoleName} reset statement_timeout");
+            deployAdmin, $"alter role {AppRoleName} reset statement_timeout");
 
         // The membership this principal holds IN the application role because it created it.
         // PostgreSQL grants it only to a creator that is not a superuser (measured on
@@ -134,7 +156,7 @@ public sealed class NonSuperuserDeploymentProvisioningTests
         Exception? reachFailure = null;
         try
         {
-            await DeploymentDatabaseProvisioning.VerifyAppRoleReachAsync(deployAdminConnectionString);
+            await DeploymentDatabaseProvisioning.VerifyAppRoleReachAsync(deployAdminConnectionString, Sandbox.Role);
         }
         catch (Exception exception)
         {
@@ -163,7 +185,7 @@ public sealed class NonSuperuserDeploymentProvisioningTests
     [Test]
     public async Task ProvisionAsync_AsAPrincipalInheritingTheOneSchemaGrantOptionHolder_ProvisionsTheDatabase()
     {
-        // Arrange — the Azure shape. The container superuser keeps the database, as the platform
+        // Arrange — the Azure shape. The superuser keeps the database, as the platform
         // keeps it on Azure; the deploy principal owns nothing and reaches schema public and the
         // database only by inheriting a role that holds ALL WITH GRANT OPTION on both, as a member
         // of azure_pg_admin does. Every GRANT USAGE the script sends is then recorded with that
@@ -174,37 +196,36 @@ public sealed class NonSuperuserDeploymentProvisioningTests
         // grant-option holder takes back only that holder's own entries, and PUBLIC's TEMPORARY is
         // the owner's. That refusal is correct and is the database rule's to report; leaving it in
         // would make this test red for a reason it is not about.
-        await using PostgreSqlContainer container = await StartBareContainerAsync();
-        await using (NpgsqlConnection superuser = await OpenSuperuserAsync(container))
+        await using (NpgsqlConnection superuser = await OpenSuperuserAsync())
         {
             await ExecuteAsync(superuser, $"create role {GrantHolderRole} nologin");
             await ExecuteAsync(
                 superuser, $"grant all on schema public to {GrantHolderRole} with grant option");
             await ExecuteAsync(
-                superuser, $"grant all on database budgetoid to {GrantHolderRole} with grant option");
+                superuser, $"grant all on database {Sandbox.Database} to {GrantHolderRole} with grant option");
             await ExecuteAsync(
                 superuser,
                 $"create role {DeployAdminRole} with login createrole "
                 + $"password '{DeployAdminPassword}'");
             await ExecuteAsync(
                 superuser, $"grant {GrantHolderRole} to {DeployAdminRole} with inherit true");
-            await ExecuteAsync(superuser, "revoke temporary on database budgetoid from public");
+            await ExecuteAsync(superuser, $"revoke temporary on database {Sandbox.Database} from public");
         }
 
-        string deployAdminConnectionString = BuildDeployAdminConnectionString(container);
+        string deployAdminConnectionString = BuildDeployAdminConnectionString();
 
         // Act
         Exception? provisioningFailure = null;
         try
         {
-            await DeploymentDatabaseProvisioning.ProvisionAsync(deployAdminConnectionString);
+            await DeploymentDatabaseProvisioning.ProvisionAsync(deployAdminConnectionString, Sandbox.Role);
         }
         catch (Exception exception)
         {
             provisioningFailure = exception;
         }
 
-        await using NpgsqlConnection admin = await OpenSuperuserAsync(container);
+        await using NpgsqlConnection admin = await OpenSuperuserAsync();
         IReadOnlyList<string> usageGrantors = await ReadSchemaPublicUsageGrantorsAsync(admin);
 
         // Assert — the script's own GRANT USAGE landed with the holder as its grantor, which is the
@@ -222,14 +243,13 @@ public sealed class NonSuperuserDeploymentProvisioningTests
         // was made by somebody who switched to it on purpose, and the principal's REVOKE does not
         // reach it. Provisioned as the superuser, then the holder's grant made by hand, then
         // verified as the principal.
-        await using PostgreSqlContainer container = await StartBareContainerAsync();
-        await using (NpgsqlConnection superuser = await OpenSuperuserAsync(container))
+        await using (NpgsqlConnection superuser = await OpenSuperuserAsync())
         {
             await ExecuteAsync(superuser, $"create role {GrantHolderRole} nologin");
             await ExecuteAsync(
                 superuser, $"grant all on schema public to {GrantHolderRole} with grant option");
             await ExecuteAsync(
-                superuser, $"grant all on database budgetoid to {GrantHolderRole} with grant option");
+                superuser, $"grant all on database {Sandbox.Database} to {GrantHolderRole} with grant option");
             await ExecuteAsync(
                 superuser,
                 $"create role {DeployAdminRole} with login createrole "
@@ -237,16 +257,16 @@ public sealed class NonSuperuserDeploymentProvisioningTests
             await ExecuteAsync(
                 superuser,
                 $"grant {GrantHolderRole} to {DeployAdminRole} with inherit false, set true");
-            await ExecuteAsync(superuser, "revoke temporary on database budgetoid from public");
+            await ExecuteAsync(superuser, $"revoke temporary on database {Sandbox.Database} from public");
         }
 
-        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+        await DeploymentDatabaseProvisioning.ProvisionAsync(Sandbox.AdminConnectionString, Sandbox.Role);
 
-        await using NpgsqlConnection admin = await OpenSuperuserAsync(container);
+        await using NpgsqlConnection admin = await OpenSuperuserAsync();
         await ExecuteAsync(
             admin,
             $"set role {GrantHolderRole}; "
-            + $"grant usage on schema public to {DatabaseProvisioning.AppRoleName}; reset role");
+            + $"grant usage on schema public to {AppRoleName}; reset role");
         IReadOnlyList<string> usageGrantors = await ReadSchemaPublicUsageGrantorsAsync(admin);
         bool principalInheritsHolder =
             await HasRoleAsync(admin, DeployAdminRole, GrantHolderRole, "USAGE");
@@ -258,7 +278,7 @@ public sealed class NonSuperuserDeploymentProvisioningTests
         try
         {
             await DeploymentDatabaseProvisioning.VerifyAppRoleReachAsync(
-                BuildDeployAdminConnectionString(container));
+                BuildDeployAdminConnectionString(), Sandbox.Role);
         }
         catch (Exception exception)
         {
@@ -290,8 +310,7 @@ public sealed class NonSuperuserDeploymentProvisioningTests
         // its documentation for GRANT leaves which one unspecified, so the principal's own REVOKE cannot be relied on to reach the
         // entry the other left. Only a single inherited holder makes the grantor something the
         // principal's statements decide.
-        await using PostgreSqlContainer container = await StartBareContainerAsync();
-        await using (NpgsqlConnection superuser = await OpenSuperuserAsync(container))
+        await using (NpgsqlConnection superuser = await OpenSuperuserAsync())
         {
             await ExecuteAsync(superuser, $"create role {GrantHolderRole} nologin");
             await ExecuteAsync(superuser, $"create role {SecondGrantHolderRole} nologin");
@@ -301,7 +320,7 @@ public sealed class NonSuperuserDeploymentProvisioningTests
                 superuser,
                 $"grant all on schema public to {SecondGrantHolderRole} with grant option");
             await ExecuteAsync(
-                superuser, $"grant all on database budgetoid to {GrantHolderRole} with grant option");
+                superuser, $"grant all on database {Sandbox.Database} to {GrantHolderRole} with grant option");
             await ExecuteAsync(
                 superuser,
                 $"create role {DeployAdminRole} with login createrole "
@@ -310,7 +329,7 @@ public sealed class NonSuperuserDeploymentProvisioningTests
                 superuser, $"grant {GrantHolderRole} to {DeployAdminRole} with inherit true");
             await ExecuteAsync(
                 superuser, $"grant {SecondGrantHolderRole} to {DeployAdminRole} with inherit true");
-            await ExecuteAsync(superuser, "revoke temporary on database budgetoid from public");
+            await ExecuteAsync(superuser, $"revoke temporary on database {Sandbox.Database} from public");
         }
 
         // Act
@@ -318,14 +337,14 @@ public sealed class NonSuperuserDeploymentProvisioningTests
         try
         {
             await DeploymentDatabaseProvisioning.ProvisionAsync(
-                BuildDeployAdminConnectionString(container));
+                BuildDeployAdminConnectionString(), Sandbox.Role);
         }
         catch (Exception exception)
         {
             provisioningFailure = exception;
         }
 
-        await using NpgsqlConnection admin = await OpenSuperuserAsync(container);
+        await using NpgsqlConnection admin = await OpenSuperuserAsync();
         IReadOnlyList<string> usageGrantors = await ReadSchemaPublicUsageGrantorsAsync(admin);
         long inheritedHolders = await ScalarLongAsync(
             admin,
@@ -351,46 +370,18 @@ public sealed class NonSuperuserDeploymentProvisioningTests
     }
 
     /// <summary>
-    /// Starts an empty PostgreSQL container. Same builder as the test hosts, so this runs against the
-    /// same server version as the rest of the suite; what is missing is everything they do afterwards.
-    /// </summary>
-    /// <remarks>
-    /// The start goes through <see cref="StartGuard" />, which is a leak guard: the call site binds its
-    /// <c>await using</c> variable only after this method returns, so a throw here would leave a
-    /// container Docker has already started with nothing left to dispose it, and each such leak makes
-    /// the next start likelier to time out. The reasoning lives on <see cref="StartGuard" /> rather
-    /// than being restated here — this class and <see cref="DeploymentProvisioningTests" /> are the two
-    /// that deliberately keep containers of their own, and the guard used to be written out in both,
-    /// which is a guard that can be corrected once. Guarded by shape-match to a documented failure
-    /// mode, not because a failure was captured here.
-    /// </remarks>
-    private static Task<PostgreSqlContainer> StartBareContainerAsync() =>
-        StartGuard.StartAsync(
-            new PostgreSqlBuilder(SharedPostgresCluster.Image)
-                .WithDatabase("budgetoid")
-                .WithUsername("postgres")
-                .WithPassword("postgres")
-                .Build(),
-            container => container.StartAsync());
-
-    /// <summary>
-    /// Opens a connection as the container account, which is a superuser. Used only to build the
+    /// Opens a connection to the sandbox database as the server's superuser. Used only to build the
     /// restricted principal and to read the catalogs afterwards — never to provision, which is the
     /// entire point of this file.
     /// </summary>
-    private static async Task<NpgsqlConnection> OpenSuperuserAsync(PostgreSqlContainer container)
-    {
-        NpgsqlConnection connection = new(container.GetConnectionString());
-        await connection.OpenAsync();
-        return connection;
-    }
+    private Task<NpgsqlConnection> OpenSuperuserAsync() => Sandbox.OpenAdminAsync();
 
     /// <summary>
-    /// The container's connection string re-pointed at <see cref="DeployAdminRole"/>, so provisioning
+    /// The sandbox's connection string re-pointed at <see cref="DeployAdminRole"/>, so provisioning
     /// reaches the same database over the same options as everything else here.
     /// </summary>
-    private static string BuildDeployAdminConnectionString(PostgreSqlContainer container) =>
-        new NpgsqlConnectionStringBuilder(container.GetConnectionString())
+    private string BuildDeployAdminConnectionString() =>
+        new NpgsqlConnectionStringBuilder(Sandbox.AdminConnectionString)
         {
             Username = DeployAdminRole,
             Password = DeployAdminPassword,
@@ -404,14 +395,14 @@ public sealed class NonSuperuserDeploymentProvisioningTests
     /// The assignment is spliced rather than bound because <c>ALTER ROLE ... SET</c> takes no
     /// parameter; both call sites pass a constant of this class.
     /// </remarks>
-    private static async Task<string?> TrySetRoleDefaultAsync(
+    private async Task<string?> TrySetRoleDefaultAsync(
         NpgsqlConnection connection,
         string assignment)
     {
         try
         {
             await ExecuteAsync(
-                connection, $"alter role {DatabaseProvisioning.AppRoleName} set {assignment}");
+                connection, $"alter role {AppRoleName} set {assignment}");
             return null;
         }
         catch (PostgresException exception)
@@ -435,7 +426,7 @@ public sealed class NonSuperuserDeploymentProvisioningTests
     /// <c>pg_authid</c> in one row — the same three facts <c>DeploymentProvisioningTests</c> pins on
     /// the superuser path, asserted here about the restricted one.
     /// </summary>
-    private static async Task<(bool Exists, bool CanLogin, bool HasNoPassword)> ReadAppRoleAsync(
+    private async Task<(bool Exists, bool CanLogin, bool HasNoPassword)> ReadAppRoleAsync(
         NpgsqlConnection connection)
     {
         await using NpgsqlCommand command = new(
@@ -445,7 +436,7 @@ public sealed class NonSuperuserDeploymentProvisioningTests
             where rolname = @role
             """,
             connection);
-        command.Parameters.AddWithValue("role", DatabaseProvisioning.AppRoleName);
+        command.Parameters.AddWithValue("role", AppRoleName);
 
         await using NpgsqlDataReader reader = await command.ExecuteReaderAsync();
         if (!await reader.ReadAsync())
@@ -461,7 +452,7 @@ public sealed class NonSuperuserDeploymentProvisioningTests
     /// member of the application role (<c>roleid</c> = the application role,
     /// <c>member</c> = the creator).
     /// </summary>
-    private static async Task<bool> CreatorMembershipExistsAsync(
+    private async Task<bool> CreatorMembershipExistsAsync(
         NpgsqlConnection connection,
         string creator)
     {
@@ -475,7 +466,7 @@ public sealed class NonSuperuserDeploymentProvisioningTests
                 where granted.rolname = @appRole and holder.rolname = @creator)
             """,
             connection);
-        command.Parameters.AddWithValue("appRole", DatabaseProvisioning.AppRoleName);
+        command.Parameters.AddWithValue("appRole", AppRoleName);
         command.Parameters.AddWithValue("creator", creator);
         return (bool)(await command.ExecuteScalarAsync())!;
     }
@@ -484,7 +475,7 @@ public sealed class NonSuperuserDeploymentProvisioningTests
     /// The recorded grantor of every <c>USAGE</c> entry on schema <c>public</c> whose grantee is the
     /// application role, raw from <c>nspacl</c>.
     /// </summary>
-    private static async Task<IReadOnlyList<string>> ReadSchemaPublicUsageGrantorsAsync(
+    private async Task<IReadOnlyList<string>> ReadSchemaPublicUsageGrantorsAsync(
         NpgsqlConnection connection)
     {
         await using NpgsqlCommand command = new(
@@ -498,7 +489,7 @@ public sealed class NonSuperuserDeploymentProvisioningTests
             order by 1
             """,
             connection);
-        command.Parameters.AddWithValue("role", DatabaseProvisioning.AppRoleName);
+        command.Parameters.AddWithValue("role", AppRoleName);
 
         List<string> grantors = [];
         await using NpgsqlDataReader reader = await command.ExecuteReaderAsync();
