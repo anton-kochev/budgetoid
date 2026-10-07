@@ -34,7 +34,27 @@ public sealed class ClusterRunTests
         await Assert.That(run.RunId).Matches("^[0-9a-f]{8}$");
         await Assert.That(run.TemplateDatabase).IsEqualTo($"bt_{run.RunId}_template");
         await Assert.That(run.TestDatabase(7)).IsEqualTo($"bt_{run.RunId}_t00007");
+        await Assert.That(run.SandboxDatabase(7)).IsEqualTo($"bt_{run.RunId}_d00007");
     }
+
+    [Test]
+    public async Task Create_NamesEveryRoleUnderItsOwnPrefix()
+    {
+        // Act
+        ClusterRun run = ClusterRun.Create();
+
+        // Assert
+        await Assert.That(run.SandboxAppRole(7).Name).IsEqualTo($"bt_{run.RunId}_a00007");
+        await Assert.That(run.SandboxHelperRole(7, "middle")).IsEqualTo($"bt_{run.RunId}_h00007_middle");
+    }
+
+    [Test]
+    [Arguments("")]
+    [Arguments("Middle")]
+    [Arguments("mid dle")]
+    [Arguments("x; drop role postgres")]
+    public async Task SandboxHelperRole_RefusesALabelThatIsNotLowercaseLettersAndUnderscores(string label) =>
+        await Assert.That(() => ClusterRun.Create().SandboxHelperRole(1, label)).Throws<ArgumentException>();
 
     /// <summary>
     /// The sweep can only ever reach names a run made. <c>budgetoid</c> is the database a Pithos session
@@ -43,6 +63,7 @@ public sealed class ClusterRunTests
     [Test]
     [Arguments("bt_deadbeef_t00001", true)]
     [Arguments("bt_deadbeef_template", true)]
+    [Arguments("bt_deadbeef_d00001", true)]
     [Arguments("budgetoid", false)]
     [Arguments("postgres", false)]
     [Arguments("template1", false)]
@@ -51,6 +72,44 @@ public sealed class ClusterRunTests
     [Arguments("xbt_deadbeef_t00001", false)]
     public async Task IsRunDatabase_MatchesOnlyRunPrefixedNames(string name, bool expected) =>
         await Assert.That(ClusterRun.IsRunDatabase(name)).IsEqualTo(expected);
+
+    /// <summary>
+    /// Roles are server-wide, so the sweep reclaims them too — and can only ever reach names a run
+    /// made. <c>budgetoid_app</c> is the role every run's API connects as and must survive every sweep.
+    /// </summary>
+    [Test]
+    [Arguments("bt_deadbeef_a00001", true)]
+    [Arguments("bt_deadbeef_h00001_middle", true)]
+    [Arguments("budgetoid_app", false)]
+    [Arguments("postgres", false)]
+    [Arguments("bt_deadbeef_t00001", false)]
+    [Arguments("bt_deadbeef_h00001_", false)]
+    [Arguments("bt_DEADBEEF_a00001", false)]
+    [Arguments("xbt_deadbeef_a00001", false)]
+    public async Task IsRunRole_MatchesOnlyRunPrefixedNames(string name, bool expected) =>
+        await Assert.That(ClusterRun.IsRunRole(name)).IsEqualTo(expected);
+
+    [Test]
+    [NotInParallel(SweepTests)]
+    public async Task SweepAsync_DropsTheRolesOfARunNobodyLeases_EvenOnesHoldingAServerWidePrivilege()
+    {
+        // Arrange — a dead run's role that still holds something outside any database it made, which
+        // a bare DROP ROLE refuses with 2BP01. A default privilege in the postgres database rather than
+        // a tablespace grant: its catalog row is this role's alone, where pg_default's ACL is one row
+        // every test granting on it would be writing at once. To PUBLIC because a role's default
+        // privileges to itself are the built-in ones, and PostgreSQL stores no row for those.
+        string maintenance = await SharedPostgresCluster.MaintenanceConnectionStringAsync();
+        ClusterRun dead = ClusterRun.Create();
+        string role = dead.SandboxAppRole(1).Name;
+        await ExecuteAsync(maintenance, $"create role {role}");
+        await ExecuteAsync(maintenance, $"alter default privileges for role {role} grant select on tables to public");
+
+        // Act
+        await ClusterRun.SweepAsync(maintenance);
+
+        // Assert
+        await Assert.That(await RoleExistsAsync(maintenance, role)).IsFalse();
+    }
 
     [Test]
     [NotInParallel(SweepTests)]
@@ -151,6 +210,15 @@ public sealed class ClusterRunTests
         await connection.OpenAsync();
         await using NpgsqlCommand command = new(sql, connection);
         await command.ExecuteNonQueryAsync();
+    }
+
+    private static async Task<bool> RoleExistsAsync(string connectionString, string role)
+    {
+        await using NpgsqlConnection connection = new(connectionString);
+        await connection.OpenAsync();
+        await using NpgsqlCommand command = new("select exists (select from pg_roles where rolname = $1)", connection);
+        command.Parameters.Add(new NpgsqlParameter { Value = role });
+        return (bool)(await command.ExecuteScalarAsync())!;
     }
 
     private static async Task<bool> DatabaseExistsAsync(string connectionString, string database)

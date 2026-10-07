@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text.RegularExpressions;
+using Infrastructure.Persistence.Provisioning;
 using Npgsql;
 
 namespace IntegrationTests;
@@ -50,7 +51,34 @@ internal sealed partial class ClusterRun
 
     public static bool IsRunDatabase(string name) => RunDatabase().IsMatch(name);
 
+    /// <summary>Whether a role name is one a run made, and so one a sweep may drop.</summary>
+    public static bool IsRunRole(string name) => RunRole().IsMatch(name);
+
     public string TestDatabase(int number) => $"bt_{RunId}_t{number:d5}";
+
+    /// <summary>
+    /// The empty database of one <see cref="ProvisioningSandbox" />: created from <c>template0</c>, not
+    /// cloned from <see cref="TemplateDatabase" />, because a deployment test provisions it itself.
+    /// </summary>
+    public string SandboxDatabase(int number) => $"bt_{RunId}_d{number:d5}";
+
+    /// <summary>The application role one <see cref="ProvisioningSandbox" /> provisions in place of <c>budgetoid_app</c>.</summary>
+    public AppRole SandboxAppRole(int number) => AppRole.For($"bt_{RunId}_a{number:d5}");
+
+    /// <summary>
+    /// Any other role a sandbox's test creates — a bystander, a middle grantor. Labelled so a failure
+    /// that names the role says which one it was.
+    /// </summary>
+    /// <exception cref="ArgumentException">The label is not lowercase letters and underscores.</exception>
+    public string SandboxHelperRole(int number, string label)
+    {
+        if (!HelperLabel().IsMatch(label))
+        {
+            throw new ArgumentException("A helper role label is lowercase letters and underscores.", nameof(label));
+        }
+
+        return $"bt_{RunId}_h{number:d5}_{label}";
+    }
 
     /// <summary>
     /// Takes this run's lease on a dedicated connection and returns it; the lease ends when it is
@@ -76,50 +104,78 @@ internal sealed partial class ClusterRun
     }
 
     /// <summary>
-    /// Drops every database whose run holds no lease. A run is tested by trying its lease: success
-    /// means nobody holds it, and the sweep keeps it while it drops that run's databases, so the run
-    /// cannot come back to life underneath.
+    /// Drops every database and role whose run holds no lease. A run is tested by trying its lease:
+    /// success means nobody holds it, and the sweep keeps it while it drops that run's leftovers, so
+    /// the run cannot come back to life underneath.
     /// </summary>
+    /// <remarks>
+    /// Databases go before roles: a role's grants inside a database go with the database, and what is
+    /// left — privileges on server-wide objects such as a tablespace — is what <see cref="DropRoleAsync" />
+    /// clears before the role itself.
+    /// </remarks>
     public static async Task SweepAsync(string maintenanceConnectionString)
     {
         await using NpgsqlConnection connection = new(Unpooled(maintenanceConnectionString));
         await connection.OpenAsync();
 
-        List<string> databases = [];
-        await using (NpgsqlCommand list = new("select datname from pg_database", connection))
-        await using (NpgsqlDataReader reader = await list.ExecuteReaderAsync())
-        {
-            while (await reader.ReadAsync())
-            {
-                string name = reader.GetString(0);
-                if (IsRunDatabase(name))
-                {
-                    databases.Add(name);
-                }
-            }
-        }
+        List<string> databases = await ReadNamesAsync(connection, "select datname from pg_database", IsRunDatabase);
+        List<string> roles = await ReadNamesAsync(connection, "select rolname from pg_roles", IsRunRole);
 
-        foreach (IGrouping<string, string> run in databases.GroupBy(name => name.Substring(3, 8)))
+        foreach (string runId in databases.Concat(roles).Select(name => name.Substring(3, 8)).Distinct())
         {
-            if (!await TryLockAsync(connection, "pg_try_advisory_lock", run.Key))
+            if (!await TryLockAsync(connection, "pg_try_advisory_lock", runId))
             {
                 continue;
             }
 
             try
             {
-                foreach (string database in run)
+                foreach (string database in databases.Where(name => name.Substring(3, 8) == runId))
                 {
                     // The name matched RunDatabase(), so it needs no quoting and carries no input.
                     await using NpgsqlCommand drop = new($"drop database if exists {database} with (force)", connection);
                     await drop.ExecuteNonQueryAsync();
                 }
+
+                foreach (string role in roles.Where(name => name.Substring(3, 8) == runId))
+                {
+                    await DropRoleAsync(connection, role);
+                }
             }
             finally
             {
-                await TryLockAsync(connection, "pg_advisory_unlock", run.Key);
+                await TryLockAsync(connection, "pg_advisory_unlock", runId);
             }
         }
+    }
+
+    /// <summary>
+    /// Drops a run's role, first revoking whatever it still holds where <paramref name="connection" />
+    /// can reach: its database, and the server-wide objects every database shares.
+    /// </summary>
+    /// <remarks>
+    /// A bare <c>DROP ROLE</c> refuses a role that holds any privilege (2BP01), and a deployment test's
+    /// whole job is to leave its role holding privileges it should not. <c>DROP OWNED BY</c> clears them,
+    /// but only in the current database and on shared objects — so the role's own databases must be
+    /// gone first, which both callers ensure.
+    /// </remarks>
+    public static async Task DropRoleAsync(NpgsqlConnection connection, string role)
+    {
+        if (!IsRunRole(role))
+        {
+            throw new ArgumentException($"{role} is not a role a run made.", nameof(role));
+        }
+
+        await using NpgsqlCommand exists = new("select exists (select from pg_roles where rolname = $1)", connection);
+        exists.Parameters.Add(new NpgsqlParameter { Value = role });
+        if (!(bool)(await exists.ExecuteScalarAsync())!)
+        {
+            return;
+        }
+
+        // The name matched RunRole(), so it needs no quoting and carries no input.
+        await using NpgsqlCommand drop = new($"drop owned by {role}; drop role if exists {role}", connection);
+        await drop.ExecuteNonQueryAsync();
     }
 
     /// <summary>
@@ -187,6 +243,30 @@ internal sealed partial class ClusterRun
     private static string Unpooled(string connectionString) =>
         new NpgsqlConnectionStringBuilder(connectionString) { Pooling = false }.ConnectionString;
 
-    [GeneratedRegex("^bt_[0-9a-f]{8}_(template|t[0-9]{5})$")]
+    private static async Task<List<string>> ReadNamesAsync(
+        NpgsqlConnection connection, string sql, Func<string, bool> belongsToARun)
+    {
+        List<string> names = [];
+        await using NpgsqlCommand list = new(sql, connection);
+        await using NpgsqlDataReader reader = await list.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            string name = reader.GetString(0);
+            if (belongsToARun(name))
+            {
+                names.Add(name);
+            }
+        }
+
+        return names;
+    }
+
+    [GeneratedRegex(@"\Abt_[0-9a-f]{8}_(template|t[0-9]{5}|d[0-9]{5})\z")]
     private static partial Regex RunDatabase();
+
+    [GeneratedRegex(@"\Abt_[0-9a-f]{8}_(a[0-9]{5}|h[0-9]{5}_[a-z_]+)\z")]
+    private static partial Regex RunRole();
+
+    [GeneratedRegex(@"\A[a-z_]+\z")]
+    private static partial Regex HelperLabel();
 }

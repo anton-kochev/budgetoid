@@ -66,7 +66,7 @@ internal static class SharedPostgresCluster
     /// the isolation policies — all per-database objects, so a clone inherits them whole and neither
     /// the migration nor the grants script has to run again per test.
     /// </summary>
-    private static readonly ClusterRun Run = ClusterRun.Create();
+    public static ClusterRun Run { get; } = ClusterRun.Create();
 
     /// <summary>
     /// The connection holding this run's lease, kept open for the life of the process. Never disposed:
