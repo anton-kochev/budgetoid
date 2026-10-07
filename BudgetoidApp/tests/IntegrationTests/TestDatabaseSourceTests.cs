@@ -122,11 +122,11 @@ public sealed class TestDatabaseSourceTests
     public async Task Resolve_RefusesAMalformedUri_NamingTheVariableNotTheSecret(string value)
     {
         // Act
-        ArgumentException exception = await Assert.That(() => TestDatabaseSource.Resolve(Env((Ours, value))))
+        ArgumentException? exception = await Assert.That(() => TestDatabaseSource.Resolve(Env((Ours, value))))
             .Throws<ArgumentException>();
 
         // Assert
-        await Assert.That(exception.Message).Contains(Ours);
+        await Assert.That(exception!.Message).Contains(Ours);
         await Assert.That(exception.Message).DoesNotContain("hunter2");
     }
 

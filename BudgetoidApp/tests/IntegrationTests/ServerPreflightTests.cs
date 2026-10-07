@@ -43,11 +43,11 @@ public sealed class ServerPreflightTests
         ServerProbe probe = Good with { Major = 17, MaxConnections = 100 };
 
         // Act
-        InvalidOperationException exception = await Assert.That(() => ServerPreflight.Ensure(probe, "PITHOS_POSTGRES_URL"))
+        InvalidOperationException? exception = await Assert.That(() => ServerPreflight.Ensure(probe, "PITHOS_POSTGRES_URL"))
             .Throws<InvalidOperationException>();
 
         // Assert
-        await Assert.That(exception.Message).Contains("PITHOS_POSTGRES_URL");
+        await Assert.That(exception!.Message).Contains("PITHOS_POSTGRES_URL");
         await Assert.That(exception.Message).Contains("PostgreSQL 17, production runs 18");
         await Assert.That(exception.Message).Contains("max_connections is 100");
     }
