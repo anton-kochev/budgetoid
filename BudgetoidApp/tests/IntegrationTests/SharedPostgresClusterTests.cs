@@ -38,4 +38,23 @@ public sealed class SharedPostgresClusterTests
             await SharedPostgresCluster.DropDatabaseAsync(connectionString);
         }
     }
+
+    /// <summary>
+    /// The probe reads the real server, and the cluster the suite runs on passes it.
+    /// </summary>
+    [Test]
+    public async Task Cluster_PassesThePreflightItWasAdmittedBy()
+    {
+        // Arrange
+        string maintenance = await SharedPostgresCluster.MaintenanceConnectionStringAsync();
+        await using NpgsqlConnection connection = new(maintenance);
+        await connection.OpenAsync();
+
+        // Act
+        ServerProbe probe = await ServerProbe.ReadAsync(connection);
+
+        // Assert
+        await Assert.That(ServerPreflight.Problems(probe)).IsEmpty();
+        await Assert.That(probe.MaxConnections).IsGreaterThanOrEqualTo(ServerPreflight.RequiredConnections);
+    }
 }

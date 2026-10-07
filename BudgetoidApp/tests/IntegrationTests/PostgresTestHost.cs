@@ -210,6 +210,12 @@ internal static class SharedPostgresCluster
             string maintenance = MaintenanceConnectionString(cluster);
             string template = UnpooledConnectionString(WithDatabase(cluster, Run.TemplateDatabase));
 
+            // Fatal on any shortfall, before this run writes anything to the server.
+            await using (NpgsqlConnection probe = await OpenAsync(UnpooledConnectionString(maintenance)))
+            {
+                ServerPreflight.Ensure(await ServerProbe.ReadAsync(probe), "the test container");
+            }
+
             // Lease first, then sweep: this run is live before it reclaims anyone else's leftovers,
             // so a sweep running in another process at the same moment cannot take it for dead.
             _lease = await Run.AcquireLeaseAsync(maintenance);
