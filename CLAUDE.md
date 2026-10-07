@@ -22,6 +22,7 @@ Personal budget management app. .NET 10 backend + Angular 21 frontend.
 ```sh
 dotnet build BudgetoidApp.sln
 dotnet test
+dotnet test --project tests/IntegrationTests -- --treenode-filter "/*/*/<ClassName>/*"  # one class; --filter is ignored (prints 0/0/0)
 aspire run # or F5 AppHost
 ```
 
@@ -580,6 +581,9 @@ lowest capable layer, the doc describing it says why. See
   than in a runbook. Verification is not optional.
 - Append `Maximum Pool Size=5` to production PostgreSQL connection strings.
 - `Api.csproj` uses `<ContainerFamily>noble-chiseled</ContainerFamily>`; no Dockerfile.
+  The base image resolves to `aspnet:10.0-noble-chiseled-extra` (not invariant-globalization);
+  ask the SDK rather than assuming: `dotnet msbuild BudgetoidApp/Api/Api.csproj -restore
+  -t:ComputeContainerBaseImage -getProperty:ContainerBaseImage`.
 
 ## Code Conventions
 
@@ -606,5 +610,7 @@ lowest capable layer, the doc describing it says why. See
 - Backend: run `dotnet build BudgetoidApp.sln` and `dotnet test` before committing
 - Frontend: run `npm run build && npm test`, `npm run lint`, and `npm run format` before
   committing — the build must come first, one spec reads its output
+- Workflows: lint any `.github/workflows/*.yml` edit with
+  `docker run --rm -v "$PWD":/repo -w /repo rhysd/actionlint:latest .github/workflows/<file>.yml`
 - Commits follow Conventional Commits (`feat:`, `fix:`, `ci:`, `chore:`, …)
 - One logical change per commit
