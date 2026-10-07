@@ -2,7 +2,6 @@ using Infrastructure.Persistence;
 using Infrastructure.Persistence.Provisioning;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
-using Testcontainers.PostgreSql;
 
 namespace IntegrationTests;
 
@@ -37,26 +36,56 @@ namespace IntegrationTests;
 /// ordering guarantee that the grants and the policies do.
 /// </para>
 /// <para>
-/// Every test here spins a <b>bare</b> <see cref="PostgreSqlContainer" /> rather than using
+/// Every test here provisions into a <b>bare</b> <see cref="ProvisioningSandbox" /> rather than using
 /// <c>RepositoryTestHost</c>. That is not a style preference: the host's <c>StartAsync</c> already
 /// runs <c>MigrateAsync</c>, <c>ApplyGrantsAsync</c> and <c>AttachAppRolePasswordAsync</c>, so a test
 /// built on it starts from a database that is already provisioned and could never observe "empty
-/// database becomes a provisioned one" — which is the entire subject of this file. Two tests need no
-/// container at all, and say so where they are.
+/// database becomes a provisioned one" — which is the entire subject of this file. The sandbox's role
+/// stands in for <c>budgetoid_app</c>, which the rest of the suite connects as on the same server, so
+/// every sabotage below lands on a role no other test reads. Two tests need no database at all, and
+/// say so where they are. The tablespace rule is in <see cref="TablespaceReachTests" />, because its
+/// sabotage reaches every role on the server.
 /// </para>
 /// <para>
-/// The container account is a superuser and every schema observation below is made through it. That is
+/// The server's account is a superuser and every schema observation below is made through it. That is
 /// deliberate and not a privilege blind spot: <c>pg_class</c>, <c>pg_policy</c> and <c>pg_authid</c>
 /// describe the cluster, and the cluster reads the same whoever asks. The exceptions are the
 /// application role's own login attempts, which are the one fact only a non-superuser connection can
 /// establish.
 /// </para>
 /// </remarks>
-public sealed class DeploymentProvisioningTests
+public sealed class DeploymentProvisioningTests : IAsyncDisposable
 {
     /// <summary>
-    /// Password these tests attach to the application role. A constant is fine: the container lives
-    /// for one test and is unreachable from outside it. Every character is inside the alphabet
+    /// This test's database and application role on the shared server; see
+    /// <see cref="ProvisioningSandbox" />. Created for every test, including the two that need no
+    /// database — an empty sandbox costs one CREATE DATABASE.
+    /// </summary>
+    private ProvisioningSandbox? _sandbox;
+
+    private ProvisioningSandbox Sandbox =>
+        _sandbox ?? throw new InvalidOperationException("The sandbox is created before each test.");
+
+    /// <summary>
+    /// The application role every test here provisions and sabotages, in place of
+    /// <c>budgetoid_app</c>, which the rest of the suite connects as on the same server.
+    /// </summary>
+    private string AppRoleName => Sandbox.Role.Name;
+
+    [Before(Test)]
+    public async Task CreateSandboxAsync() => _sandbox = await ProvisioningSandbox.CreateAsync();
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_sandbox is not null)
+        {
+            await _sandbox.DisposeAsync();
+        }
+    }
+
+    /// <summary>
+    /// Password these tests attach to the application role. A constant is fine: the role lives for
+    /// one test and is dropped with its sandbox. Every character is inside the alphabet
     /// <c>DatabaseProvisioning</c> permits, so a failure here is never about the password.
     /// </summary>
     private const string AppRolePassword = "deploy-test-password";
@@ -303,13 +332,10 @@ public sealed class DeploymentProvisioningTests
     ];
 
     /// <summary>
-    /// A database name no line of the grant script could spell, so a script that hard-coded the
-    /// container's <c>budgetoid</c> revokes on the wrong database.
+    /// What the missing-role sabotage renames the application role to: a sandbox helper name, so the
+    /// renamed role is still dropped with the sandbox.
     /// </summary>
-    private const string RenamedDatabase = "deploy_target";
-
-    /// <summary>What the missing-role sabotage renames the application role to.</summary>
-    private const string RenamedAppRole = "budgetoid_app_renamed_away";
+    private string RenamedAppRole => Sandbox.HelperRole("renamed_away");
 
     /// <summary>
     /// A predefined role whose membership reaches every table at once, used by the membership
@@ -347,18 +373,17 @@ public sealed class DeploymentProvisioningTests
         // Arrange — an empty database: no schema, no migration history, no application role. This
         // is the state a first production deploy starts from and the only state in which "did
         // provisioning do the work" and "was the work already there" can be told apart.
-        await using PostgreSqlContainer container = await StartBareContainerAsync();
         List<string> logLines = [];
 
         // Act
         await DeploymentDatabaseProvisioning.ProvisionAsync(
-            container.GetConnectionString(),
+            Sandbox.AdminConnectionString, Sandbox.Role,
             log: logLines.Add);
 
-        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await using NpgsqlConnection admin = await OpenAdminAsync();
         bool migratedTableExists = await TableExistsAsync(admin, MigratedTable);
 
-        await using BudgetoidDbContext db = CreateDbContext(container);
+        await using BudgetoidDbContext db = CreateDbContext();
         List<string> pending = (await db.Database.GetPendingMigrationsAsync()).ToList();
 
         // The role's shape, read out of pg_authid rather than inferred. This is the claim the Entra
@@ -372,16 +397,16 @@ public sealed class DeploymentProvisioningTests
         // is what stops the assertions above from passing on a catalog that happens to say the right
         // thing about a role that is nonetheless reachable. 28P01 is password authentication failure.
         (string? refusedUser, string? refusedSqlState) =
-            await TryLoginAsAppRoleAsync(container, AppRolePassword);
+            await TryLoginAsAppRoleAsync(AppRolePassword);
 
         // And the other half of the pairing, which is the point of the whole design: credential-free
         // provisioning is only correct if attaching a credential afterwards still produces a role the
         // application can connect as. Without this, "the role cannot log in" is satisfied by
         // provisioning that produced a permanently unusable role.
         await DatabaseProvisioning.AttachAppRolePasswordAsync(
-            container.GetConnectionString(), AppRolePassword);
+            Sandbox.AdminConnectionString, Sandbox.Role, AppRolePassword);
         (string? connectedAs, string? attachedSqlState) =
-            await TryLoginAsAppRoleAsync(container, AppRolePassword);
+            await TryLoginAsAppRoleAsync(AppRolePassword);
 
         // Assert
         await Assert.That(migratedTableExists).IsTrue();
@@ -395,7 +420,7 @@ public sealed class DeploymentProvisioningTests
         await Assert.That(refusedSqlState).IsEqualTo(PostgresErrorCodes.InvalidPassword);
 
         await Assert.That(attachedSqlState).IsNull();
-        await Assert.That(connectedAs).IsEqualTo(DatabaseProvisioning.AppRoleName);
+        await Assert.That(connectedAs).IsEqualTo(AppRoleName);
 
         // The log is the only visibility a deploy pipeline has into this call, and a run that
         // reported nothing would read identically to a run that did nothing. The assertion is on
@@ -408,20 +433,19 @@ public sealed class DeploymentProvisioningTests
     public async Task ProvisionAsync_RunTwice_Converges()
     {
         // Arrange
-        await using PostgreSqlContainer container = await StartBareContainerAsync();
 
         // Act — idempotency is the deploy contract, not a nicety: this runs on every push, so the
         // second call is the common case and the first is the exception. The second call takes
         // different code paths inside the grants script than the first — ALTER ROLE instead of
         // CREATE ROLE, DROP POLICY finding something to drop — and those paths only ever execute on
         // a re-run, so nothing else in this file exercises them.
-        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
-        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+        await DeploymentDatabaseProvisioning.ProvisionAsync(Sandbox.AdminConnectionString, Sandbox.Role);
+        await DeploymentDatabaseProvisioning.ProvisionAsync(Sandbox.AdminConnectionString, Sandbox.Role);
 
-        await using BudgetoidDbContext db = CreateDbContext(container);
+        await using BudgetoidDbContext db = CreateDbContext();
         List<string> pending = (await db.Database.GetPendingMigrationsAsync()).ToList();
 
-        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await using NpgsqlConnection admin = await OpenAdminAsync();
 
         // Re-reading the role after the second run is what stops this from being a bare "it didn't
         // throw" test, and the credential-free split changes what the danger is. The re-run path
@@ -433,9 +457,9 @@ public sealed class DeploymentProvisioningTests
         // Attaching after a converged re-run, for the same reason as on the first run: the deploy's
         // second step has to still work on the second deploy.
         await DatabaseProvisioning.AttachAppRolePasswordAsync(
-            container.GetConnectionString(), AppRolePassword);
+            Sandbox.AdminConnectionString, Sandbox.Role, AppRolePassword);
         (string? connectedAs, string? sqlState) =
-            await TryLoginAsAppRoleAsync(container, AppRolePassword);
+            await TryLoginAsAppRoleAsync(AppRolePassword);
 
         // Assert
         await Assert.That(pending).IsEmpty();
@@ -443,19 +467,18 @@ public sealed class DeploymentProvisioningTests
         await Assert.That(canLogin).IsTrue();
         await Assert.That(hasNoPassword).IsTrue();
         await Assert.That(sqlState).IsNull();
-        await Assert.That(connectedAs).IsEqualTo(DatabaseProvisioning.AppRoleName);
+        await Assert.That(connectedAs).IsEqualTo(AppRoleName);
     }
 
     [Test]
     public async Task ProvisionAsync_PolicesEveryTenantOwnedTable()
     {
         // Arrange
-        await using PostgreSqlContainer container = await StartBareContainerAsync();
 
         // Act
-        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+        await DeploymentDatabaseProvisioning.ProvisionAsync(Sandbox.AdminConnectionString, Sandbox.Role);
 
-        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await using NpgsqlConnection admin = await OpenAdminAsync();
 
         // The table list is derived from the live schema, never written down. A hardcoded list of
         // the known names would keep passing on the day someone adds the next one, which is the
@@ -510,30 +533,22 @@ public sealed class DeploymentProvisioningTests
     [Test]
     public async Task ProvisionAsync_LeavesTheAppRoleExactlyTheDeclaredDatabasePrivileges()
     {
-        // Arrange — a database created here under a name no line of the grant script could spell,
-        // and provisioned instead of the container's own. The container's database is called
-        // budgetoid, so on it a script that hard-coded REVOKE ... ON DATABASE budgetoid would pass
-        // for one that names current_database(); on this one it revokes on the wrong database and
-        // leaves TEMPORARY standing here.
+        // Arrange — the sandbox's database, whose name (bt_<run>_d#####) no line of the grant script
+        // could spell. A script that hard-coded REVOKE ... ON DATABASE budgetoid would pass on a
+        // database called budgetoid for one that names current_database(); on this one it revokes on
+        // the wrong database and leaves TEMPORARY standing here.
         //
         // The new database's ACL is NULL, which is the state that hands PUBLIC both CONNECT and
-        // TEMPORARY. It is made from template1 and is not a copy of template1's ACL — measured on
-        // postgres:17: template1 carries {=c/postgres,postgres=CTc/postgres}, a database created
-        // from it carries NULL, because CREATE DATABASE does not copy the template's ACL. The
-        // precondition is read rather than trusted.
-        await using PostgreSqlContainer container = await StartBareContainerAsync();
-        await using (NpgsqlConnection maintenance = await OpenAdminOnPostgresDatabaseAsync(container))
-        {
-            await ExecuteAsync(maintenance, $"create database {RenamedDatabase}");
-        }
-
-        string targetConnectionString = BuildConnectionStringFor(container, RenamedDatabase);
+        // TEMPORARY. CREATE DATABASE does not copy its template's ACL — measured on postgres:17:
+        // template1 carries {=c/postgres,postgres=CTc/postgres}, a database created from it carries
+        // NULL. The precondition is read rather than trusted.
+        string targetConnectionString = Sandbox.AdminConnectionString;
         await using NpgsqlConnection admin = new(targetConnectionString);
         await admin.OpenAsync();
         bool aclWasDefault = await DatabaseAclIsDefaultAsync(admin);
 
         // Act
-        await DeploymentDatabaseProvisioning.ProvisionAsync(targetConnectionString);
+        await DeploymentDatabaseProvisioning.ProvisionAsync(targetConnectionString, Sandbox.Role);
 
         bool provisionedHere = await TableExistsAsync(admin, MigratedTable);
 
@@ -541,7 +556,7 @@ public sealed class DeploymentProvisioningTests
         // is the whole subject: the role holds TEMPORARY through PUBLIC unless the script takes it
         // from PUBLIC, and a read of the role's own grants would call that clean.
         IReadOnlyList<string> held =
-            await ReadDatabasePrivilegesAsync(admin, DatabaseProvisioning.AppRoleName);
+            await ReadDatabasePrivilegesAsync(admin, AppRoleName);
         List<string> unexpected = held.Except(DeclaredDatabasePrivileges).ToList();
         List<string> missing = DeclaredDatabasePrivileges.Except(held).ToList();
 
@@ -561,11 +576,11 @@ public sealed class DeploymentProvisioningTests
         // connects to, and because a temporary table is the thing NFR-006 is actually about — a role
         // that can make one has a place to put rows no grant in this repository describes.
         await DatabaseProvisioning.AttachAppRolePasswordAsync(
-            targetConnectionString, AppRolePassword);
+            targetConnectionString, Sandbox.Role, AppRolePassword);
         string? tempTableSqlState = await TryCreateTempTableAsAppRoleAsync(targetConnectionString);
 
         // Assert — the preconditions first, so a red below cannot be a database that started out
-        // already locked down, or a provisioning run that went to the container's own database.
+        // already locked down, or a provisioning run that went to some other database.
         // Then each direction as its own named list, so a failure says which privilege is extra and
         // which is gone rather than that two sets differ.
         await Assert.That(aclWasDefault).IsTrue();
@@ -590,13 +605,12 @@ public sealed class DeploymentProvisioningTests
         // and only a clean database that it must accept separates "found the widening" from
         // "refuses whatever it is shown". It also pins that the rules below are not tripped by
         // something provisioning itself leaves behind.
-        await using PostgreSqlContainer container = await StartBareContainerAsync();
-        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+        await DeploymentDatabaseProvisioning.ProvisionAsync(Sandbox.AdminConnectionString, Sandbox.Role);
 
         // Act
         List<string> logLines = [];
         InvalidOperationException? caught =
-            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+            await TryVerifyAppRoleReachAsync(Sandbox.AdminConnectionString, logLines);
 
         // Assert — nothing thrown at all, rather than no AppRoleReachException in particular: any
         // refusal of a clean database is the failure this test exists to catch.
@@ -621,17 +635,16 @@ public sealed class DeploymentProvisioningTests
         // but a superuser can alter a role that has SUPERUSER. BYPASSRLS is the sharp one: every
         // isolation policy stays present, enabled and correct in the catalog, and none of them
         // applies to the role any more.
-        await using PostgreSqlContainer container = await StartBareContainerAsync();
-        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+        await DeploymentDatabaseProvisioning.ProvisionAsync(Sandbox.AdminConnectionString, Sandbox.Role);
 
-        await using NpgsqlConnection admin = await OpenAdminAsync(container);
-        await ExecuteAsync(admin, $"alter role {DatabaseProvisioning.AppRoleName} {attribute}");
+        await using NpgsqlConnection admin = await OpenAdminAsync();
+        await ExecuteAsync(admin, $"alter role {AppRoleName} {attribute}");
         bool attributeSet = await ReadAppRoleFlagAsync(admin, catalogColumn);
 
         // Act
         List<string> logLines = [];
         InvalidOperationException? caught =
-            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+            await TryVerifyAppRoleReachAsync(Sandbox.AdminConnectionString, logLines);
 
         // Assert — the sabotage took, then the refusal names the attribute by its SQL keyword.
         await Assert.That(attributeSet).IsTrue();
@@ -646,17 +659,16 @@ public sealed class DeploymentProvisioningTests
         // Arrange — NOLOGIN. The script converges this one on a re-run (ALTER ROLE ... WITH LOGIN),
         // so it is the verifier called directly that has to see it: a role that cannot log in is not
         // the role the API connects as, and a snapshot describing it describes the wrong thing.
-        await using PostgreSqlContainer container = await StartBareContainerAsync();
-        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+        await DeploymentDatabaseProvisioning.ProvisionAsync(Sandbox.AdminConnectionString, Sandbox.Role);
 
-        await using NpgsqlConnection admin = await OpenAdminAsync(container);
-        await ExecuteAsync(admin, $"alter role {DatabaseProvisioning.AppRoleName} nologin");
+        await using NpgsqlConnection admin = await OpenAdminAsync();
+        await ExecuteAsync(admin, $"alter role {AppRoleName} nologin");
         bool canLogin = await ReadAppRoleFlagAsync(admin, "rolcanlogin");
 
         // Act
         List<string> logLines = [];
         InvalidOperationException? caught =
-            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+            await TryVerifyAppRoleReachAsync(Sandbox.AdminConnectionString, logLines);
 
         // Assert — "LOGIN" covers both spellings an implementer would reach for, NOLOGIN and LOGIN.
         await Assert.That(canLogin).IsFalse();
@@ -670,18 +682,17 @@ public sealed class DeploymentProvisioningTests
         // Arrange — provisioned, then the role renamed away, so no role called budgetoid_app exists.
         // Discovery then reads null attributes and empty lists everywhere, and an implementation that
         // reads "nothing found" as "nothing wrong" certifies a role that is not there.
-        await using PostgreSqlContainer container = await StartBareContainerAsync();
-        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+        await DeploymentDatabaseProvisioning.ProvisionAsync(Sandbox.AdminConnectionString, Sandbox.Role);
 
-        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await using NpgsqlConnection admin = await OpenAdminAsync();
         await ExecuteAsync(
-            admin, $"alter role {DatabaseProvisioning.AppRoleName} rename to {RenamedAppRole}");
+            admin, $"alter role {AppRoleName} rename to {RenamedAppRole}");
         (bool roleExists, _, _) = await ReadAppRoleAsync(admin);
 
         // Act
         List<string> logLines = [];
         InvalidOperationException? caught =
-            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+            await TryVerifyAppRoleReachAsync(Sandbox.AdminConnectionString, logLines);
 
         // Assert — the missing-role sentence itself, and nothing beside it. The role's name alone
         // would be satisfied by any other rule's sentence, since every one names the role; and a
@@ -690,7 +701,7 @@ public sealed class DeploymentProvisioningTests
         await Assert.That(roleExists).IsFalse();
         await Assert.That(caught).IsTypeOf<AppRoleReachException>();
         await Assert.That(
-                ProblemsNaming(caught, $"No role named {DatabaseProvisioning.AppRoleName} exists"))
+                ProblemsNaming(caught, $"No role named {AppRoleName} exists"))
             .IsNotEmpty();
         await Assert.That(((AppRoleReachException)caught!).Problems.Count).IsEqualTo(1);
     }
@@ -704,21 +715,20 @@ public sealed class DeploymentProvisioningTests
         // decoration. The rule reads pg_auth_members.member = the role; the reverse direction is the
         // creator's automatic membership on PostgreSQL 16+ and is pinned harmless in
         // NonSuperuserDeploymentProvisioningTests.
-        await using PostgreSqlContainer container = await StartBareContainerAsync();
-        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+        await DeploymentDatabaseProvisioning.ProvisionAsync(Sandbox.AdminConnectionString, Sandbox.Role);
 
-        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await using NpgsqlConnection admin = await OpenAdminAsync();
         await ExecuteAsync(
-            admin, $"grant {PredefinedWriteRole} to {DatabaseProvisioning.AppRoleName}");
+            admin, $"grant {PredefinedWriteRole} to {AppRoleName}");
         bool isMember = await ScalarBoolAsync(
             admin,
-            $"select pg_has_role('{DatabaseProvisioning.AppRoleName}', '{PredefinedWriteRole}', "
+            $"select pg_has_role('{AppRoleName}', '{PredefinedWriteRole}', "
             + "'MEMBER')");
 
         // Act
         List<string> logLines = [];
         InvalidOperationException? caught =
-            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+            await TryVerifyAppRoleReachAsync(Sandbox.AdminConnectionString, logLines);
 
         // Assert
         await Assert.That(isMember).IsTrue();
@@ -732,20 +742,19 @@ public sealed class DeploymentProvisioningTests
         // Arrange — CREATE on the schema. The script only ever GRANTs USAGE there and never REVOKEs,
         // so this survives every re-run, and it hands the role a place to make tables it owns — and
         // an owner is not subject to row-level security.
-        await using PostgreSqlContainer container = await StartBareContainerAsync();
-        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+        await DeploymentDatabaseProvisioning.ProvisionAsync(Sandbox.AdminConnectionString, Sandbox.Role);
 
-        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await using NpgsqlConnection admin = await OpenAdminAsync();
         await ExecuteAsync(
-            admin, $"grant create on schema public to {DatabaseProvisioning.AppRoleName}");
+            admin, $"grant create on schema public to {AppRoleName}");
         bool holdsCreate = await ScalarBoolAsync(
             admin,
-            $"select has_schema_privilege('{DatabaseProvisioning.AppRoleName}', 'public', 'CREATE')");
+            $"select has_schema_privilege('{AppRoleName}', 'public', 'CREATE')");
 
         // Act
         List<string> logLines = [];
         InvalidOperationException? caught =
-            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+            await TryVerifyAppRoleReachAsync(Sandbox.AdminConnectionString, logLines);
 
         // Assert
         await Assert.That(holdsCreate).IsTrue();
@@ -761,22 +770,21 @@ public sealed class DeploymentProvisioningTests
         // mentions passes this: the role can make tables it owns here just as well, and an owner is
         // not subject to row-level security wherever the table lives.
         const string schema = "sabotage_other_schema";
-        await using PostgreSqlContainer container = await StartBareContainerAsync();
-        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+        await DeploymentDatabaseProvisioning.ProvisionAsync(Sandbox.AdminConnectionString, Sandbox.Role);
 
-        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await using NpgsqlConnection admin = await OpenAdminAsync();
         await ExecuteAsync(admin, $"create schema {schema}");
         await ExecuteAsync(
-            admin, $"grant create on schema {schema} to {DatabaseProvisioning.AppRoleName}");
+            admin, $"grant create on schema {schema} to {AppRoleName}");
         bool holdsCreate = await ScalarBoolAsync(
             admin,
-            $"select has_schema_privilege('{DatabaseProvisioning.AppRoleName}', '{schema}', "
+            $"select has_schema_privilege('{AppRoleName}', '{schema}', "
             + "'CREATE')");
 
         // Act
         List<string> logLines = [];
         InvalidOperationException? caught =
-            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+            await TryVerifyAppRoleReachAsync(Sandbox.AdminConnectionString, logLines);
 
         // Assert — "Schema <name>" rather than the bare name, so the sentence has to be the schema
         // rule's and not some other rule that happens to mention it.
@@ -792,22 +800,21 @@ public sealed class DeploymentProvisioningTests
         // is declared, so a rule reading only "which privileges" calls this clean; the grant option
         // is the widening — the role may hand the schema to anybody. The script's plain GRANT USAGE
         // does not take the option back.
-        await using PostgreSqlContainer container = await StartBareContainerAsync();
-        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+        await DeploymentDatabaseProvisioning.ProvisionAsync(Sandbox.AdminConnectionString, Sandbox.Role);
 
-        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await using NpgsqlConnection admin = await OpenAdminAsync();
         await ExecuteAsync(
             admin,
-            $"grant usage on schema public to {DatabaseProvisioning.AppRoleName} with grant option");
+            $"grant usage on schema public to {AppRoleName} with grant option");
         bool holdsGrantOption = await ScalarBoolAsync(
             admin,
-            $"select has_schema_privilege('{DatabaseProvisioning.AppRoleName}', 'public', "
+            $"select has_schema_privilege('{AppRoleName}', 'public', "
             + "'USAGE WITH GRANT OPTION')");
 
         // Act
         List<string> logLines = [];
         InvalidOperationException? caught =
-            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+            await TryVerifyAppRoleReachAsync(Sandbox.AdminConnectionString, logLines);
 
         // Assert — the schema, the privilege, and the words "grant option" in any case.
         await Assert.That(holdsGrantOption).IsTrue();
@@ -827,20 +834,19 @@ public sealed class DeploymentProvisioningTests
         // Arrange — a default privilege: it grants nothing that exists today and everything the
         // schema owner creates next. The next migration's table then arrives with ALL for the role,
         // column lists and all, before anybody writes a line of the grant script for it.
-        await using PostgreSqlContainer container = await StartBareContainerAsync();
-        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+        await DeploymentDatabaseProvisioning.ProvisionAsync(Sandbox.AdminConnectionString, Sandbox.Role);
 
-        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await using NpgsqlConnection admin = await OpenAdminAsync();
         await ExecuteAsync(
             admin,
             "alter default privileges in schema public grant all on tables to "
-            + DatabaseProvisioning.AppRoleName);
+            + AppRoleName);
         int defaultAclRows = await CountDefaultAclRowsAsync(admin);
 
         // Act
         List<string> logLines = [];
         InvalidOperationException? caught =
-            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+            await TryVerifyAppRoleReachAsync(Sandbox.AdminConnectionString, logLines);
 
         // Assert — "default" in any case, the grantee, and the schema the entry is limited to, in
         // the clause the remedy has to carry: an ALTER DEFAULT PRIVILEGES … REVOKE without
@@ -853,7 +859,7 @@ public sealed class DeploymentProvisioningTests
                     caught,
                     problem => problem.Contains("default", StringComparison.OrdinalIgnoreCase)
                         && problem.Contains(
-                            DatabaseProvisioning.AppRoleName, StringComparison.Ordinal)
+                            AppRoleName, StringComparison.Ordinal)
                         && problem.Contains("IN SCHEMA public", StringComparison.Ordinal)))
             .IsNotEmpty();
     }
@@ -866,20 +872,19 @@ public sealed class DeploymentProvisioningTests
         // pg_namespace with an inner join would drop the row, and a remedy that named a schema would
         // leave it standing (measured on postgres:17.10: the IN SCHEMA public REVOKE ran, the row
         // stayed, and the next table created answered SELECT for the role).
-        await using PostgreSqlContainer container = await StartBareContainerAsync();
-        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+        await DeploymentDatabaseProvisioning.ProvisionAsync(Sandbox.AdminConnectionString, Sandbox.Role);
 
-        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await using NpgsqlConnection admin = await OpenAdminAsync();
         await ExecuteAsync(
             admin,
-            $"alter default privileges grant select on tables to {DatabaseProvisioning.AppRoleName}");
+            $"alter default privileges grant select on tables to {AppRoleName}");
         bool entryIsGlobal = await ScalarBoolAsync(
             admin, "select bool_and(defaclnamespace = 0) and count(*) = 1 from pg_default_acl");
 
         // Act
         List<string> logLines = [];
         InvalidOperationException? caught =
-            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+            await TryVerifyAppRoleReachAsync(Sandbox.AdminConnectionString, logLines);
 
         // Assert — the default and the role are named, and no schema is, in either case.
         await Assert.That(entryIsGlobal).IsTrue();
@@ -889,7 +894,7 @@ public sealed class DeploymentProvisioningTests
                     caught,
                     problem => problem.Contains("default", StringComparison.OrdinalIgnoreCase)
                         && problem.Contains(
-                            DatabaseProvisioning.AppRoleName, StringComparison.Ordinal)
+                            AppRoleName, StringComparison.Ordinal)
                         && !problem.Contains("IN SCHEMA", StringComparison.OrdinalIgnoreCase)))
             .IsNotEmpty();
     }
@@ -899,10 +904,9 @@ public sealed class DeploymentProvisioningTests
     {
         // Arrange — the same default privilege aimed at PUBLIC, which the role inherits. A rule that
         // filters pg_default_acl on the role's own name misses it.
-        await using PostgreSqlContainer container = await StartBareContainerAsync();
-        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+        await DeploymentDatabaseProvisioning.ProvisionAsync(Sandbox.AdminConnectionString, Sandbox.Role);
 
-        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await using NpgsqlConnection admin = await OpenAdminAsync();
         await ExecuteAsync(
             admin, "alter default privileges in schema public grant select on tables to public");
         int defaultAclRows = await CountDefaultAclRowsAsync(admin);
@@ -910,7 +914,7 @@ public sealed class DeploymentProvisioningTests
         // Act
         List<string> logLines = [];
         InvalidOperationException? caught =
-            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+            await TryVerifyAppRoleReachAsync(Sandbox.AdminConnectionString, logLines);
 
         // Assert — PUBLIC in capitals, the grantee's spelling, so the schema name "public" cannot
         // satisfy it.
@@ -930,23 +934,22 @@ public sealed class DeploymentProvisioningTests
         // Arrange — a table handed to the role. An owner is not subject to row-level security and
         // may grant itself anything on what it owns, and REVOKE ALL ... FROM budgetoid_app does not
         // take ownership away. The table is outside the grant script, so the script never sees it.
-        await using PostgreSqlContainer container = await StartBareContainerAsync();
-        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+        await DeploymentDatabaseProvisioning.ProvisionAsync(Sandbox.AdminConnectionString, Sandbox.Role);
 
-        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await using NpgsqlConnection admin = await OpenAdminAsync();
         await ExecuteAsync(admin, $"create table public.{AppOwnedTable} (id uuid primary key)");
         await ExecuteAsync(
             admin,
-            $"alter table public.{AppOwnedTable} owner to {DatabaseProvisioning.AppRoleName}");
+            $"alter table public.{AppOwnedTable} owner to {AppRoleName}");
         bool ownedByTheRole = await ScalarBoolAsync(
             admin,
-            $"select pg_get_userbyid(relowner) = '{DatabaseProvisioning.AppRoleName}' "
+            $"select pg_get_userbyid(relowner) = '{AppRoleName}' "
             + $"from pg_class where oid = 'public.{AppOwnedTable}'::regclass");
 
         // Act
         List<string> logLines = [];
         InvalidOperationException? caught =
-            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+            await TryVerifyAppRoleReachAsync(Sandbox.AdminConnectionString, logLines);
 
         // Assert
         await Assert.That(ownedByTheRole).IsTrue();
@@ -969,7 +972,7 @@ public sealed class DeploymentProvisioningTests
     {
         // Arrange — a privilege on a relation in public, to PUBLIC. The script's REVOKE ALL … FROM
         // budgetoid_app does not reach PUBLIC, and the role inherits PUBLIC. One row per privilege a
-        // table has (MAINTAIN is PostgreSQL 17's, and these containers are 17), so a rule that
+        // table has (MAINTAIN arrived in PostgreSQL 17, and this suite runs 18), so a rule that
         // filtered the privilege type — on the reading that SELECT is harmless, or that only writes
         // matter — goes red on the row it dropped. The view and sequence rows hold the relation kinds
         // the rule reads beside tables; each is created here, because the migration makes neither.
@@ -991,10 +994,9 @@ public sealed class DeploymentProvisioningTests
         };
         (string[] sabotageSql, string probe, string[] expectedTokens) = arranged;
 
-        await using PostgreSqlContainer container = await StartBareContainerAsync();
-        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+        await DeploymentDatabaseProvisioning.ProvisionAsync(Sandbox.AdminConnectionString, Sandbox.Role);
 
-        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await using NpgsqlConnection admin = await OpenAdminAsync();
         foreach (string statement in sabotageSql)
         {
             await ExecuteAsync(admin, statement);
@@ -1005,7 +1007,7 @@ public sealed class DeploymentProvisioningTests
         // Act
         List<string> logLines = [];
         InvalidOperationException? caught =
-            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+            await TryVerifyAppRoleReachAsync(Sandbox.AdminConnectionString, logLines);
 
         // Assert
         await Assert.That(publicHoldsIt).IsTrue();
@@ -1025,10 +1027,9 @@ public sealed class DeploymentProvisioningTests
         // lives in pg_attribute.attacl, not in pg_class.relacl, so a rule reading relation ACLs
         // alone reads budgets as clean while the role can rewrite base_currency_code — a column
         // immutable by omission from the script's column list.
-        await using PostgreSqlContainer container = await StartBareContainerAsync();
-        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+        await DeploymentDatabaseProvisioning.ProvisionAsync(Sandbox.AdminConnectionString, Sandbox.Role);
 
-        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await using NpgsqlConnection admin = await OpenAdminAsync();
         await ExecuteAsync(
             admin, $"grant update ({ImmutableColumn}) on {PublicGrantTable} to public");
         bool publicHoldsTableUpdate = await ScalarBoolAsync(
@@ -1041,7 +1042,7 @@ public sealed class DeploymentProvisioningTests
         // Act
         List<string> logLines = [];
         InvalidOperationException? caught =
-            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+            await TryVerifyAppRoleReachAsync(Sandbox.AdminConnectionString, logLines);
 
         // Assert — the table-level read is asserted false first: that is what makes the column ACL
         // the only place this grant can be seen.
@@ -1057,22 +1058,21 @@ public sealed class DeploymentProvisioningTests
         // Arrange — SET on session_replication_role, a superuser-only parameter. Set to replica it
         // stops ordinary triggers firing for the session, and foreign keys are enforced by triggers.
         // A parameter grant lives in pg_parameter_acl and nothing in the script names it.
-        await using PostgreSqlContainer container = await StartBareContainerAsync();
-        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+        await DeploymentDatabaseProvisioning.ProvisionAsync(Sandbox.AdminConnectionString, Sandbox.Role);
 
-        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await using NpgsqlConnection admin = await OpenAdminAsync();
         await ExecuteAsync(
             admin,
-            $"grant set on parameter {GrantedParameter} to {DatabaseProvisioning.AppRoleName}");
+            $"grant set on parameter {GrantedParameter} to {AppRoleName}");
         bool holdsSet = await ScalarBoolAsync(
             admin,
-            $"select has_parameter_privilege('{DatabaseProvisioning.AppRoleName}', "
+            $"select has_parameter_privilege('{AppRoleName}', "
             + $"'{GrantedParameter}', 'SET')");
 
         // Act
         List<string> logLines = [];
         InvalidOperationException? caught =
-            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+            await TryVerifyAppRoleReachAsync(Sandbox.AdminConnectionString, logLines);
 
         // Assert
         await Assert.That(holdsSet).IsTrue();
@@ -1086,10 +1086,9 @@ public sealed class DeploymentProvisioningTests
         // Arrange — a function created with no grant at all. Its proacl is NULL, and a NULL ACL on a
         // function is not "nobody" but the built-in default, which gives PUBLIC EXECUTE. So
         // aclexplode(proacl) returns no rows here; only acldefault('f', proowner) shows the grant.
-        await using PostgreSqlContainer container = await StartBareContainerAsync();
-        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+        await DeploymentDatabaseProvisioning.ProvisionAsync(Sandbox.AdminConnectionString, Sandbox.Role);
 
-        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await using NpgsqlConnection admin = await OpenAdminAsync();
         await ExecuteAsync(
             admin,
             $"create function public.{DefaultCallableFunction}() returns int "
@@ -1099,13 +1098,13 @@ public sealed class DeploymentProvisioningTests
             $"select proacl is null from pg_proc where proname = '{DefaultCallableFunction}'");
         bool roleCanExecute = await ScalarBoolAsync(
             admin,
-            $"select has_function_privilege('{DatabaseProvisioning.AppRoleName}', "
+            $"select has_function_privilege('{AppRoleName}', "
             + $"'public.{DefaultCallableFunction}()', 'EXECUTE')");
 
         // Act
         List<string> logLines = [];
         InvalidOperationException? caught =
-            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+            await TryVerifyAppRoleReachAsync(Sandbox.AdminConnectionString, logLines);
 
         // Assert — the NULL ACL first: it is the whole trap, and a sabotage that set one would test
         // an easier case under this name.
@@ -1121,10 +1120,9 @@ public sealed class DeploymentProvisioningTests
         // Arrange — the other half of the routine rule: EXECUTE taken from PUBLIC and granted to the
         // role by name, so the ACL is explicit and PUBLIC holds nothing. A rule that only looks for
         // PUBLIC's default EXECUTE misses it.
-        await using PostgreSqlContainer container = await StartBareContainerAsync();
-        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+        await DeploymentDatabaseProvisioning.ProvisionAsync(Sandbox.AdminConnectionString, Sandbox.Role);
 
-        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await using NpgsqlConnection admin = await OpenAdminAsync();
         await ExecuteAsync(
             admin,
             $"create function public.{GrantedCallableFunction}() returns int "
@@ -1134,20 +1132,20 @@ public sealed class DeploymentProvisioningTests
         await ExecuteAsync(
             admin,
             $"grant execute on function public.{GrantedCallableFunction}() "
-            + $"to {DatabaseProvisioning.AppRoleName}");
+            + $"to {AppRoleName}");
         bool publicCanExecute = await ScalarBoolAsync(
             admin,
             $"select has_function_privilege('public', 'public.{GrantedCallableFunction}()', "
             + "'EXECUTE')");
         bool roleCanExecute = await ScalarBoolAsync(
             admin,
-            $"select has_function_privilege('{DatabaseProvisioning.AppRoleName}', "
+            $"select has_function_privilege('{AppRoleName}', "
             + $"'public.{GrantedCallableFunction}()', 'EXECUTE')");
 
         // Act
         List<string> logLines = [];
         InvalidOperationException? caught =
-            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+            await TryVerifyAppRoleReachAsync(Sandbox.AdminConnectionString, logLines);
 
         // Assert
         await Assert.That(publicCanExecute).IsFalse();
@@ -1163,25 +1161,24 @@ public sealed class DeploymentProvisioningTests
         // through current_database() so the expectation is the database the verifier was pointed at.
         // Called directly: the script's REVOKE ALL ... FROM budgetoid_app would converge this on a
         // re-run by an owner, and the gate is what reports it when the REVOKE cannot run.
-        await using PostgreSqlContainer container = await StartBareContainerAsync();
-        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+        await DeploymentDatabaseProvisioning.ProvisionAsync(Sandbox.AdminConnectionString, Sandbox.Role);
 
-        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await using NpgsqlConnection admin = await OpenAdminAsync();
         string database = await ScalarStringAsync(admin, "select current_database()");
         await ExecuteAsync(
-            admin, $"grant create on database {database} to {DatabaseProvisioning.AppRoleName}");
+            admin, $"grant create on database {database} to {AppRoleName}");
         bool holdsCreate = await ScalarBoolAsync(
             admin,
-            $"select has_database_privilege('{DatabaseProvisioning.AppRoleName}', "
+            $"select has_database_privilege('{AppRoleName}', "
             + "current_database(), 'CREATE')");
 
         // Act
         List<string> logLines = [];
         InvalidOperationException? caught =
-            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+            await TryVerifyAppRoleReachAsync(Sandbox.AdminConnectionString, logLines);
 
-        // Assert — the database name as a whole word, because "budgetoid" is also a prefix of
-        // "budgetoid_app" and a substring match would be satisfied by the role's name alone.
+        // Assert — the database name as a whole word, so a sentence that only named something longer
+        // that starts with it cannot satisfy the match.
         await Assert.That(holdsCreate).IsTrue();
         await Assert.That(caught).IsTypeOf<AppRoleReachException>();
         await Assert.That(
@@ -1198,21 +1195,20 @@ public sealed class DeploymentProvisioningTests
         // Arrange — TEMPORARY handed back to PUBLIC after provisioning took it away. The role
         // inherits PUBLIC, so it can make temporary tables again: rows no grant, no policy and no
         // census in this repository describes.
-        await using PostgreSqlContainer container = await StartBareContainerAsync();
-        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+        await DeploymentDatabaseProvisioning.ProvisionAsync(Sandbox.AdminConnectionString, Sandbox.Role);
 
-        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await using NpgsqlConnection admin = await OpenAdminAsync();
         string database = await ScalarStringAsync(admin, "select current_database()");
         await ExecuteAsync(admin, $"grant temporary on database {database} to public");
         bool roleHoldsTemporary = await ScalarBoolAsync(
             admin,
-            $"select has_database_privilege('{DatabaseProvisioning.AppRoleName}', "
+            $"select has_database_privilege('{AppRoleName}', "
             + "current_database(), 'TEMPORARY')");
 
         // Act
         List<string> logLines = [];
         InvalidOperationException? caught =
-            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+            await TryVerifyAppRoleReachAsync(Sandbox.AdminConnectionString, logLines);
 
         // Assert
         await Assert.That(roleHoldsTemporary).IsTrue();
@@ -1232,18 +1228,17 @@ public sealed class DeploymentProvisioningTests
         // Arrange — a deployed database with CREATE on schema public hand-granted to the role. The
         // script only ever GRANTs USAGE on the schema and never REVOKEs there, so the next deploy
         // leaves the CREATE in place; this is the deploy that has to refuse.
-        await using PostgreSqlContainer container = await StartBareContainerAsync();
-        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+        await DeploymentDatabaseProvisioning.ProvisionAsync(Sandbox.AdminConnectionString, Sandbox.Role);
 
-        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await using NpgsqlConnection admin = await OpenAdminAsync();
         await ExecuteAsync(
-            admin, $"grant create on schema public to {DatabaseProvisioning.AppRoleName}");
+            admin, $"grant create on schema public to {AppRoleName}");
 
         // Act
         InvalidOperationException? caught = null;
         try
         {
-            await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+            await DeploymentDatabaseProvisioning.ProvisionAsync(Sandbox.AdminConnectionString, Sandbox.Role);
         }
         catch (InvalidOperationException exception)
         {
@@ -1252,7 +1247,7 @@ public sealed class DeploymentProvisioningTests
 
         bool createSurvived = await ScalarBoolAsync(
             admin,
-            $"select has_schema_privilege('{DatabaseProvisioning.AppRoleName}', 'public', 'CREATE')");
+            $"select has_schema_privilege('{AppRoleName}', 'public', 'CREATE')");
 
         // Assert — the widening survived the re-run first, so the refusal is about something the
         // script genuinely left behind rather than about a script that stopped converging.
@@ -1273,23 +1268,22 @@ public sealed class DeploymentProvisioningTests
         //
         // This is the stated limit, pinned: a widening the script converges away is not reported.
         // The deploy that removed it is the report, and there is nothing left for the gate to name.
-        await using PostgreSqlContainer container = await StartBareContainerAsync();
-        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+        await DeploymentDatabaseProvisioning.ProvisionAsync(Sandbox.AdminConnectionString, Sandbox.Role);
 
-        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await using NpgsqlConnection admin = await OpenAdminAsync();
         string database = await ScalarStringAsync(admin, "select current_database()");
         await ExecuteAsync(
-            admin, $"grant create on database {database} to {DatabaseProvisioning.AppRoleName}");
+            admin, $"grant create on database {database} to {AppRoleName}");
         bool grantedBeforeTheDeploy = await ScalarBoolAsync(
             admin,
-            $"select has_database_privilege('{DatabaseProvisioning.AppRoleName}', "
+            $"select has_database_privilege('{AppRoleName}', "
             + "current_database(), 'CREATE')");
 
         // Act
         InvalidOperationException? caught = null;
         try
         {
-            await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+            await DeploymentDatabaseProvisioning.ProvisionAsync(Sandbox.AdminConnectionString, Sandbox.Role);
         }
         catch (InvalidOperationException exception)
         {
@@ -1298,7 +1292,7 @@ public sealed class DeploymentProvisioningTests
 
         bool grantedAfterTheDeploy = await ScalarBoolAsync(
             admin,
-            $"select has_database_privilege('{DatabaseProvisioning.AppRoleName}', "
+            $"select has_database_privilege('{AppRoleName}', "
             + "current_database(), 'CREATE')");
 
         // Assert — held before, the deploy went through, and gone after. The exception is asserted
@@ -1329,7 +1323,7 @@ public sealed class DeploymentProvisioningTests
         //
         // Each probe asks the has_*_privilege functions for a comma-separated list, which answers true
         // when ANY listed privilege is held — so "false after" means every privilege granted is gone.
-        const string role = DatabaseProvisioning.AppRoleName;
+        string role = AppRoleName;
         (string create, string grant, string probe) = relation switch
         {
             "sequence" => (
@@ -1359,10 +1353,9 @@ public sealed class DeploymentProvisioningTests
             _ => throw new ArgumentOutOfRangeException(nameof(relation), relation, null),
         };
 
-        await using PostgreSqlContainer container = await StartBareContainerAsync();
-        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+        await DeploymentDatabaseProvisioning.ProvisionAsync(Sandbox.AdminConnectionString, Sandbox.Role);
 
-        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await using NpgsqlConnection admin = await OpenAdminAsync();
         if (create.Length > 0)
         {
             await ExecuteAsync(admin, create);
@@ -1372,7 +1365,7 @@ public sealed class DeploymentProvisioningTests
         bool heldBeforeTheScript = await ScalarBoolAsync(admin, probe);
 
         // Act
-        await DatabaseProvisioning.ApplyGrantsAsync(container.GetConnectionString());
+        await DatabaseProvisioning.ApplyGrantsAsync(Sandbox.AdminConnectionString, Sandbox.Role);
 
         bool heldAfterTheScript = await ScalarBoolAsync(admin, probe);
 
@@ -1398,7 +1391,7 @@ public sealed class DeploymentProvisioningTests
         // that can see it. The last row withholds USAGE on the schema: the refusal does not depend on
         // the role being able to reach the relation today, because USAGE is one GRANT away and the
         // relation grant is already waiting behind it.
-        const string role = DatabaseProvisioning.AppRoleName;
+        string role = AppRoleName;
         const string schema = "sabotage_elsewhere";
         const string table = $"{schema}.sabotage_elsewhere_table";
         const string sequence = $"{schema}.sabotage_elsewhere_sequence";
@@ -1462,10 +1455,9 @@ public sealed class DeploymentProvisioningTests
             };
         (string[] sabotageSql, string probe, bool schemaUsage, string[] expectedTokens) = arranged;
 
-        await using PostgreSqlContainer container = await StartBareContainerAsync();
-        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+        await DeploymentDatabaseProvisioning.ProvisionAsync(Sandbox.AdminConnectionString, Sandbox.Role);
 
-        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await using NpgsqlConnection admin = await OpenAdminAsync();
         await ExecuteAsync(admin, $"create schema {schema}");
         await ExecuteAsync(admin, $"create table {table} (id int, {column} text)");
         await ExecuteAsync(admin, $"create sequence {sequence}");
@@ -1481,7 +1473,7 @@ public sealed class DeploymentProvisioningTests
         // Act
         List<string> logLines = [];
         InvalidOperationException? caught =
-            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+            await TryVerifyAppRoleReachAsync(Sandbox.AdminConnectionString, logLines);
 
         // Assert — the sabotage landed as described first, including whether the schema is open to
         // the role, so the no-usage row cannot pass as a copy of the first.
@@ -1499,17 +1491,16 @@ public sealed class DeploymentProvisioningTests
         // application role nor PUBLIC. The application role reaches none of it, so a verifier that
         // refuses whatever sits outside public — rather than what the role can reach there — goes red
         // here and nowhere else.
-        const string role = DatabaseProvisioning.AppRoleName;
-        const string bystander = "sabotage_bystander";
+        string role = AppRoleName;
+        string bystander = Sandbox.HelperRole("sabotage_bystander");
         const string schema = "sabotage_elsewhere";
         const string table = $"{schema}.sabotage_elsewhere_table";
         const string view = $"{schema}.sabotage_elsewhere_view";
         const string sequence = $"{schema}.sabotage_elsewhere_sequence";
 
-        await using PostgreSqlContainer container = await StartBareContainerAsync();
-        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+        await DeploymentDatabaseProvisioning.ProvisionAsync(Sandbox.AdminConnectionString, Sandbox.Role);
 
-        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await using NpgsqlConnection admin = await OpenAdminAsync();
         await ExecuteAsync(admin, $"create role {bystander}");
         await ExecuteAsync(admin, $"create schema {schema}");
         await ExecuteAsync(admin, $"create table {table} (id int)");
@@ -1543,7 +1534,7 @@ public sealed class DeploymentProvisioningTests
         // Act
         List<string> logLines = [];
         InvalidOperationException? caught =
-            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+            await TryVerifyAppRoleReachAsync(Sandbox.AdminConnectionString, logLines);
 
         // Assert — nothing thrown at all, for the reason the fresh-database control gives.
         await Assert.That(bystanderHoldsAll).IsTrue();
@@ -1581,10 +1572,10 @@ public sealed class DeploymentProvisioningTests
         // it — so every row asks for the non-owner sentence's own clause, "with middle as the grantor
         // rather than its owner", which no other rule writes. The function's name deliberately
         // carries no grantor either.
-        const string role = DatabaseProvisioning.AppRoleName;
-        const string middle = "middle";
+        string role = AppRoleName;
+        string middle = Sandbox.HelperRole("middle");
         const string function = "public.sabotage_third_role_callable()";
-        const string grantorClause = $"with {middle} as the grantor rather than its owner";
+        string grantorClause = $"with {middle} as the grantor rather than its owner";
 
         (string OwnerGrant, string MiddleGrant, string GrantorProbe, string[] ExpectedTokens) arranged =
             sabotage switch
@@ -1636,10 +1627,9 @@ public sealed class DeploymentProvisioningTests
         (string ownerGrant, string middleGrant, string grantorProbe, string[] expectedTokens) =
             arranged;
 
-        await using PostgreSqlContainer container = await StartBareContainerAsync();
-        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+        await DeploymentDatabaseProvisioning.ProvisionAsync(Sandbox.AdminConnectionString, Sandbox.Role);
 
-        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await using NpgsqlConnection admin = await OpenAdminAsync();
 
         // GRANT … ON DATABASE takes a name and no expression, so the database row names it here.
         string database = await ScalarStringAsync(admin, "select current_database()");
@@ -1656,12 +1646,12 @@ public sealed class DeploymentProvisioningTests
 
         // Act — the script re-run first, then the verifier: the script is what a deploy runs before
         // the gate, and a grant it took back would leave the gate nothing to find.
-        await DatabaseProvisioning.ApplyGrantsAsync(container.GetConnectionString());
+        await DatabaseProvisioning.ApplyGrantsAsync(Sandbox.AdminConnectionString, Sandbox.Role);
         bool heldFromMiddleAfterTheScript = await ScalarBoolAsync(admin, grantorProbe);
 
         List<string> logLines = [];
         InvalidOperationException? caught =
-            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+            await TryVerifyAppRoleReachAsync(Sandbox.AdminConnectionString, logLines);
 
         // Assert — the grant is held with middle as its grantor, and still is after the script ran,
         // so the refusal below is the verifier's and not the script's.
@@ -1685,7 +1675,7 @@ public sealed class DeploymentProvisioningTests
         // rule honest: out of the box the only grantees in the system schemas are PUBLIC, the
         // bootstrap superuser, pg_monitor and pg_read_all_stats, so the rule has to be about who
         // holds the grant and not about where the object lives.
-        const string role = DatabaseProvisioning.AppRoleName;
+        string role = AppRoleName;
         (string Grant, string Probe, string[] ExpectedTokens) arranged = sabotage switch
         {
             "select on pg_statistic" => (
@@ -1706,10 +1696,9 @@ public sealed class DeploymentProvisioningTests
         };
         (string grant, string probe, string[] expectedTokens) = arranged;
 
-        await using PostgreSqlContainer container = await StartBareContainerAsync();
-        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+        await DeploymentDatabaseProvisioning.ProvisionAsync(Sandbox.AdminConnectionString, Sandbox.Role);
 
-        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await using NpgsqlConnection admin = await OpenAdminAsync();
         bool heldBefore = await ScalarBoolAsync(admin, probe);
         await ExecuteAsync(admin, grant);
         bool heldAfter = await ScalarBoolAsync(admin, probe);
@@ -1717,7 +1706,7 @@ public sealed class DeploymentProvisioningTests
         // Act
         List<string> logLines = [];
         InvalidOperationException? caught =
-            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+            await TryVerifyAppRoleReachAsync(Sandbox.AdminConnectionString, logLines);
 
         // Assert — the grant is what gave the role the privilege, then the system-schema sentence
         // names the object.
@@ -1738,12 +1727,12 @@ public sealed class DeploymentProvisioningTests
         // Arrange — a setting the server applies to the role's every session before the API sends a
         // statement. session_replication_role = replica stops ordinary triggers — the foreign keys'
         // among them — for the session; a stored default is how the role gets it with no grant on
-        // the parameter at all. pg_db_role_setting holds all four shapes, empty on a fresh cluster:
+        // the parameter at all. pg_db_role_setting holds all four shapes, none of them on a fresh role:
         // for the role everywhere (setdatabase 0, which rolconfig also shows), for the role in one
         // database — this one, or postgres, which the role can connect to as well — and for every
         // role in this database (setrole 0). The value is not the finding, the parameter is, so the
         // sentence must name the parameter and not echo what it was set to.
-        const string role = DatabaseProvisioning.AppRoleName;
+        string role = AppRoleName;
         (string Sql, string Parameter, string Value, string? Database, string Probe) arranged =
             sabotage switch
             {
@@ -1781,25 +1770,29 @@ public sealed class DeploymentProvisioningTests
             };
         (string sql, string parameter, string value, string? database, string probe) = arranged;
 
-        await using PostgreSqlContainer container = await StartBareContainerAsync();
-        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+        await DeploymentDatabaseProvisioning.ProvisionAsync(Sandbox.AdminConnectionString, Sandbox.Role);
 
-        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await using NpgsqlConnection admin = await OpenAdminAsync();
 
         // ALTER … IN DATABASE and ALTER DATABASE take a name and no expression.
         string currentDatabase = await ScalarStringAsync(admin, "select current_database()");
         sql = sql.Replace("{database}", currentDatabase, StringComparison.Ordinal);
         database = database?.Replace("{database}", currentDatabase, StringComparison.Ordinal);
 
-        bool clusterStartedEmpty =
-            await ScalarBoolAsync(admin, "select count(*) = 0 from pg_db_role_setting");
+        // Scoped to this sandbox's role and database: the server is shared, and other tests store rows
+        // of their own here at the same time.
+        bool clusterStartedEmpty = await ScalarBoolAsync(
+            admin,
+            "select count(*) = 0 from pg_db_role_setting "
+            + $"where setrole = '{AppRoleName}'::regrole "
+            + "or setdatabase = (select oid from pg_database where datname = current_database())");
         await ExecuteAsync(admin, sql);
         bool storedWhereExpected = await ScalarBoolAsync(admin, probe);
 
         // Act
         List<string> logLines = [];
         InvalidOperationException? caught =
-            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+            await TryVerifyAppRoleReachAsync(Sandbox.AdminConnectionString, logLines);
 
         // Assert — the setting landed in the one row this sabotage aims at; the session-default
         // sentence names the parameter, and the database where the row is scoped to one, as a whole
@@ -1821,43 +1814,6 @@ public sealed class DeploymentProvisioningTests
                     problem => problem.Contains("session default", StringComparison.OrdinalIgnoreCase)
                         && NamesWholeWord(problem, value)))
             .IsEmpty();
-    }
-
-    [Test]
-    [Arguments("the app role")]
-    [Arguments("PUBLIC")]
-    public async Task VerifyAppRoleReachAsync_CreateOnATablespace_ThrowsNamingTheTablespace(
-        string grantee)
-    {
-        // Arrange — CREATE on pg_default, the tablespace every table lands in. With it the role
-        // could put a relation it owns there, and CREATE on a tablespace is a grant on a cluster
-        // object no line of the grant script names. The PUBLIC row is the same grant reached
-        // through inheritance. Neither tablespace grants anybody anything out of the box: both ACLs
-        // are NULL, which is the owner alone.
-        const string role = DatabaseProvisioning.AppRoleName;
-        string granteeSql = grantee == "PUBLIC" ? "public" : role;
-
-        await using PostgreSqlContainer container = await StartBareContainerAsync();
-        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
-
-        await using NpgsqlConnection admin = await OpenAdminAsync(container);
-        string probe = $"select has_tablespace_privilege('{role}', 'pg_default', 'CREATE')";
-        bool heldBefore = await ScalarBoolAsync(admin, probe);
-        await ExecuteAsync(admin, $"grant create on tablespace pg_default to {granteeSql}");
-        bool heldAfter = await ScalarBoolAsync(admin, probe);
-
-        // Act
-        List<string> logLines = [];
-        InvalidOperationException? caught =
-            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
-
-        // Assert — "tablespace pg_default" is the rule's own clause; CREATE is the privilege; the
-        // PUBLIC row also has to say who holds it, in the grantee's capitals.
-        string[] tokens = grantee == "PUBLIC" ? ["CREATE", "PUBLIC"] : ["CREATE"];
-        await Assert.That(heldBefore).IsFalse();
-        await Assert.That(heldAfter).IsTrue();
-        await Assert.That(caught).IsTypeOf<AppRoleReachException>();
-        await Assert.That(ProblemsCarrying(caught, "tablespace pg_default", tokens)).IsNotEmpty();
     }
 
     [Test]
@@ -1923,10 +1879,9 @@ public sealed class DeploymentProvisioningTests
         };
         (string[] sql, string name, string table, string probe) = arranged;
 
-        await using PostgreSqlContainer container = await StartBareContainerAsync();
-        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+        await DeploymentDatabaseProvisioning.ProvisionAsync(Sandbox.AdminConnectionString, Sandbox.Role);
 
-        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await using NpgsqlConnection admin = await OpenAdminAsync();
         await ExecuteAsync(
             admin,
             $"create function {function} returns trigger language plpgsql "
@@ -1942,7 +1897,7 @@ public sealed class DeploymentProvisioningTests
         // Act
         List<string> logLines = [];
         InvalidOperationException? caught =
-            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+            await TryVerifyAppRoleReachAsync(Sandbox.AdminConnectionString, logLines);
 
         // Assert — "trigger <name> on <table>" is the rule's clause: no other sentence writes the
         // word before a trigger's name.
@@ -1985,10 +1940,9 @@ public sealed class DeploymentProvisioningTests
         };
         (string[] sql, string name, string table) = arranged;
 
-        await using PostgreSqlContainer container = await StartBareContainerAsync();
-        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+        await DeploymentDatabaseProvisioning.ProvisionAsync(Sandbox.AdminConnectionString, Sandbox.Role);
 
-        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await using NpgsqlConnection admin = await OpenAdminAsync();
         foreach (string statement in sql)
         {
             await ExecuteAsync(admin, statement);
@@ -2002,7 +1956,7 @@ public sealed class DeploymentProvisioningTests
         // Act
         List<string> logLines = [];
         InvalidOperationException? caught =
-            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+            await TryVerifyAppRoleReachAsync(Sandbox.AdminConnectionString, logLines);
 
         // Assert
         await Assert.That(ruleExists).IsTrue();
@@ -2016,10 +1970,9 @@ public sealed class DeploymentProvisioningTests
         // Arrange — the control for the rewrite-rule refusal. A view is a relation whose definition is a
         // rewrite rule named _RETURN, and the migration creates no view, so without this one the
         // _RETURN exclusion is held by nothing. No grant on it to the role or to PUBLIC.
-        await using PostgreSqlContainer container = await StartBareContainerAsync();
-        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+        await DeploymentDatabaseProvisioning.ProvisionAsync(Sandbox.AdminConnectionString, Sandbox.Role);
 
-        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await using NpgsqlConnection admin = await OpenAdminAsync();
         await ExecuteAsync(admin, "create view public.sabotage_plain_view as select 1 as x");
         bool viewCarriesItsOwnRule = await ScalarBoolAsync(
             admin,
@@ -2029,7 +1982,7 @@ public sealed class DeploymentProvisioningTests
         // Act
         List<string> logLines = [];
         InvalidOperationException? caught =
-            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+            await TryVerifyAppRoleReachAsync(Sandbox.AdminConnectionString, logLines);
 
         // Assert — nothing thrown at all, for the reason the fresh-database control gives.
         await Assert.That(viewCarriesItsOwnRule).IsTrue();
@@ -2062,7 +2015,7 @@ public sealed class DeploymentProvisioningTests
         //   the role cannot write, so only a rule that follows the chain names it.
         // - ON DELETE SET NULL on a referenced key, which the referencing table's ON UPDATE CASCADE
         //   then carries on: a delete becomes an update one hop down.
-        const string role = DatabaseProvisioning.AppRoleName;
+        string role = AppRoleName;
         (string[] Sql, string ArmedProbe, string WrittenTable, string WrittenColumn, bool OnlyOne)
             arranged = sabotage switch
             {
@@ -2136,10 +2089,9 @@ public sealed class DeploymentProvisioningTests
         (string[] sql, string armedProbe, string writtenTable, string writtenColumn, bool onlyOne) =
             arranged;
 
-        await using PostgreSqlContainer container = await StartBareContainerAsync();
-        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+        await DeploymentDatabaseProvisioning.ProvisionAsync(Sandbox.AdminConnectionString, Sandbox.Role);
 
-        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await using NpgsqlConnection admin = await OpenAdminAsync();
         foreach (string statement in sql)
         {
             await ExecuteAsync(admin, statement);
@@ -2153,7 +2105,7 @@ public sealed class DeploymentProvisioningTests
         // Act
         List<string> logLines = [];
         InvalidOperationException? caught =
-            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+            await TryVerifyAppRoleReachAsync(Sandbox.AdminConnectionString, logLines);
 
         // Assert — the role can set the chain off and cannot write the column itself; then the
         // referential-action sentence names the written column.
@@ -2177,11 +2129,10 @@ public sealed class DeploymentProvisioningTests
         // which the role cannot UPDATE. The action writes a column the role cannot write, and
         // nothing the role can do fires it, so it is no reach of the role's. A rule that refused
         // every writing action regardless of who can set it off goes red here.
-        const string role = DatabaseProvisioning.AppRoleName;
-        await using PostgreSqlContainer container = await StartBareContainerAsync();
-        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+        string role = AppRoleName;
+        await DeploymentDatabaseProvisioning.ProvisionAsync(Sandbox.AdminConnectionString, Sandbox.Role);
 
-        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await using NpgsqlConnection admin = await OpenAdminAsync();
         await ExecuteAsync(
             admin,
             "create table public.sabotage_quiet (id int primary key, "
@@ -2196,7 +2147,7 @@ public sealed class DeploymentProvisioningTests
         // Act
         List<string> logLines = [];
         InvalidOperationException? caught =
-            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+            await TryVerifyAppRoleReachAsync(Sandbox.AdminConnectionString, logLines);
 
         // Assert
         await Assert.That(actionIsCascade).IsTrue();
@@ -2216,7 +2167,7 @@ public sealed class DeploymentProvisioningTests
         // cascaded, set the base column NULL one hop down, and rewrote the generated column beside
         // it. The second row is only reachable through the referential-action walk: the role holds
         // no privilege on that table at all.
-        const string role = DatabaseProvisioning.AppRoleName;
+        string role = AppRoleName;
         (string[] Sql, string ArmedProbe, string Table, string Column) arranged = sabotage switch
         {
             "base column granted to the role" => (
@@ -2246,10 +2197,9 @@ public sealed class DeploymentProvisioningTests
         };
         (string[] sql, string armedProbe, string table, string column) = arranged;
 
-        await using PostgreSqlContainer container = await StartBareContainerAsync();
-        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+        await DeploymentDatabaseProvisioning.ProvisionAsync(Sandbox.AdminConnectionString, Sandbox.Role);
 
-        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await using NpgsqlConnection admin = await OpenAdminAsync();
         foreach (string statement in sql)
         {
             await ExecuteAsync(admin, statement);
@@ -2264,7 +2214,7 @@ public sealed class DeploymentProvisioningTests
         // Act
         List<string> logLines = [];
         InvalidOperationException? caught =
-            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+            await TryVerifyAppRoleReachAsync(Sandbox.AdminConnectionString, logLines);
 
         // Assert
         await Assert.That(armed).IsTrue();
@@ -2281,10 +2231,9 @@ public sealed class DeploymentProvisioningTests
         // Arrange — provision, then take one table's policy away as the admin. Dropping a policy is
         // exactly the shape of the real accident: a table that was granted and never policed looks
         // identical to this from the catalog's point of view.
-        await using PostgreSqlContainer container = await StartBareContainerAsync();
-        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+        await DeploymentDatabaseProvisioning.ProvisionAsync(Sandbox.AdminConnectionString, Sandbox.Role);
 
-        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await using NpgsqlConnection admin = await OpenAdminAsync();
         await ExecuteAsync(admin, $"drop policy budget_isolation on {SabotagedTable}");
 
         // Act — the verifier directly, never through ProvisionAsync. ProvisionAsync re-applies the
@@ -2298,7 +2247,7 @@ public sealed class DeploymentProvisioningTests
         try
         {
             await DeploymentDatabaseProvisioning.VerifyRowLevelSecurityCoverageAsync(
-                container.GetConnectionString(),
+                Sandbox.AdminConnectionString, Sandbox.Role,
                 log: logLines.Add);
         }
         catch (InvalidOperationException exception)
@@ -2339,10 +2288,9 @@ public sealed class DeploymentProvisioningTests
         // being enforced, because row-level security is switched off for the table. A verifier that
         // only read pg_policies would call this database fully protected while the application role
         // reads every tenant's rows.
-        await using PostgreSqlContainer container = await StartBareContainerAsync();
-        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+        await DeploymentDatabaseProvisioning.ProvisionAsync(Sandbox.AdminConnectionString, Sandbox.Role);
 
-        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await using NpgsqlConnection admin = await OpenAdminAsync();
         await ExecuteAsync(
             admin, $"alter table {SabotagedTable} disable row level security");
 
@@ -2355,7 +2303,7 @@ public sealed class DeploymentProvisioningTests
         try
         {
             await DeploymentDatabaseProvisioning.VerifyRowLevelSecurityCoverageAsync(
-                container.GetConnectionString(),
+                Sandbox.AdminConnectionString, Sandbox.Role,
                 log: logLines.Add);
         }
         catch (InvalidOperationException exception)
@@ -2392,10 +2340,9 @@ public sealed class DeploymentProvisioningTests
         // the deploy reporting full coverage. The check is not weaker here, it is absent, and absence
         // is invisible from the outside — which is the exact fail-open shape this verifier was
         // written to prevent, now sitting inside the verifier.
-        await using PostgreSqlContainer container = await StartBareContainerAsync();
-        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+        await DeploymentDatabaseProvisioning.ProvisionAsync(Sandbox.AdminConnectionString, Sandbox.Role);
 
-        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await using NpgsqlConnection admin = await OpenAdminAsync();
         await ExecuteAsync(admin, $"drop policy {UserIsolationPolicy} on {UsersTable}");
 
         // Act — the verifier directly, never through ProvisionAsync, for the reason spelled out in
@@ -2406,7 +2353,7 @@ public sealed class DeploymentProvisioningTests
         try
         {
             await DeploymentDatabaseProvisioning.VerifyRowLevelSecurityCoverageAsync(
-                container.GetConnectionString(),
+                Sandbox.AdminConnectionString, Sandbox.Role,
                 log: logLines.Add);
         }
         catch (InvalidOperationException exception)
@@ -2441,10 +2388,9 @@ public sealed class DeploymentProvisioningTests
         // schema — a table can end up carrying the wrong one of them, which is a real, enforced
         // policy that is simply wider than its tenancy. A rename is the cheapest way to make that
         // gap visible, because it changes nothing else at all.
-        await using PostgreSqlContainer container = await StartBareContainerAsync();
-        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+        await DeploymentDatabaseProvisioning.ProvisionAsync(Sandbox.AdminConnectionString, Sandbox.Role);
 
-        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await using NpgsqlConnection admin = await OpenAdminAsync();
         await ExecuteAsync(
             admin,
             $"alter policy {BudgetIsolationPolicy} on {SabotagedTable} rename to {RenamedPolicy}");
@@ -2458,7 +2404,7 @@ public sealed class DeploymentProvisioningTests
         try
         {
             await DeploymentDatabaseProvisioning.VerifyRowLevelSecurityCoverageAsync(
-                container.GetConnectionString(),
+                Sandbox.AdminConnectionString, Sandbox.Role,
                 log: logLines.Add);
         }
         catch (InvalidOperationException exception)
@@ -2495,10 +2441,9 @@ public sealed class DeploymentProvisioningTests
         // every future table gets the benefit of the doubt silently and permanently — and the deploy
         // is the last moment anyone is looking. A red build asking someone to decide costs a minute;
         // the alternative costs whatever the table turns out to hold.
-        await using PostgreSqlContainer container = await StartBareContainerAsync();
-        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+        await DeploymentDatabaseProvisioning.ProvisionAsync(Sandbox.AdminConnectionString, Sandbox.Role);
 
-        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await using NpgsqlConnection admin = await OpenAdminAsync();
         await ExecuteAsync(
             admin, $"create table public.{UnclassifiableTable} (id uuid primary key, note text)");
 
@@ -2511,7 +2456,7 @@ public sealed class DeploymentProvisioningTests
         try
         {
             await DeploymentDatabaseProvisioning.VerifyRowLevelSecurityCoverageAsync(
-                container.GetConnectionString(),
+                Sandbox.AdminConnectionString, Sandbox.Role,
                 log: logLines.Add);
         }
         catch (InvalidOperationException exception)
@@ -2548,15 +2493,14 @@ public sealed class DeploymentProvisioningTests
         // The failure is the opposite direction from a leak and is no less a reason to refuse: the
         // gate's claim is that the rule enforced is the rule owed, and FOR SELECT is not the rule
         // owed.
-        await using PostgreSqlContainer container = await StartBareContainerAsync();
-        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+        await DeploymentDatabaseProvisioning.ProvisionAsync(Sandbox.AdminConnectionString, Sandbox.Role);
 
-        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await using NpgsqlConnection admin = await OpenAdminAsync();
         await ExecuteAsync(admin, $"drop policy {BudgetIsolationPolicy} on {GrantedForWriteTable}");
         await ExecuteAsync(
             admin,
             $"create policy {BudgetIsolationPolicy} on {GrantedForWriteTable} "
-            + $"for select to {DatabaseProvisioning.AppRoleName} "
+            + $"for select to {AppRoleName} "
             + $"using ({BudgetOwnershipPredicate})");
 
         // Act
@@ -2570,7 +2514,7 @@ public sealed class DeploymentProvisioningTests
         try
         {
             await DeploymentDatabaseProvisioning.VerifyRowLevelSecurityCoverageAsync(
-                container.GetConnectionString(),
+                Sandbox.AdminConnectionString, Sandbox.Role,
                 log: logLines.Add);
         }
         catch (InvalidOperationException exception)
@@ -2609,15 +2553,14 @@ public sealed class DeploymentProvisioningTests
         // deploy log reporting the table as policed by budget_isolation — which is true, and which is
         // exactly why reading only the name is not enough. Only the policy's content separates
         // "budget_isolation exists here" from "budgets are isolated here".
-        await using PostgreSqlContainer container = await StartBareContainerAsync();
-        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+        await DeploymentDatabaseProvisioning.ProvisionAsync(Sandbox.AdminConnectionString, Sandbox.Role);
 
-        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await using NpgsqlConnection admin = await OpenAdminAsync();
         await ExecuteAsync(admin, $"drop policy {BudgetIsolationPolicy} on {SabotagedTable}");
         await ExecuteAsync(
             admin,
             $"create policy {BudgetIsolationPolicy} on {SabotagedTable} "
-            + $"for all to {DatabaseProvisioning.AppRoleName} "
+            + $"for all to {AppRoleName} "
             + "using (true) with check (true)");
 
         // Act
@@ -2629,7 +2572,7 @@ public sealed class DeploymentProvisioningTests
         try
         {
             await DeploymentDatabaseProvisioning.VerifyRowLevelSecurityCoverageAsync(
-                container.GetConnectionString(),
+                Sandbox.AdminConnectionString, Sandbox.Role,
                 log: logLines.Add);
         }
         catch (InvalidOperationException exception)
@@ -2668,15 +2611,14 @@ public sealed class DeploymentProvisioningTests
         // — so a green gate would have shipped a table that reads as empty for every tenant, with the
         // deploy certifying it as isolated. Which setting keys which column is the rule, and nothing
         // less than the pair of them is the rule.
-        await using PostgreSqlContainer container = await StartBareContainerAsync();
-        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+        await DeploymentDatabaseProvisioning.ProvisionAsync(Sandbox.AdminConnectionString, Sandbox.Role);
 
-        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await using NpgsqlConnection admin = await OpenAdminAsync();
         await ExecuteAsync(admin, $"drop policy {BudgetIsolationPolicy} on {SabotagedTable}");
         await ExecuteAsync(
             admin,
             $"create policy {BudgetIsolationPolicy} on {SabotagedTable} "
-            + $"for all to {DatabaseProvisioning.AppRoleName} "
+            + $"for all to {AppRoleName} "
             + $"using ({BudgetColumnKeyedOnTheUserSetting}) "
             + $"with check ({BudgetColumnKeyedOnTheUserSetting})");
 
@@ -2689,7 +2631,7 @@ public sealed class DeploymentProvisioningTests
         try
         {
             await DeploymentDatabaseProvisioning.VerifyRowLevelSecurityCoverageAsync(
-                container.GetConnectionString(),
+                Sandbox.AdminConnectionString, Sandbox.Role,
                 log: logLines.Add);
         }
         catch (InvalidOperationException exception)
@@ -2736,15 +2678,14 @@ public sealed class DeploymentProvisioningTests
         // implements the content check needs to know that a substring test is not merely weak here,
         // it is vacuous — it cannot fail on this table, which is the one table where failing matters
         // most.
-        await using PostgreSqlContainer container = await StartBareContainerAsync();
-        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+        await DeploymentDatabaseProvisioning.ProvisionAsync(Sandbox.AdminConnectionString, Sandbox.Role);
 
-        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await using NpgsqlConnection admin = await OpenAdminAsync();
         await ExecuteAsync(admin, $"drop policy {UserIsolationPolicy} on {UsersTable}");
         await ExecuteAsync(
             admin,
             $"create policy {UserIsolationPolicy} on {UsersTable} "
-            + $"for all to {DatabaseProvisioning.AppRoleName} "
+            + $"for all to {AppRoleName} "
             + $"using ({SignedInButOwnershipFreePredicate})");
 
         // Act
@@ -2756,7 +2697,7 @@ public sealed class DeploymentProvisioningTests
         try
         {
             await DeploymentDatabaseProvisioning.VerifyRowLevelSecurityCoverageAsync(
-                container.GetConnectionString(),
+                Sandbox.AdminConnectionString, Sandbox.Role,
                 log: logLines.Add);
         }
         catch (InvalidOperationException exception)
@@ -2795,15 +2736,14 @@ public sealed class DeploymentProvisioningTests
         // and then never see it again, because USING still hides it. Writes that vanish into another
         // tenant are worse than reads that leak: the leak is at least visible to the person who
         // suffers it. USING and WITH CHECK are two rules and the table owes both.
-        await using PostgreSqlContainer container = await StartBareContainerAsync();
-        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+        await DeploymentDatabaseProvisioning.ProvisionAsync(Sandbox.AdminConnectionString, Sandbox.Role);
 
-        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await using NpgsqlConnection admin = await OpenAdminAsync();
         await ExecuteAsync(admin, $"drop policy {BudgetIsolationPolicy} on {SabotagedTable}");
         await ExecuteAsync(
             admin,
             $"create policy {BudgetIsolationPolicy} on {SabotagedTable} "
-            + $"for all to {DatabaseProvisioning.AppRoleName} "
+            + $"for all to {AppRoleName} "
             + $"using ({BudgetOwnershipPredicate}) with check (true)");
 
         // Act
@@ -2815,7 +2755,7 @@ public sealed class DeploymentProvisioningTests
         try
         {
             await DeploymentDatabaseProvisioning.VerifyRowLevelSecurityCoverageAsync(
-                container.GetConnectionString(),
+                Sandbox.AdminConnectionString, Sandbox.Role,
                 log: logLines.Add);
         }
         catch (InvalidOperationException exception)
@@ -2861,15 +2801,14 @@ public sealed class DeploymentProvisioningTests
         // for people, and a reader should not have to know this PostgreSQL rule to see that writes
         // are constrained. That is a rule about the script's prose, not a rule the gate may enforce
         // against the catalog.
-        await using PostgreSqlContainer container = await StartBareContainerAsync();
-        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+        await DeploymentDatabaseProvisioning.ProvisionAsync(Sandbox.AdminConnectionString, Sandbox.Role);
 
-        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await using NpgsqlConnection admin = await OpenAdminAsync();
         await ExecuteAsync(admin, $"drop policy {BudgetIsolationPolicy} on {SabotagedTable}");
         await ExecuteAsync(
             admin,
             $"create policy {BudgetIsolationPolicy} on {SabotagedTable} "
-            + $"for all to {DatabaseProvisioning.AppRoleName} "
+            + $"for all to {AppRoleName} "
             + $"using ({BudgetOwnershipPredicate})");
 
         // Act
@@ -2881,7 +2820,7 @@ public sealed class DeploymentProvisioningTests
         try
         {
             await DeploymentDatabaseProvisioning.VerifyRowLevelSecurityCoverageAsync(
-                container.GetConnectionString(),
+                Sandbox.AdminConnectionString, Sandbox.Role,
                 log: logLines.Add);
         }
         catch (InvalidOperationException exception)
@@ -2921,15 +2860,14 @@ public sealed class DeploymentProvisioningTests
         // result would have the deploy log telling them the policy is present and correct. The
         // enforced rule is not the rule owed, which is the same sentence the renamed-policy test
         // ends on, reached by a different route.
-        await using PostgreSqlContainer container = await StartBareContainerAsync();
-        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+        await DeploymentDatabaseProvisioning.ProvisionAsync(Sandbox.AdminConnectionString, Sandbox.Role);
 
-        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await using NpgsqlConnection admin = await OpenAdminAsync();
         await ExecuteAsync(admin, $"drop policy {BudgetIsolationPolicy} on {SabotagedTable}");
         await ExecuteAsync(
             admin,
             $"create policy {BudgetIsolationPolicy} on {SabotagedTable} as restrictive "
-            + $"for all to {DatabaseProvisioning.AppRoleName} "
+            + $"for all to {AppRoleName} "
             + $"using ({BudgetOwnershipPredicate}) with check ({BudgetOwnershipPredicate})");
 
         // Act
@@ -2943,7 +2881,7 @@ public sealed class DeploymentProvisioningTests
         try
         {
             await DeploymentDatabaseProvisioning.VerifyRowLevelSecurityCoverageAsync(
-                container.GetConnectionString(),
+                Sandbox.AdminConnectionString, Sandbox.Role,
                 log: logLines.Add);
         }
         catch (InvalidOperationException exception)
@@ -2990,15 +2928,14 @@ public sealed class DeploymentProvisioningTests
         // Which is also why refusing an unknown view is the right shape rather than pedantry: a view
         // over tenant data is either security_invoker, or it is a bypass, and nothing in the catalog
         // distinguishes "we meant this" from "we forgot" except somebody writing it down.
-        await using PostgreSqlContainer container = await StartBareContainerAsync();
-        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+        await DeploymentDatabaseProvisioning.ProvisionAsync(Sandbox.AdminConnectionString, Sandbox.Role);
 
-        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await using NpgsqlConnection admin = await OpenAdminAsync();
         await ExecuteAsync(
             admin, $"create view public.{SabotageView} as select * from {MigratedTable}");
         await ExecuteAsync(
             admin,
-            $"grant select on public.{SabotageView} to {DatabaseProvisioning.AppRoleName}");
+            $"grant select on public.{SabotageView} to {AppRoleName}");
 
         // Act — straight at the verifier, as everywhere else in this group. Here ProvisionAsync would
         // not heal the damage, since the view is outside the grants script entirely; going through it
@@ -3011,7 +2948,7 @@ public sealed class DeploymentProvisioningTests
         try
         {
             await DeploymentDatabaseProvisioning.VerifyRowLevelSecurityCoverageAsync(
-                container.GetConnectionString(),
+                Sandbox.AdminConnectionString, Sandbox.Role,
                 log: logLines.Add);
         }
         catch (InvalidOperationException exception)
@@ -3037,7 +2974,7 @@ public sealed class DeploymentProvisioningTests
     [Test]
     public async Task AttachAppRolePasswordAsync_InvalidPasswordAlphabet_ThrowsBeforeConnecting()
     {
-        // Arrange — no container, on purpose. The claim is about ordering inside the method, and an
+        // Arrange — no database, on purpose. The claim is about ordering inside the method, and an
         // address nothing listens on is what makes the ordering observable: if validation runs first
         // the connection string is never used, and if it does not, the attempt to use it fails in a
         // way an ArgumentException cannot be mistaken for.
@@ -3087,46 +3024,45 @@ public sealed class DeploymentProvisioningTests
         // could have damaged. The previous test proves when the refusal happens; this one proves what
         // the refusal costs, which is the fact an operator actually depends on: a bad secret must
         // leave the role exactly as provisioning left it rather than half-credentialed.
-        await using PostgreSqlContainer container = await StartBareContainerAsync();
-        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+        await DeploymentDatabaseProvisioning.ProvisionAsync(Sandbox.AdminConnectionString, Sandbox.Role);
 
         // Act
         ArgumentException? rejected = null;
         try
         {
             await DatabaseProvisioning.AttachAppRolePasswordAsync(
-                container.GetConnectionString(), PasswordWithASingleQuote);
+                Sandbox.AdminConnectionString, Sandbox.Role, PasswordWithASingleQuote);
         }
         catch (ArgumentException exception)
         {
             rejected = exception;
         }
 
-        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await using NpgsqlConnection admin = await OpenAdminAsync();
         (_, bool canLogin, bool hasNoPassword) = await ReadAppRoleAsync(admin);
 
         // The positive control: the same method, same database, legal password, and it works. Without
         // it "the role still has no password" is equally satisfied by a method that never attaches
         // anything at all.
         await DatabaseProvisioning.AttachAppRolePasswordAsync(
-            container.GetConnectionString(), AppRolePassword);
+            Sandbox.AdminConnectionString, Sandbox.Role, AppRolePassword);
         (string? connectedAs, string? sqlState) =
-            await TryLoginAsAppRoleAsync(container, AppRolePassword);
+            await TryLoginAsAppRoleAsync(AppRolePassword);
 
         // Assert
         await Assert.That(rejected).IsNotNull();
         await Assert.That(canLogin).IsTrue();
         await Assert.That(hasNoPassword).IsTrue();
         await Assert.That(sqlState).IsNull();
-        await Assert.That(connectedAs).IsEqualTo(DatabaseProvisioning.AppRoleName);
+        await Assert.That(connectedAs).IsEqualTo(AppRoleName);
     }
 
     [Test]
     public async Task BuildAppRoleIdentitySql_ForAKnownObjectId_LabelsTheRoleThenNullsThePassword()
     {
-        // Arrange — no database and no container. Pinning the text is not a convenience here, it is
+        // Arrange — no database at all. Pinning the text is not a convenience here, it is
         // the only verification available anywhere but Azure: vanilla PostgreSQL has no pgaadauth
-        // label provider, so the statement below cannot be executed in a container at all (see
+        // label provider, so the statement below cannot be executed on a vanilla server at all (see
         // AttachAppRoleIdentityAsync_RunsAgainstThePostgresDatabase, which proves the routing and
         // nothing more). Character-for-character is therefore the strongest claim obtainable locally,
         // and the emitted SQL is the whole of what Azure will be asked to run.
@@ -3177,16 +3113,14 @@ public sealed class DeploymentProvisioningTests
         // AttachAppRoleIdentityAsync has to rewrite the admin connection string's Database and keep
         // every other option, and dropping the database the string names is what makes the rewrite
         // observable rather than assumed. A method that used the string as given cannot reach a
-        // server at all once budgetoid is gone.
+        // server at all once the sandbox's database is gone.
         //
         // ProvisionAsync is not called: the label provider check fires before PostgreSQL resolves the
-        // role, so the migrated schema would only make this test slower. The role is created anyway,
-        // so the statement is as close to the real one as a non-Azure server can get.
-        await using PostgreSqlContainer container = await StartBareContainerAsync();
-        await using NpgsqlConnection maintenance = await OpenAdminOnPostgresDatabaseAsync(container);
-        await ExecuteAsync(
-            maintenance, $"create role {DatabaseProvisioning.AppRoleName} with login");
-        await ExecuteAsync(maintenance, "drop database budgetoid with (force)");
+        // role, so the migrated schema would only make this test slower. The statement names
+        // budgetoid_app, which already exists on the shared server, so it is as close to the real one
+        // as a non-Azure server can get without this test creating anything.
+        await using NpgsqlConnection maintenance = await OpenAdminOnPostgresDatabaseAsync();
+        await ExecuteAsync(maintenance, $"drop database {Sandbox.Database} with (force)");
 
         // The positive control, taken first so that the failure below cannot be read charitably: the
         // connection string handed to the method is genuinely unusable as written, and says so with
@@ -3194,7 +3128,7 @@ public sealed class DeploymentProvisioningTests
         PostgresException? applicationDatabaseGone = null;
         try
         {
-            await using NpgsqlConnection asWritten = new(container.GetConnectionString());
+            await using NpgsqlConnection asWritten = new(Sandbox.AdminConnectionString);
             await asWritten.OpenAsync();
         }
         catch (PostgresException exception)
@@ -3207,7 +3141,7 @@ public sealed class DeploymentProvisioningTests
         try
         {
             await DatabaseProvisioning.AttachAppRoleIdentityAsync(
-                container.GetConnectionString(), AppIdentityObjectId);
+                Sandbox.AdminConnectionString, AppIdentityObjectId);
         }
         catch (PostgresException exception)
         {
@@ -3232,48 +3166,13 @@ public sealed class DeploymentProvisioningTests
     }
 
     /// <summary>
-    /// Starts an empty PostgreSQL container. The builder is the same one the test hosts use, so
-    /// these tests and the rest of the integration suite run against the same server version; what
-    /// is deliberately missing is everything the hosts do afterwards.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// The start goes through <see cref="StartGuard" />, which is a leak guard rather than tidiness:
-    /// every call site has the shape
-    /// <c>await using PostgreSqlContainer container = await StartBareContainerAsync();</c>, so the
-    /// variable is bound only <b>after</b> this method returns, and a throw here would otherwise
-    /// abandon a container Docker has already started. The reasoning, the Testcontainers 4.12.0
-    /// observation it rests on, and the decision about a disposal that fails too all live on
-    /// <see cref="StartGuard" />, at the code that implements them; <c>AssemblyInfo.cs</c> carries the
-    /// suite-level history. <c>SharedPostgresCluster.StartClusterAsync</c> guards a wider region of its
-    /// own and deliberately does not share this helper.
-    /// </para>
-    /// <para>
-    /// The guard was written by matching that shape, not by capturing a failure. One test in this
-    /// class was lost once under load and never reproduced over three full suite runs — which is what
-    /// a one-in-six flake looks like when it does not fire. Read it as a closed leak path, not as a
-    /// diagnosed and cured flake. What has changed is that the path is now executed by something:
-    /// <see cref="StartGuardTests" /> drives it over a fake, because a <c>catch</c> reachable only by
-    /// a broken Docker daemon is a <c>catch</c> no test in this class can ever enter.
-    /// </para>
-    /// </remarks>
-    private static Task<PostgreSqlContainer> StartBareContainerAsync() =>
-        StartGuard.StartAsync(
-            new PostgreSqlBuilder(SharedPostgresCluster.Image)
-                .WithDatabase("budgetoid")
-                .WithUsername("postgres")
-                .WithPassword("postgres")
-                .Build(),
-            container => container.StartAsync());
-
-    /// <summary>
-    /// Opens a connection as the container account, which is a superuser. Every schema observation
+    /// Opens a connection to the sandbox database as the server's superuser. Every schema observation
     /// in this file goes through it; the application role could not answer most of these questions
     /// and is not being measured by them.
     /// </summary>
-    private static async Task<NpgsqlConnection> OpenAdminAsync(PostgreSqlContainer container)
+    private async Task<NpgsqlConnection> OpenAdminAsync()
     {
-        NpgsqlConnection connection = new(container.GetConnectionString());
+        NpgsqlConnection connection = new(Sandbox.AdminConnectionString);
         await connection.OpenAsync();
         return connection;
     }
@@ -3289,14 +3188,9 @@ public sealed class DeploymentProvisioningTests
     /// the database on its own; a helper that did the rewrite for it would make the question
     /// unanswerable.
     /// </remarks>
-    private static async Task<NpgsqlConnection> OpenAdminOnPostgresDatabaseAsync(
-        PostgreSqlContainer container)
+    private async Task<NpgsqlConnection> OpenAdminOnPostgresDatabaseAsync()
     {
-        NpgsqlConnection connection = new(
-            new NpgsqlConnectionStringBuilder(container.GetConnectionString())
-            {
-                Database = "postgres",
-            }.ConnectionString);
+        NpgsqlConnection connection = new(Sandbox.MaintenanceConnectionString);
         await connection.OpenAsync();
         return connection;
     }
@@ -3311,14 +3205,12 @@ public sealed class DeploymentProvisioningTests
     /// established under the previous one, and a test asserting that an attach took effect would be
     /// reading a cached success.
     /// </remarks>
-    private static async Task<(string? ConnectedAs, string? SqlState)> TryLoginAsAppRoleAsync(
-        PostgreSqlContainer container,
-        string password)
+    private async Task<(string? ConnectedAs, string? SqlState)> TryLoginAsAppRoleAsync(string password)
     {
         string connectionString =
-            new NpgsqlConnectionStringBuilder(container.GetConnectionString())
+            new NpgsqlConnectionStringBuilder(Sandbox.AdminConnectionString)
             {
-                Username = DatabaseProvisioning.AppRoleName,
+                Username = AppRoleName,
                 Password = password,
                 Pooling = false,
             }.ConnectionString;
@@ -3343,11 +3235,11 @@ public sealed class DeploymentProvisioningTests
     /// <remarks>
     /// <c>pg_authid</c> rather than <c>pg_roles</c> because only the former exposes
     /// <c>rolpassword</c>, and "the role was created without a credential" is the fact the Entra
-    /// migration turns into a contract. It is superuser-only, which the container account is. Reading
+    /// migration turns into a contract. It is superuser-only, which the server's account is. Reading
     /// all three in one row keeps them from drifting into separate observations that disagree about
     /// which role they described.
     /// </remarks>
-    private static async Task<(bool Exists, bool CanLogin, bool HasNoPassword)> ReadAppRoleAsync(
+    private async Task<(bool Exists, bool CanLogin, bool HasNoPassword)> ReadAppRoleAsync(
         NpgsqlConnection connection)
     {
         await using NpgsqlCommand command = new(
@@ -3357,7 +3249,7 @@ public sealed class DeploymentProvisioningTests
             where rolname = @role
             """,
             connection);
-        command.Parameters.AddWithValue("role", DatabaseProvisioning.AppRoleName);
+        command.Parameters.AddWithValue("role", AppRoleName);
 
         await using NpgsqlDataReader reader = await command.ExecuteReaderAsync();
         if (!await reader.ReadAsync())
@@ -3373,9 +3265,9 @@ public sealed class DeploymentProvisioningTests
     /// connection string, with no <c>IBudgetContext</c>. Migration state is a property of the
     /// database rather than of a tenant, so there is no ambient budget for this context to carry.
     /// </summary>
-    private static BudgetoidDbContext CreateDbContext(PostgreSqlContainer container) => new(
+    private BudgetoidDbContext CreateDbContext() => new(
         new DbContextOptionsBuilder<BudgetoidDbContext>()
-            .UseNpgsql(container.GetConnectionString())
+            .UseNpgsql(Sandbox.AdminConnectionString)
             .Options);
 
     /// <summary>
@@ -3594,7 +3486,7 @@ public sealed class DeploymentProvisioningTests
     /// <c>current_database()</c> rather than a name, so the question is asked about the database
     /// provisioning ran against and nothing else.
     /// </remarks>
-    private static async Task<IReadOnlyList<string>> ReadDatabasePrivilegesAsync(
+    private async Task<IReadOnlyList<string>> ReadDatabasePrivilegesAsync(
         NpgsqlConnection connection,
         string role)
     {
@@ -3625,7 +3517,7 @@ public sealed class DeploymentProvisioningTests
     /// effective privileges: this is the question "does the role hold a grant of its own", which
     /// <c>has_database_privilege</c> folds together with PUBLIC and cannot answer.
     /// </summary>
-    private static async Task<IReadOnlyList<string>> ReadAppRoleDirectDatabaseGrantsAsync(
+    private async Task<IReadOnlyList<string>> ReadAppRoleDirectDatabaseGrantsAsync(
         NpgsqlConnection connection)
     {
         await using NpgsqlCommand command = new(
@@ -3639,7 +3531,7 @@ public sealed class DeploymentProvisioningTests
             order by 1
             """,
             connection);
-        command.Parameters.AddWithValue("role", DatabaseProvisioning.AppRoleName);
+        command.Parameters.AddWithValue("role", AppRoleName);
 
         List<string> grants = [];
         await using NpgsqlDataReader reader = await command.ExecuteReaderAsync();
@@ -3651,26 +3543,19 @@ public sealed class DeploymentProvisioningTests
         return grants;
     }
 
-    /// <summary>The container's connection string re-pointed at another database on it.</summary>
-    private static string BuildConnectionStringFor(PostgreSqlContainer container, string database) =>
-        new NpgsqlConnectionStringBuilder(container.GetConnectionString())
-        {
-            Database = database,
-        }.ConnectionString;
-
     /// <summary>
     /// Calls the reach verifier and returns what it threw, or <see langword="null" /> if it
     /// accepted. Caught as the base <see cref="InvalidOperationException" /> so the caller's
     /// <c>IsTypeOf</c> proves the exact type rather than a catch clause filtering for it.
     /// </summary>
-    private static async Task<InvalidOperationException?> TryVerifyAppRoleReachAsync(
+    private async Task<InvalidOperationException?> TryVerifyAppRoleReachAsync(
         string adminConnectionString,
         List<string> logLines)
     {
         try
         {
             await DeploymentDatabaseProvisioning.VerifyAppRoleReachAsync(
-                adminConnectionString,
+                adminConnectionString, Sandbox.Role,
                 log: logLines.Add);
             return null;
         }
@@ -3730,10 +3615,10 @@ public sealed class DeploymentProvisioningTests
     /// Reads one boolean column of <c>pg_roles</c> for the application role. The column name is a
     /// constant of this class, never input.
     /// </summary>
-    private static Task<bool> ReadAppRoleFlagAsync(NpgsqlConnection connection, string column) =>
+    private Task<bool> ReadAppRoleFlagAsync(NpgsqlConnection connection, string column) =>
         ScalarBoolAsync(
             connection,
-            $"select {column} from pg_roles where rolname = '{DatabaseProvisioning.AppRoleName}'");
+            $"select {column} from pg_roles where rolname = '{AppRoleName}'");
 
     /// <summary>Counts <c>pg_default_acl</c> rows, which a freshly provisioned database has none of.</summary>
     private static async Task<int> CountDefaultAclRowsAsync(NpgsqlConnection connection)
@@ -3764,12 +3649,12 @@ public sealed class DeploymentProvisioningTests
     /// it was refused with, or <see langword="null" /> if it was allowed. Pooling off for the reason
     /// <see cref="TryLoginAsAppRoleAsync" /> gives.
     /// </summary>
-    private static async Task<string?> TryCreateTempTableAsAppRoleAsync(string adminConnectionString)
+    private async Task<string?> TryCreateTempTableAsAppRoleAsync(string adminConnectionString)
     {
         string connectionString =
             new NpgsqlConnectionStringBuilder(adminConnectionString)
             {
-                Username = DatabaseProvisioning.AppRoleName,
+                Username = AppRoleName,
                 Password = AppRolePassword,
                 Pooling = false,
             }.ConnectionString;
