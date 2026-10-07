@@ -323,6 +323,10 @@ public sealed class ProjectReferenceGraphTests
         "Infrastructure: package Microsoft.EntityFrameworkCore.Design",
         "Infrastructure: package Npgsql.EntityFrameworkCore.PostgreSQL",
         "Infrastructure: package Microsoft.CodeAnalysis.BannedApiAnalyzers",
+        // The second grant, argued in Infrastructure.csproj: the integration suite provisions a role
+        // of its own per test, through members that take the role and are internal so the
+        // application cannot.
+        "Infrastructure: internals IntegrationTests",
 
         "IntegrationTests: sdk Microsoft.NET.Sdk",
         "IntegrationTests: project Api",

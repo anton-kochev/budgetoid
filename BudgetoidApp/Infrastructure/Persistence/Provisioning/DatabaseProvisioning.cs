@@ -234,7 +234,7 @@ public static class DatabaseProvisioning
         }
     }
 
-    private static async Task<string> ReadGrantsScriptAsync(CancellationToken cancellationToken)
+    internal static async Task<string> ReadGrantsScriptAsync(CancellationToken cancellationToken)
     {
         await using Stream stream =
             typeof(DatabaseProvisioning).Assembly.GetManifestResourceStream(GrantsResourceName)

@@ -28,4 +28,22 @@
     <ItemGroup>
         <EmbeddedResource Include="Persistence\Provisioning\app-role-grants.sql"/>
     </ItemGroup>
+    <!--
+      Granted to the integration suite alone, for the provisioning members that take an AppRole.
+
+      Production has exactly one application role, budgetoid_app, and every public provisioning
+      member still provisions that one. The suite needs others: a deployment test sabotages the role
+      it provisions — alters it, renames it, grants it a parameter — and on one shared PostgreSQL
+      server a role is server-wide, so two tests sabotaging budgetoid_app at once would read each
+      other's damage. Each test therefore provisions a role of its own, through internal overloads
+      that take the role as an AppRole.
+
+      Internal rather than public because a public parameter is one the application could pass too,
+      and the deploy step would then have a way to provision some other role than the one the API
+      connects as. AppRole is internal as well, so no public member can take one. What travels is
+      visibility to a test assembly, not a dependency: nothing in the application references it.
+    -->
+    <ItemGroup>
+        <InternalsVisibleTo Include="IntegrationTests"/>
+    </ItemGroup>
 </Project>
