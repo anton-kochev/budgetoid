@@ -15,7 +15,7 @@ namespace IntegrationTests;
 /// run — so fixed names like <c>budgetoid_template</c> were safe. A server the suite merely connects to
 /// outlives runs and can serve two at once, so every name is <c>bt_&lt;run&gt;_…</c> with an eight-hex
 /// run id, and nothing outside that shape is ever created or dropped. <c>budgetoid</c> in particular —
-/// the database a Pithos session declares for the developer's own work — cannot match.
+/// the database a developer works in on a shared server — cannot match.
 /// </para>
 /// <para>
 /// <b>Why a lease rather than a timestamp.</b> A session advisory lock lives exactly as long as the

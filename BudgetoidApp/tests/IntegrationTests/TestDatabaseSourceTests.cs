@@ -8,10 +8,9 @@ namespace IntegrationTests;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Why a server can come from outside at all.</b> Inside a Pithos agent session there is no Docker,
-/// but there is a PostgreSQL next to the agent, handed over as <c>PITHOS_POSTGRES_URL</c>. A developer
-/// or a CI job can name any other server with <c>BUDGETOID_TEST_DATABASE_URL</c>. With neither, the suite
-/// starts its own container exactly as before.
+/// <b>Why a server can come from outside at all.</b> Somewhere without Docker — an agent sandbox, a CI
+/// job with a database service — there is often a PostgreSQL to hand, and
+/// <c>BUDGETOID_TEST_DATABASE_URL</c> names it. Without it, the suite starts its own container.
 /// </para>
 /// <para>
 /// These run against a fake environment, so none of them needs a database.
@@ -20,7 +19,6 @@ namespace IntegrationTests;
 public sealed class TestDatabaseSourceTests
 {
     private const string Ours = "BUDGETOID_TEST_DATABASE_URL";
-    private const string Pithos = "PITHOS_POSTGRES_URL";
 
     [Test]
     public async Task Resolve_WithNoVariable_StartsAContainer()
@@ -33,19 +31,6 @@ public sealed class TestDatabaseSourceTests
         await Assert.That(source.Variable).IsNull();
     }
 
-    [Test]
-    public async Task Resolve_PrefersTheProjectVariableOverPithos()
-    {
-        // Act
-        TestDatabaseSource source = TestDatabaseSource.Resolve(Env(
-            (Ours, "Host=ours;Username=u;Password=p"),
-            (Pithos, "postgresql://postgres:x@pithos-postgres:5432/app")));
-
-        // Assert
-        await Assert.That(source.Variable).IsEqualTo(Ours);
-        await Assert.That(new NpgsqlConnectionStringBuilder(source.ConnectionString).Host).IsEqualTo("ours");
-    }
-
     /// <summary>
     /// An exported-but-empty variable is how a shell says "unset" more often than it means "connect to
     /// nothing"; reading it as a server would fail every test with a parse error about an empty string.
@@ -56,12 +41,10 @@ public sealed class TestDatabaseSourceTests
     public async Task Resolve_TreatsABlankVariableAsUnset(string blank)
     {
         // Act
-        TestDatabaseSource source = TestDatabaseSource.Resolve(Env(
-            (Ours, blank),
-            (Pithos, "postgresql://postgres:x@pithos-postgres:5432/app")));
+        TestDatabaseSource source = TestDatabaseSource.Resolve(Env((Ours, blank)));
 
         // Assert
-        await Assert.That(source.Variable).IsEqualTo(Pithos);
+        await Assert.That(source.StartsContainer).IsTrue();
     }
 
     [Test]
@@ -69,11 +52,11 @@ public sealed class TestDatabaseSourceTests
     {
         // Act
         TestDatabaseSource source = TestDatabaseSource.Resolve(Env(
-            (Pithos, "postgresql://postgres:s%40cr%3At@pithos-postgres:6543/budgetoid?sslmode=require")));
+            (Ours, "postgresql://postgres:s%40cr%3At@db.example:6543/budgetoid?sslmode=require")));
 
         // Assert
         NpgsqlConnectionStringBuilder builder = new(source.ConnectionString);
-        await Assert.That(builder.Host).IsEqualTo("pithos-postgres");
+        await Assert.That(builder.Host).IsEqualTo("db.example");
         await Assert.That(builder.Port).IsEqualTo(6543);
         await Assert.That(builder.Username).IsEqualTo("postgres");
         await Assert.That(builder.Password).IsEqualTo("s@cr:t");

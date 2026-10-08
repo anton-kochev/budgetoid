@@ -42,16 +42,15 @@ namespace IntegrationTests;
 internal static class SharedPostgresCluster
 {
     /// <summary>
-    /// The PostgreSQL image every test container starts from: production's major, and the exact
-    /// version the project's <c>.pithos</c> gives the agent, so a run inside Pi and a run on the host
-    /// measure the same server.
+    /// The PostgreSQL image every test container starts from: production's major, pinned to an
+    /// exact version so every run measures the same server.
     /// </summary>
     public const string Image = "postgres:18.6";
 
     /// <summary>
     /// Password the application role authenticates with inside this cluster. A constant is fine: a
     /// container lives for one run and is unreachable from outside it, and a named server is a
-    /// throwaway test server too (a Pithos session's database lives in memory for that session).
+    /// throwaway test server too.
     /// </summary>
     /// <remarks>
     /// The role is server-wide, so every run on one server sets this same password, and they agree. The
@@ -320,11 +319,10 @@ internal static class SharedPostgresCluster
     /// <remarks>
     /// <para>
     /// Every per-test database is created and dropped through this path, so it opens thousands of
-    /// unpooled connections in bursts. When Docker runs in a VM behind the host's network (Pithos runs
-    /// Pi in Docker Desktop and Testcontainers in a separate Lima VM), a rare connect in such a burst
-    /// is refused or never answered while the cluster itself is healthy: one in 3,372 was refused in
-    /// an otherwise green run, and a stress test reproduced the drops only on that path, never inside
-    /// the VM or on Docker Desktop alone.
+    /// unpooled connections in bursts. When the server sits in a VM behind the host's network, a rare
+    /// connect in such a burst is refused or never answered while the cluster itself is healthy: one in
+    /// 3,372 was refused in an otherwise green run, and a stress test reproduced the drops only across
+    /// that network hop, never inside the VM.
     /// </para>
     /// <para>
     /// <b>Only the connect is retried.</b> Nothing has reached the server yet, so a second attempt

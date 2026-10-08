@@ -9,8 +9,8 @@
 //
 // The shape in place
 //
-// One PostgreSQL 18 server serves the whole assembly: the server BUDGETOID_TEST_DATABASE_URL or
-// PITHOS_POSTGRES_URL names, or a postgres:18.6 container the suite starts when neither is set.
+// One PostgreSQL 18 server serves the whole assembly: the server BUDGETOID_TEST_DATABASE_URL names,
+// or a postgres:18.6 container the suite starts when it is not set.
 // Migrations and the grants script are applied once, to a template database; each test then takes a
 // database of its own out of it with CREATE DATABASE ... TEMPLATE and drops it WITH (FORCE)
 // afterwards. Every database a run creates is named under that run's prefix and lease, so two runs can

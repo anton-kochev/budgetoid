@@ -8,8 +8,7 @@ namespace IntegrationTests;
 /// </summary>
 /// <remarks>
 /// <para>
-/// A server the suite did not start — the one a Pithos session runs next to the agent, or one named by
-/// <c>BUDGETOID_TEST_DATABASE_URL</c> — outlives a run. Two runs can overlap on it, and a run killed
+/// A server the suite did not start — one named by <c>BUDGETOID_TEST_DATABASE_URL</c> — outlives a run. Two runs can overlap on it, and a run killed
 /// part-way leaves databases behind that no later run would ever drop. Every run therefore names its
 /// databases under its own prefix, holds a lease for its lifetime, and sweeps only prefixes nobody
 /// leases.
@@ -57,8 +56,8 @@ public sealed class ClusterRunTests
         await Assert.That(() => ClusterRun.Create().SandboxHelperRole(1, label)).Throws<ArgumentException>();
 
     /// <summary>
-    /// The sweep can only ever reach names a run made. <c>budgetoid</c> is the database a Pithos session
-    /// declares for the developer's own work, and dropping it would destroy that session's data.
+    /// The sweep can only ever reach names a run made. <c>budgetoid</c> is the database the developer works
+    /// in on a shared server, and dropping it would destroy that work.
     /// </summary>
     [Test]
     [Arguments("bt_deadbeef_t00001", true)]

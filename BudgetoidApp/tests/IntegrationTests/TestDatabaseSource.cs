@@ -10,36 +10,29 @@ namespace IntegrationTests;
 /// <param name="ConnectionString">A key=value Npgsql connection string; null for a container.</param>
 /// <remarks>
 /// <para>
-/// <b>Precedence.</b> <c>BUDGETOID_TEST_DATABASE_URL</c> first, because it is the project's own and
-/// someone set it on purpose; then <c>PITHOS_POSTGRES_URL</c>, the database a Pithos agent session runs
-/// next to the agent; then a container. A blank value is unset.
+/// <b>One variable.</b> <c>BUDGETOID_TEST_DATABASE_URL</c> names the server; without it the suite starts
+/// a container. A blank value is unset.
 /// </para>
 /// <para>
-/// <b>Both URI and key=value forms are accepted.</b> Pithos hands over a <c>postgresql://</c> URI, which
-/// Npgsql does not parse; key=value passes through as written. The URI is translated here rather than
+/// <b>Both URI and key=value forms are accepted.</b> Environments that provide a database tend to hand
+/// over a <c>postgresql://</c> URI, which Npgsql does not parse; key=value passes through as written. The URI is translated here rather than
 /// guessed at, and anything this translation does not understand stops the run instead of being
 /// dropped: a silently ignored setting is a server reached on weaker terms than were asked for.
 /// </para>
 /// </remarks>
 internal sealed record TestDatabaseSource(string? Variable, string? ConnectionString)
 {
-    /// <summary>The variables consulted, in order.</summary>
-    public static readonly IReadOnlyList<string> Variables = ["BUDGETOID_TEST_DATABASE_URL", "PITHOS_POSTGRES_URL"];
+    /// <summary>The variable that names the server.</summary>
+    public const string VariableName = "BUDGETOID_TEST_DATABASE_URL";
 
     public bool StartsContainer => ConnectionString is null;
 
     public static TestDatabaseSource Resolve(Func<string, string?> environment)
     {
-        foreach (string variable in Variables)
-        {
-            string? value = environment(variable);
-            if (!string.IsNullOrWhiteSpace(value))
-            {
-                return new TestDatabaseSource(variable, ToConnectionString(variable, value.Trim()));
-            }
-        }
-
-        return new TestDatabaseSource(null, null);
+        string? value = environment(VariableName);
+        return string.IsNullOrWhiteSpace(value)
+            ? new TestDatabaseSource(null, null)
+            : new TestDatabaseSource(VariableName, ToConnectionString(VariableName, value.Trim()));
     }
 
     public static TestDatabaseSource FromProcess() => Resolve(Environment.GetEnvironmentVariable);
