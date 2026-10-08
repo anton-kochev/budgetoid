@@ -1,8 +1,10 @@
 namespace Infrastructure.Persistence.Provisioning;
 
 /// <summary>
-/// Thrown when at least one budget-owned table is not protected by row-level security — either
-/// because the table has it switched off, or because it does not carry exactly one isolation policy.
+/// Thrown when at least one table is not protected by row-level security — because it has it
+/// switched off, because it does not carry exactly one isolation policy, because the policy it does
+/// carry is not the one its ownership requires or does not bind the application role, or because
+/// nobody has decided which tenant the table's rows belong to at all.
 /// </summary>
 /// <remarks>
 /// It derives from <see cref="InvalidOperationException"/> so that anything already handling
@@ -16,7 +18,7 @@ public sealed class RowLevelSecurityCoverageException : InvalidOperationExceptio
     /// Creates the exception from the offending table names and one human-readable problem per
     /// table.
     /// </summary>
-    /// <param name="tables">Names of the budget-owned tables that are not protected.</param>
+    /// <param name="tables">Names of the tables that are not accounted for.</param>
     /// <param name="problems">
     /// Per-table descriptions of what is wrong, each naming its table.
     /// </param>
@@ -25,7 +27,7 @@ public sealed class RowLevelSecurityCoverageException : InvalidOperationExceptio
         IReadOnlyList<string> problems)
         : base(BuildMessage(tables, problems)) => Tables = tables;
 
-    /// <summary>Names of the budget-owned tables that are not protected.</summary>
+    /// <summary>Names of the tables that are not accounted for.</summary>
     public IReadOnlyList<string> Tables { get; }
 
     // The message is composed here, from the same list Tables exposes, rather than by the caller:
@@ -35,9 +37,9 @@ public sealed class RowLevelSecurityCoverageException : InvalidOperationExceptio
     private static string BuildMessage(
         IReadOnlyList<string> tables,
         IReadOnlyList<string> problems) =>
-        $"Row-level security does not cover {tables.Count} budget-owned table(s): "
+        $"Row-level security does not account for {tables.Count} table(s): "
         + $"{string.Join(", ", tables)}. {string.Join(" ", problems)} "
-        + "A budget-owned table the application role can reach without an enforced isolation policy "
+        + "A tenant-owned table the application role can reach without an enforced isolation policy "
         + "is readable and writable across every tenant, so this is a tenancy breach rather than a "
         + "missing feature. Re-apply app-role-grants.sql on the admin connection.";
 }

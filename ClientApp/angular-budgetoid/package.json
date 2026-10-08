@@ -12,6 +12,7 @@
     "test:watch": "ng test --watch",
     "test:coverage": "ng test --coverage",
     "lint": "ng lint --fix",
+    "perf:narrative": "node --disable-warning=ExperimentalWarning --experimental-strip-types tools/narrative-perf/run.ts",
     "format": "prettier . --write --cache",
     "format:check": "prettier . --check --cache"
   },
@@ -42,9 +43,9 @@
     "@angular/compiler-cli": "^21.2.17",
     "@vitest/coverage-v8": "^4.1.10",
     "angular-eslint": "21.4.0",
+    "esbuild": "0.28.1",
     "eslint": "^9.28.0",
     "eslint-plugin-prefer-arrow": "^1.2.3",
-    "immer": "^10.1.1",
     "jsdom": "^29.1.1",
     "lefthook": "^2.1.9",
     "prettier": "^3.3.3",

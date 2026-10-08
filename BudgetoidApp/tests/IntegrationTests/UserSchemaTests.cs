@@ -6,6 +6,7 @@ using Domain.Transactions;
 using Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
+using TestSupport;
 
 namespace IntegrationTests;
 
@@ -50,7 +51,9 @@ public sealed class UserSchemaTests
         // by anything the caller did. The refusal is the rule, the name is an artifact — pinning it
         // would not strengthen this test, it would make a migration reshuffle look like a
         // regression.
-        await Assert.That(exception.SqlState).IsEqualTo(PostgresErrorCodes.ForeignKeyViolation);
+        // The key is RESTRICT, and PostgreSQL 18 reports that refusal as 23001 (restrict_violation);
+        // 17 said 23503. Production runs 18, and the repositories match both codes.
+        await Assert.That(exception.SqlState).IsEqualTo(PostgresErrorCodes.RestrictViolation);
 
         // The rows below are not an extra: a statement that fails rolls back whole, and asserting
         // that is half the rule. A refusal that had already destroyed the budget on its way to
@@ -59,6 +62,12 @@ public sealed class UserSchemaTests
         await connection.OpenAsync();
         await Assert.That(await CountRowsAsync(connection, "users", "id", userId)).IsEqualTo(1L);
         await Assert.That(await CountRowsAsync(connection, "budgets", "user_id", userId)).IsEqualTo(1L);
+
+        // The credential is on the same rolled-back statement, and it is the row whose survival
+        // matters most: it is the only thing that resolves a sign-in to this account, so a refusal
+        // that had taken it out would leave the user permanently unreachable while still holding
+        // their email and their transactions.
+        await Assert.That(await CountRowsAsync(connection, "credentials", "user_id", userId)).IsEqualTo(1L);
         await Assert.That(await CountRowsAsync(connection, "accounts", "budget_id", budgetId)).IsEqualTo(1L);
         await Assert.That(await CountRowsAsync(connection, "transactions", "budget_id", budgetId)).IsEqualTo(1L);
     }
@@ -74,11 +83,26 @@ public sealed class UserSchemaTests
         await using (BudgetoidDbContext seed = CreateDb(host, budgetId))
         {
             seed.Accounts.Add(Account.Create(
-                budgetId, "Checking", AccountType.Checking, 0m, "USD", UsdMinorUnit, SeedInstant));
-            CategoryGroup group = CategoryGroup.Create(budgetId, "Everyday", null, 0, SeedInstant);
+                Guid.CreateVersion7(),
+                budgetId,
+                SealedNarrative.Indexed("Checking"), AccountType.Checking, 0m, "USD", UsdMinorUnit, SeedInstant));
+            CategoryGroup group = CategoryGroup.Create(
+                Guid.CreateVersion7(),
+                budgetId,
+                SealedNarrative.Indexed("Everyday"),
+                null,
+                0,
+                SeedInstant);
             seed.CategoryGroups.Add(group);
-            seed.Categories.Add(Category.Create(budgetId, group.Id, "Groceries", null, 0, SeedInstant));
-            seed.Payees.Add(Payee.Create(budgetId, "Corner Shop", SeedInstant));
+            seed.Categories.Add(Category.Create(
+                Guid.CreateVersion7(),
+                budgetId,
+                group.Id,
+                SealedNarrative.Indexed("Groceries"),
+                null,
+                0,
+                SeedInstant));
+            seed.Payees.Add(Payee.Create(Guid.CreateVersion7(), budgetId, SealedNarrative.Indexed("Corner Shop"), SeedInstant));
             await seed.SaveChangesAsync();
         }
 
@@ -99,6 +123,11 @@ public sealed class UserSchemaTests
         // budget-level equivalent and worth re-proving there.
         await Assert.That(await CountRowsAsync(connection, "users", "id", userId)).IsEqualTo(0L);
         await Assert.That(await CountRowsAsync(connection, "budgets", "user_id", userId)).IsEqualTo(0L);
+
+        // Credentials cascade rather than restrict: they are how the account is reached, not
+        // something it owes anyone, so nothing about them should be able to hold an erasure up.
+        // Left behind, they would also be a stranded record of which Google account this was.
+        await Assert.That(await CountRowsAsync(connection, "credentials", "user_id", userId)).IsEqualTo(0L);
         await Assert.That(await CountRowsAsync(connection, "accounts", "budget_id", budgetId)).IsEqualTo(0L);
         await Assert.That(await CountRowsAsync(connection, "category_groups", "budget_id", budgetId)).IsEqualTo(0L);
         await Assert.That(await CountRowsAsync(connection, "categories", "budget_id", budgetId)).IsEqualTo(0L);
@@ -119,17 +148,20 @@ public sealed class UserSchemaTests
     {
         await using BudgetoidDbContext db = CreateDb(host, budgetId);
         Account account = Account.Create(
-            budgetId, "Checking", AccountType.Checking, 0m, "USD", UsdMinorUnit, SeedInstant);
+            Guid.CreateVersion7(),
+            budgetId,
+            SealedNarrative.Indexed("Checking"), AccountType.Checking, 0m, "USD", UsdMinorUnit, SeedInstant);
         db.Accounts.Add(account);
         await db.SaveChangesAsync();
 
         db.Transactions.Add(Transaction.Create(
+            Guid.CreateVersion7(),
             budgetId,
             account.Id,
             -10m,
             UsdMinorUnit,
             new DateOnly(2026, 6, 12),
-            "Groceries",
+            SealedNarrative.Description("Groceries"),
             SeedInstant));
         await db.SaveChangesAsync();
     }

@@ -28,10 +28,15 @@ jobs:
       AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
       AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
-      # azd reads infra parameters from these env vars (config store is empty in CI);
-      # they map to infra.parameters.frontend_origin / .google_client_id in the AppHost.
+      # azd reads infra parameters from these env vars (config store is empty in CI); they map to
+      # infra.parameters.frontend_origin / .google_client_id / .passkey_relying_party_id in the
+      # AppHost. The API refuses to boot without any of them, so an unset variable here is a
+      # crash-looping revision rather than a degraded one.
       AZURE_FRONTEND_ORIGIN: ${{ vars.AZURE_FRONTEND_ORIGIN }}
       AZURE_GOOGLE_CLIENT_ID: ${{ vars.AZURE_GOOGLE_CLIENT_ID }}
+      # The registrable domain of AZURE_FRONTEND_ORIGIN, and permanent: every registered passkey is
+      # bound to it, so changing this value invalidates all of them rather than moving them.
+      AZURE_PASSKEY_RELYING_PARTY_ID: ${{ vars.AZURE_PASSKEY_RELYING_PARTY_ID }}
       # This workflow's own service principal, which the AppHost registers as a Microsoft Entra
       # administrator of the Postgres server (infra.parameters.pipeline_principal_id / _name).
       # Entra-only auth means the *only* identity that can migrate the schema and bind the
@@ -53,6 +58,11 @@ jobs:
       # into the administrators resource, whose name IS the object id — ARM rejects an empty resource
       # name with a message about the resource, not about the missing input. Named failure here beats
       # decoding that one.
+      #
+      # The application settings are checked in the same step and for the same reason, one failure
+      # mode later: the API refuses to boot without any of them, so an unset variable produces a
+      # revision that crash-loops after a deploy this workflow reported as successful. Naming the
+      # missing variable before anything is provisioned costs a second.
       - name: Require the pipeline principal identifiers
         run: |
           if [ -z "$AZURE_PIPELINE_PRINCIPAL_ID" ] || [ -z "$AZURE_PIPELINE_PRINCIPAL_NAME" ]; then
@@ -60,6 +70,19 @@ jobs:
             echo "as repository variables. They register this workflow's service principal as a" >&2
             echo "Microsoft Entra administrator of the Postgres server, which is the only identity" >&2
             echo "that can migrate the schema under Entra-only auth. See DEPLOYMENT.md." >&2
+            exit 1
+          fi
+          missing=""
+          for name in AZURE_FRONTEND_ORIGIN AZURE_GOOGLE_CLIENT_ID AZURE_PASSKEY_RELYING_PARTY_ID; do
+            if [ -z "${!name}" ]; then missing="$missing $name"; fi
+          done
+          if [ -n "$missing" ]; then
+            echo "These repository variables must be set:$missing" >&2
+            echo "They become the API's frontend origin, Google client id and passkey relying party" >&2
+            echo "id. The API refuses to boot without them, so an unset one deploys a crash-looping" >&2
+            echo "revision. AZURE_FRONTEND_ORIGIN is a serialized origin (https://host, no trailing" >&2
+            echo "slash) whose host must be AZURE_PASSKEY_RELYING_PARTY_ID or a subdomain of it — the" >&2
+            echo "API refuses the pair at boot otherwise. See DEPLOYMENT.md." >&2
             exit 1
           fi
 
@@ -171,6 +194,30 @@ jobs:
           capture APP_IDENTITY_OID "resolving the managed identity's principal id" \
             az identity show --ids "$MI_RESOURCE_ID" --query principalId -o tsv
 
+          # The API opens this server with SSL Mode=VerifyFull and validates the chain against the
+          # trust store of its own base image, not this runner's. Check the server's certificate
+          # against exactly that store, and against the name the API connects by, before anything
+          # ships: a chain ending in a root the image lacks would otherwise surface as the API's first
+          # database request failing in production. The tag is asked of the SDK rather than written
+          # here: the SDK derives it from Api.csproj (today `-noble-chiseled-extra`, because the
+          # project is not invariant-globalization), and a hand-written copy would drift from it
+          # without anything noticing. The image is never run, only read. The remedy for a failure
+          # here is shipping the missing root, never lowering the mode.
+          capture API_BASE_IMAGE "reading the API's base image from the SDK" \
+            dotnet msbuild BudgetoidApp/Api/Api.csproj -restore -nologo -v:q \
+              -t:ComputeContainerBaseImage -getProperty:ContainerBaseImage
+          echo "Checking the database certificate against the trust store of $API_BASE_IMAGE"
+          docker create --name api-base-trust "$API_BASE_IMAGE" /none >/dev/null
+          docker cp api-base-trust:/etc/ssl/certs/ca-certificates.crt "$RUNNER_TEMP/api-base-ca.crt"
+          docker rm api-base-trust >/dev/null
+          if ! openssl s_client -starttls postgres -connect "${HOST}:5432" -servername "$HOST" \
+                 -verify_hostname "$HOST" -verify_return_error -CAfile "$RUNNER_TEMP/api-base-ca.crt" \
+                 </dev/null >"$RUNNER_TEMP/db-tls.log" 2>&1; then
+            echo "The database certificate does not validate against the API image's trust store for ${HOST}:" >&2
+            grep -E 'verify error|Verify return code' "$RUNNER_TEMP/db-tls.log" >&2 || cat "$RUNNER_TEMP/db-tls.log" >&2
+            exit 1
+          fi
+
           # A token, not a password: PostgreSQL receives it in the password field, and Azure matches
           # it to a role by the principal's object id. Valid for under an hour, which is why it is
           # acquired in the step that uses it and never written to GITHUB_ENV — that would persist a
@@ -178,11 +225,12 @@ jobs:
           TOKEN=$(az account get-access-token --resource-type oss-rdbms --query accessToken -o tsv)
           echo "::add-mask::$TOKEN"
 
-          # Ssl Mode=Require because Azure Postgres refuses unencrypted connections; Api/Program.cs
-          # appends the same option for the same reason. Username is the administrator's principal
-          # name as registered on the server — the token proves which principal it is, but Postgres
-          # still needs a role name to log in as.
-          DBPROVISION_ADMIN_CONNECTION_STRING="Host=${HOST};Username=${AZURE_PIPELINE_PRINCIPAL_NAME};Password=${TOKEN};Database=budgetoid;Ssl Mode=Require" \
+          # Ssl Mode=VerifyFull, as in Api/Program.cs: this string carries a live administrator token
+          # over the public internet, so encryption alone would hand it to whoever answered. It
+          # validates against this runner's store, which is why the check above reads the image's.
+          # Username is the administrator's principal name as registered on the server — the token
+          # proves which principal it is, but Postgres still needs a role name to log in as.
+          DBPROVISION_ADMIN_CONNECTION_STRING="Host=${HOST};Username=${AZURE_PIPELINE_PRINCIPAL_NAME};Password=${TOKEN};Database=budgetoid;Ssl Mode=VerifyFull" \
           DBPROVISION_APP_IDENTITY_OBJECT_ID="$APP_IDENTITY_OID" \
             dotnet run --project BudgetoidApp/Tools/DbProvision -c Release
 
@@ -194,6 +242,42 @@ jobs:
           az postgres flexible-server firewall-rule delete \
             --resource-group "$AZURE_RESOURCE_GROUP" --server-name "${{ steps.dbfw.outputs.server }}" \
             --name gh-deploy-migration --yes || true
+
+      # The delete above swallows its own failure so cleanup never masks the real error; this step
+      # is what refuses it. Two properties hold the database's network and identity story, and
+      # neither is self-maintaining: ARM deployments are incremental, so a rule an earlier template
+      # created survives its removal from the template, as does a break-glass window an operator
+      # forgot to close; and password authentication is a server property an upgrade or a portal
+      # click can turn back on. Before this job ships the API, the server must have no firewall rule
+      # at all (ADR 0009) and must refuse passwords (ADR 0007). Each value is compared against what
+      # it must be, so an empty or renamed field fails rather than passing. An `azd up` from an
+      # operator's machine runs none of this.
+      - name: Verify the database posture
+        if: always() && steps.dbfw.outputs.server != ''
+        run: |
+          SERVER="${{ steps.dbfw.outputs.server }}"
+          RULES=$(az postgres flexible-server firewall-rule list \
+            --resource-group "$AZURE_RESOURCE_GROUP" --server-name "$SERVER" --query "length(@)" -o tsv)
+          PASSWORD_AUTH=$(az postgres flexible-server show \
+            --resource-group "$AZURE_RESOURCE_GROUP" --name "$SERVER" --query "authConfig.passwordAuth" -o tsv)
+          ENTRA_AUTH=$(az postgres flexible-server show \
+            --resource-group "$AZURE_RESOURCE_GROUP" --name "$SERVER" --query "authConfig.activeDirectoryAuth" -o tsv)
+          FAILED=0
+          if [ "$RULES" != "0" ]; then
+            echo "The database carries firewall rules (count: ${RULES:-<none read>}); it must carry none outside a deploy:" >&2
+            az postgres flexible-server firewall-rule list \
+              --resource-group "$AZURE_RESOURCE_GROUP" --server-name "$SERVER" --query "[].name" -o tsv >&2 || true
+            FAILED=1
+          fi
+          if [ "$PASSWORD_AUTH" != "Disabled" ]; then
+            echo "Password authentication is '${PASSWORD_AUTH:-<none read>}'; it must be Disabled." >&2
+            FAILED=1
+          fi
+          if [ "$ENTRA_AUTH" != "Enabled" ]; then
+            echo "Microsoft Entra authentication is '${ENTRA_AUTH:-<none read>}'; it must be Enabled." >&2
+            FAILED=1
+          fi
+          exit $FAILED
 
       - name: Deploy API
         run: azd deploy --no-prompt

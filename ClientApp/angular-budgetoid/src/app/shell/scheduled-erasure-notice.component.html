@@ -1,0 +1,14 @@
+<!-- Absolute and in the reader's zone, never a countdown that goes false on
+     tomorrow's load; the `datetime` attribute is the instant as it arrived. No
+     address and no "Warning" label: the notice is on a screen anyone at the
+     device can see, and colour is not the message. -->
+@if (instant(); as scheduled) {
+  <p class="n-notice">
+    This account will be erased on
+    <time [attr.datetime]="scheduled.wire"
+      >{{ scheduled.date }} at {{ scheduled.time }}</time
+    >. A sign-in with its Google account asked for this. If that wasn&rsquo;t
+    you, or you&rsquo;ve changed your mind, cancel it in Settings with a
+    passkey.
+  </p>
+}

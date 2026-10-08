@@ -9,9 +9,24 @@
     </PropertyGroup>
     <ItemGroup>
         <PackageReference Include="Microsoft.Extensions.TimeProvider.Testing" Version="10.1.0"/>
+        <!-- Pinned to the version Infrastructure builds against. Referencing Infrastructure brings
+             EF Core in transitively, and the PostgreSQL provider's floor (10.0.4) otherwise wins
+             over Microsoft.EntityFrameworkCore 10.0.9 here, which is a load-time version mismatch
+             rather than a tidiness warning. Every other project reaches 10.0.9 already. -->
+        <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.9"/>
         <PackageReference Include="TUnit" Version="1.56.0"/>
     </ItemGroup>
     <ItemGroup>
+        <!-- Deliberately no reference to Api. It targets the Web SDK, so pulling it in here would also
+             pull the whole web composition root — JwtBearer, OpenTelemetry, Npgsql, the Aspire service
+             defaults — plus a FrameworkReference on Microsoft.AspNetCore.App, into the one project whose
+             value is being free of them. ProjectReferenceGraphTests enforces that boundary — this absence
+             is a pinned row in its expected set, so adding the reference here fails a test rather than
+             merely contradicting a comment. A test that needs an Api type belongs in IntegrationTests,
+             which already references it; needing no container is not a reason to move the reference
+             instead. -->
         <ProjectReference Include="..\..\Application\Application.csproj"/>
+        <ProjectReference Include="..\..\Infrastructure\Infrastructure.csproj"/>
+        <ProjectReference Include="..\TestSupport\TestSupport.csproj"/>
     </ItemGroup>
 </Project>

@@ -1,0 +1,6 @@
+{
+  "name": "narrative-perf",
+  "private": true,
+  "type": "module",
+  "description": "Marks this directory ESM so Node can run run.ts under --experimental-strip-types. It declares no dependencies and is never installed."
+}

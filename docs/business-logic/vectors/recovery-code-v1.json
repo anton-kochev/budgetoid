@@ -1,0 +1,137 @@
+{
+  "_what": "Frozen known answers for the canonical form of a recovery code, and for the two independent HKDF branches derived from it. Computed outside both codebases from the rule as prose, so neither the browser nor the server test suite can certify itself.",
+  "_whyItExists": "The fold is written twice - once in the browser, which owns it, and once as a reproduction in the server's integration suite, which needs the same canonical text to seed a code a redemption can spend. Nothing compared the two implementations to each other, and they were found already disagreeing on four code points. This file is what makes them one rule: both suites read it, and a disagreement about any code point below is a red result on whichever side departed.",
+  "_theRule": "Unicode FULL upper case - not length preserving, so the sharp s becomes two characters - and locale independent, never a locale aware upper case; then strip whitespace and hyphens, then fold I and L to 1, then fold O to 0 - in that order. Upper case runs FIRST, so a lower case i folds to 1 like its upper case twin. Neither the word full nor the word locale may be left to a local equivalent: see _theRuleLeansOnPlatformSemantics.",
+  "_whyOrderMatters": "Fold the digits before upper casing and a lower case i survives as i rather than becoming 1. Every case below that carries a lower case letter would move.",
+  "_theRuleLeansOnPlatformSemantics": "Two steps are defined by the platform rather than by this product: which code points count as whitespace, and how a character upper cases. They are not the same everywhere - a byte order mark is whitespace to one runtime and not to another, and a sharp s upper cases to one character or to two. That is exactly why the cases below name individual code points rather than only well-formed codes: a second implementation agrees with this one by reproducing these answers, not by calling its own local equivalents.",
+  "_invisibleCodePointsAreEscaped": "Five cases carry a code point nothing renders - a byte order mark, NEXT LINE, a zero width space, a no-break space and an ideographic space - and each is written as a JSON \\u escape rather than as a literal character. The escape parses to the identical string, and it is what keeps the case legible in a diff and out of reach of an editor that trims, normalises or silently drops what it cannot draw. inputUtf8Hex and canonicalUtf8Hex are the authority on every row regardless: a reader reproducing this file works from the hex.",
+  "_whatThisCannotHold": "Nothing here says a code is valid. The fold is deliberately generous about presentation and says nothing about the alphabet, the length or the entropy - a fold that accepted a code it should not would pass every case below.",
+  "_twoBranchesOneCode": "The verifier crosses the wire and the key-encryption key never leaves the browser. They share an HKDF extract over the same canonical text and differ only in info, which is the one thing keeping the value a redemption sends from being the value that opens the account.",
+  "infos": {
+    "verifier": "budgetoid/recovery-code/verifier/v1",
+    "keyEncryptionKey": "budgetoid/recovery-code/key-encryption-key/v1"
+  },
+  "canonicalForm": [
+    {
+      "why": "a minted code: the fold is the identity on everything the generator produces",
+      "inputUtf8Hex": "3031323334353637383941424344454647484a4b4d4e50515253",
+      "input": "0123456789ABCDEFGHJKMNPQRS",
+      "canonical": "0123456789ABCDEFGHJKMNPQRS",
+      "canonicalUtf8Hex": "3031323334353637383941424344454647484a4b4d4e50515253"
+    },
+    {
+      "why": "lower case, the commonest way a code is typed back",
+      "inputUtf8Hex": "3031323334353637383961626364656667686a6b6d6e70717273",
+      "input": "0123456789abcdefghjkmnpqrs",
+      "canonical": "0123456789ABCDEFGHJKMNPQRS",
+      "canonicalUtf8Hex": "3031323334353637383941424344454647484a4b4d4e50515253"
+    },
+    {
+      "why": "the grouping the hand-off screen shows; hyphens are presentation",
+      "inputUtf8Hex": "30313233342d35363738392d41424344452d4647484a4b2d4d4e50515253",
+      "input": "01234-56789-ABCDE-FGHJK-MNPQRS",
+      "canonical": "0123456789ABCDEFGHJKMNPQRS",
+      "canonicalUtf8Hex": "3031323334353637383941424344454647484a4b4d4e50515253"
+    },
+    {
+      "why": "a space survives a copy out of a document",
+      "inputUtf8Hex": "303132333435363738392041424344454647484a4b4d4e50515253",
+      "input": "0123456789 ABCDEFGHJKMNPQRS",
+      "canonical": "0123456789ABCDEFGHJKMNPQRS",
+      "canonicalUtf8Hex": "3031323334353637383941424344454647484a4b4d4e50515253"
+    },
+    {
+      "why": "the three glyphs the alphabet excludes because a reader resolves them as 1, 1 and 0",
+      "inputUtf8Hex": "494c4f",
+      "input": "ILO",
+      "canonical": "110",
+      "canonicalUtf8Hex": "313130"
+    },
+    {
+      "why": "the same three lower case: upper case runs BEFORE the digit folds",
+      "inputUtf8Hex": "696c6f",
+      "input": "ilo",
+      "canonical": "110",
+      "canonicalUtf8Hex": "313130"
+    },
+    {
+      "why": "U is excluded from the draw but deliberately NOT folded - it is excluded so a draw cannot spell an obscenity",
+      "inputUtf8Hex": "55",
+      "input": "U",
+      "canonical": "U",
+      "canonicalUtf8Hex": "55"
+    },
+    {
+      "why": "a byte order mark, which is what a paste out of a document carries. Stripped: it is whitespace to this rule, and it is one of the two code points a second implementation calling its own local whitespace test gets wrong",
+      "inputUtf8Hex": "efbbbf3031323334353637383941424344454647484a4b4d4e50515253",
+      "input": "\ufeff0123456789ABCDEFGHJKMNPQRS",
+      "canonical": "0123456789ABCDEFGHJKMNPQRS",
+      "canonicalUtf8Hex": "3031323334353637383941424344454647484a4b4d4e50515253"
+    },
+    {
+      "why": "NEXT LINE is NOT stripped by this rule, though some platforms call it whitespace. It is the byte order mark's mirror image and the reason neither answer can be left to a local equivalent",
+      "inputUtf8Hex": "4142c2854344",
+      "input": "AB\u0085CD",
+      "canonical": "AB\u0085CD",
+      "canonicalUtf8Hex": "4142c2854344"
+    },
+    {
+      "why": "a zero width space is NOT stripped either - it is not whitespace to this rule",
+      "inputUtf8Hex": "4142e2808b4344",
+      "input": "AB\u200bCD",
+      "canonical": "AB\u200bCD",
+      "canonicalUtf8Hex": "4142e2808b4344"
+    },
+    {
+      "why": "a no-break space IS stripped",
+      "inputUtf8Hex": "4142c2a04344",
+      "input": "AB\u00a0CD",
+      "canonical": "ABCD",
+      "canonicalUtf8Hex": "41424344"
+    },
+    {
+      "why": "an ideographic space IS stripped",
+      "inputUtf8Hex": "4142e380804344",
+      "input": "AB\u3000CD",
+      "canonical": "ABCD",
+      "canonicalUtf8Hex": "41424344"
+    },
+    {
+      "why": "a dotless i upper-cases to I and then folds to 1. An upper case that leaves it alone reaches neither answer, and this row is the only thing that says so",
+      "inputUtf8Hex": "c4b1",
+      "input": "ı",
+      "canonical": "1",
+      "canonicalUtf8Hex": "31"
+    },
+    {
+      "why": "a sharp s upper-cases to TWO characters, SS - the fold is not length preserving, which is the assumption a per-character implementation makes without noticing it has made one",
+      "inputUtf8Hex": "c39f",
+      "input": "ß",
+      "canonical": "SS",
+      "canonicalUtf8Hex": "5353"
+    },
+    {
+      "why": "whitespace alone folds to nothing; the client refuses an empty canonical form",
+      "inputUtf8Hex": "2020",
+      "input": "  ",
+      "canonical": "",
+      "canonicalUtf8Hex": ""
+    }
+  ],
+  "derivations": [
+    {
+      "why": "the same code the envelope vectors in account-keys.md are computed under, so the two artifacts can be read side by side",
+      "code": "0123456789ABCDEFGHJKMNPQRS",
+      "canonical": "0123456789ABCDEFGHJKMNPQRS",
+      "verifierBase64Url": "aGr2Qher4pOLKZ335Uwyi92Ti9GAZ-Ek5G_9Br5plNE",
+      "keyEncryptionKeyHex": "c0e5b232a2357e7af8f66b5a350c6c63bf90df1b8482f5e0e6adf2f9205e6875"
+    },
+    {
+      "why": "a code typed back in the grouped, lower case form a person actually sees - it must derive the same two values as the row above, and that is the whole point of the fold",
+      "code": "01234-56789-abcde-fghjk-mnpqrs",
+      "canonical": "0123456789ABCDEFGHJKMNPQRS",
+      "verifierBase64Url": "aGr2Qher4pOLKZ335Uwyi92Ti9GAZ-Ek5G_9Br5plNE",
+      "keyEncryptionKeyHex": "c0e5b232a2357e7af8f66b5a350c6c63bf90df1b8482f5e0e6adf2f9205e6875"
+    }
+  ]
+}

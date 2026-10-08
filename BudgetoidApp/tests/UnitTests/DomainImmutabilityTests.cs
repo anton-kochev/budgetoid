@@ -5,10 +5,14 @@ using Domain.Budgets;
 namespace UnitTests;
 
 /// <summary>
-/// Pins two immutability rules that are true today only by construction and written down nowhere:
-/// a <see cref="Budget" /> cannot be renamed, re-owned or given a base currency after creation, and
-/// an <see cref="Account" />'s currency is fixed for its lifetime. Nothing fails today when someone
-/// adds a setter or a mutating method, which is exactly what these tests change.
+/// Pins two immutability rules that live in the shape of the domain: a <see cref="Budget" /> cannot
+/// be renamed, re-owned or given a base currency after creation, and an <see cref="Account" />'s
+/// currency is fixed for its lifetime. The database writes both rules down as well — by the columns
+/// left off the <c>GRANT UPDATE</c> lists in <c>app-role-grants.sql</c>, pinned by
+/// <c>AppRoleGrantMatrixTests</c> — so these tests are not the only record of them. What they add is
+/// the refusal of the <b>member</b> rather than of the statement, which the second paragraph below
+/// argues. Otherwise adding a setter or a mutating method costs nothing anywhere: it compiles, and
+/// on a column the role may write it succeeds. That is what these tests change.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -20,13 +24,34 @@ namespace UnitTests;
 /// <c>Update</c> moves a line and a human has to acknowledge it.
 /// </para>
 /// <para>
-/// Both of these are an <b>interim</b> enforcement layer, not the bottom one. The genuine bottom is
-/// <c>REVOKE UPDATE (name, user_id, base_currency_code) ON budgets</c> and
-/// <c>REVOKE UPDATE (currency_code) ON accounts</c> from a least-privilege application role — a
-/// grant, not a trigger, so it is legitimately declarative — and it is blocked on that role
-/// existing. Until it does, <c>dbContext.Budgets.ExecuteUpdateAsync(...)</c> bypasses the domain
-/// entirely and no arrangement of private setters stops it. That hole is the reason to want the
-/// role, and it is stated here because here is where the interim guard lives.
+/// Neither of these is the bottom enforcement layer, and neither is waiting to become one. The
+/// bottom layer shipped with <c>budgetoid_app</c> (ADR 0004): <c>app-role-grants.sql</c> grants that
+/// role <c>UPDATE (name) ON budgets</c> and
+/// <c>UPDATE (name, name_key, type, opening_balance) ON accounts</c>, so <c>user_id</c>,
+/// <c>base_currency_code</c>, <c>created_at_utc</c> and <c>id</c> on the one, and
+/// <c>currency_code</c> on the other, are immutable by being <b>absent from an explicit column
+/// list</b> — and <c>AppRoleGrantMatrixTests</c> restates the whole matrix in both directions, so a
+/// list widened to a table-wide <c>GRANT UPDATE</c> reddens. The shape is not decorative. What this
+/// paragraph used to name — <c>REVOKE UPDATE (base_currency_code) ON budgets</c> — is the
+/// formulation ADR 0004 considered and rejected, because PostgreSQL column privileges are additive:
+/// revoking one column against a table-wide <c>UPDATE</c> removes a column-level grant that was
+/// never issued, so the statement succeeds, changes nothing, and reads in the file as though it had
+/// closed a hole that is still open. <c>name</c> is the one writable <c>budgets</c> column and that
+/// is deliberate rather than an oversight — a content-key rotation (FR-099) re-seals the same text
+/// under a new key, which is why ADR 0004 states B2 as "no command updates a <c>budgets</c> row"
+/// rather than "a <c>budgets</c> row is never updated at all".
+/// </para>
+/// <para>
+/// So the two layers are both present on purpose, and calling that redundant misreads what each one
+/// refuses. A grant refuses a <i>statement</i> — it can only answer once an <c>UPDATE</c> has been
+/// composed and sent, and it answers with <c>42501</c> from inside a request. These tests refuse the
+/// <i>member</i> that would compose one: a <c>Budget.Rename</c> or a widened <c>Account.Update</c>
+/// is a perfectly legal method until somebody moves a line here and says why, which happens at
+/// review time rather than at run time and covers the shape of the domain regardless of which role
+/// the connection is under. The escape hatch this paragraph once described as open is not open
+/// either: <c>ExecuteUpdate</c> and <c>ExecuteDelete</c> are entries in
+/// <c>BudgetoidApp/BannedSymbols.txt</c>, so <c>dbContext.Budgets.ExecuteUpdateAsync(...)</c> is a
+/// compile error in this solution rather than merely a path nobody takes.
 /// </para>
 /// </remarks>
 public sealed class DomainImmutabilityTests
@@ -97,9 +122,33 @@ public sealed class DomainImmutabilityTests
         // These are CLR type names as reflection renders them, not the C# keywords the source is
         // written in: "String", not "string". Editing a line here to look like the declaration is
         // how this test starts failing for no reason.
+        // The name parameter is an IndexedName and not a String, and that is a second rule this set now
+        // pins. Both halves of a name move together because this signature has no spelling for half of
+        // one; an overload taking a bare NarrativeField would write new ciphertext under the previous
+        // name's index — a row whose uniqueness value stops describing its own content, which no
+        // constraint can see and no read can report, because recomputing either half needs the account's
+        // index key and that lives in a browser. Such an overload would appear here as a second entry.
+        //
+        // Reseal is the second entry, and it is here because a content-key rotation has to rewrite a
+        // name it cannot read. Why an account needs a second public mutator at all: Update is a rename —
+        // it takes a type, an opening balance and a minor unit, re-validates all three, and clears the
+        // rotation stamp — and a rotation supplies none of that and must clear nothing. A rotation
+        // routed through Update would have to invent the three arithmetic arguments, and the only
+        // inventions available are the entity's current values, which is correct right up to the account
+        // whose balance a second request changed between the read and the reseal; and clearing the stamp
+        // is the one thing a reseal must not do, because the stamp is the only signal the destructive
+        // completion step trusts. So the two are different acts on different columns with opposite
+        // effects on RotationId, and collapsing them costs more than the line below.
+        //
+        // What this row still pins, unchanged: the name parameter is an IndexedName, so a rotation
+        // cannot write half a name either; there is no currency parameter, so a rotation cannot
+        // redenominate; and there are three parameters and not four, so a reseal cannot quietly grow the
+        // ability to move an arithmetic column. A third entry means a third way to write this entity and
+        // belongs in a paragraph of its own, not appended to this one.
         string[] expected =
         [
-            "Void Update(String name, AccountType type, Decimal openingBalance, Int32 minorUnit)",
+            "Void Reseal(IndexedName name, Guid rotationId)",
+            "Void Update(IndexedName name, AccountType type, Decimal openingBalance, Int32 minorUnit)",
         ];
         await Assert.That(signatures).IsEquivalentTo(expected);
         await Assert.That(signatures.Length).IsGreaterThan(0);

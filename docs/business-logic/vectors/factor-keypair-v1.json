@@ -1,0 +1,340 @@
+{
+  "_what": "Frozen known answers for the factor-keypair scheme: the three associated-data messages, the HKDF info, the encapsulation key, and the two stored values. Computed outside this codebase by a third implementation (Node's OpenSSL-backed crypto), so neither the browser's WebCrypto nor the server suite's System.Security.Cryptography can certify itself against it.",
+  "_message": "label || 0x1F || version || 0x1F || <binding...>, one separator between fields and none at either end. The label and every identifier are UTF-8; the version and every public key are raw bytes and are never re-encoded.",
+  "_grammar": {
+    "label": "budgetoid/factor-keypair/v1",
+    "wrappedPrivateKeyAssociatedData": "label || 0x1F || version || 0x1F || factorId || 0x1F || \"private-key\"",
+    "encapsulatedAccountKeysAssociatedData": "label || 0x1F || version || 0x1F || factorId",
+    "manifestAssociatedData": "label || 0x1F || version || 0x1F || rotationEpoch, decimal digits",
+    "hkdfInfo": "label || 0x1F || version || 0x1F || factorId || 0x1F || ephemeralPublicKey || 0x1F || factorPublicKey",
+    "manifestPlaintext": "count, decimal digits || 0x1F || factorId || 0x1F || publicKey || 0x1F || ... , entries ascending by the canonical spelling of the factor identifier"
+  },
+  "_threeOnes": "Three different version bytes are all 1 and none may be derived from another. The leading byte of a wrapped private key and of a sealed manifest is the AEAD suite's. The leading byte of an encapsulated value is the encapsulation suite's. The version INSIDE every associated-data message and inside the HKDF info is the GRAMMAR's, and it versions neither suite. A reader who aliases any two of them renumbers a suite it never meant to touch.",
+  "_theVersionIsRawAndThatIsWhyTheMessageIsBytes": "Composing these messages as text is correct at version 1 and silently wrong from 0x80 up, where UTF-8 widens one byte into two with no error anywhere. The 0x80 vector below exists to hold that, and it is the only vector describing a version this scheme does not yet have.",
+  "_accountKeysIsAStrictPrefixOfPrivateKey": "The encapsulation message is the first 66 bytes of the private-key message. So an implementation that simply forgets the purpose field does not produce garbage - it produces the OTHER valid message of this same scheme. Both hex strings are pinned below for that reason, and neither is derivable from the other by inspection.",
+  "_whatThisIsNot": "Not a test of the key-substitution property. Binding both public keys into the info is what makes a substituted factor public key derive a different key, and no vector can show that: it pins that the bytes are present, never that they help. That argument lives in account-keys.md.",
+  "inputs": {
+    "contentKeyHex": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+    "indexKeyHex": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+    "keyEncryptionKeyHex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "factorPrivateScalarHex": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+    "ephemeralPrivateScalarHex": "c0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedf",
+    "wrappedPrivateKeyNonceHex": "b0b1b2b3b4b5b6b7b8b9babb",
+    "encapsulationNonceHex": "c0c1c2c3c4c5c6c7c8c9cacb",
+    "manifestNonceHex": "d0d1d2d3d4d5d6d7d8d9dadb",
+    "factorId": "c1d2e3f4-5a6b-7c8d-9e0f-a1b2c3d4e5f6"
+  },
+  "derived": {
+    "factorPublicKeyHex": "040d0918a04198474605615b6df90fdcb34791fb3ecb822f4b26eb6e4fc4511b9d19b90c1b83c0c35cfbbb31ead32bb52ae33622f57e3cc1638097ce97f430baba",
+    "ephemeralPublicKeyHex": "0473a56eced343896b8adeea1d0a26b196f4e0ebb4209c601a46ef6a27c5477451f13b88419aff65c0c1112310f1e6e5bf1ba82589f889f0f228e1cec9ed88f8bd",
+    "factorPkcs8Hex": "308187020100301306072a8648ce3d020106082a8648ce3d030107046d306b0201010420a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfa144034200040d0918a04198474605615b6df90fdcb34791fb3ecb822f4b26eb6e4fc4511b9d19b90c1b83c0c35cfbbb31ead32bb52ae33622f57e3cc1638097ce97f430baba",
+    "_pkcs8": "138 bytes, and the 65-byte uncompressed public key sits at offset 73. That is where a client lifts the factor's own public key from, rather than taking it from anything stored or transmitted.",
+    "rawSharedSecretHex": "ddeff61ef679d8573593bb40bb50c0d032bc80780953a6b8980e9c8cabeb970f",
+    "encapsulationKeyHex": "f9b5bcb734b498b34b2c171f94e50d66242bed2defd424c5458fc89107261aee"
+  },
+  "vectors": [
+    {
+      "name": "wrappedPrivateKeyAssociatedData",
+      "why": "the full message, purpose field included",
+      "factorId": "c1d2e3f4-5a6b-7c8d-9e0f-a1b2c3d4e5f6",
+      "version": 1,
+      "lengthBytes": 78,
+      "hex": "6275646765746f69642f666163746f722d6b6579706169722f76311f011f63316432653366342d356136622d376338642d396530662d6131623263336434653566361f707269766174652d6b6579"
+    },
+    {
+      "name": "encapsulatedAccountKeysAssociatedData",
+      "why": "no purpose field, and a strict prefix of the message above",
+      "factorId": "c1d2e3f4-5a6b-7c8d-9e0f-a1b2c3d4e5f6",
+      "version": 1,
+      "lengthBytes": 66,
+      "hex": "6275646765746f69642f666163746f722d6b6579706169722f76311f011f63316432653366342d356136622d376338642d396530662d613162326333643465356636"
+    },
+    {
+      "name": "manifestAssociatedData",
+      "why": "epoch 1: one digit, so it cannot show that the epoch is decimal text",
+      "rotationEpoch": 1,
+      "version": 1,
+      "lengthBytes": 31,
+      "hex": "6275646765746f69642f666163746f722d6b6579706169722f76311f011f31"
+    },
+    {
+      "name": "manifestAssociatedData",
+      "why": "epoch 10: two digits, which is what separates decimal text from a raw integer",
+      "rotationEpoch": 10,
+      "version": 1,
+      "lengthBytes": 32,
+      "hex": "6275646765746f69642f666163746f722d6b6579706169722f76311f011f3130"
+    },
+    {
+      "name": "wrappedPrivateKeyAssociatedData",
+      "why": "version 0x80, a version this scheme does not have. It is here so a text-composed message is caught by its LENGTH before any such version ships",
+      "factorId": "c1d2e3f4-5a6b-7c8d-9e0f-a1b2c3d4e5f6",
+      "version": 128,
+      "lengthBytes": 78,
+      "hex": "6275646765746f69642f666163746f722d6b6579706169722f76311f801f63316432653366342d356136622d376338642d396530662d6131623263336434653566361f707269766174652d6b6579"
+    },
+    {
+      "name": "hkdfInfo",
+      "why": "both public keys raw and in this order: ephemeral first, recipient second. Swapped, two matched implementations still agree with each other and with nothing else",
+      "lengthBytes": 198,
+      "hex": "6275646765746f69642f666163746f722d6b6579706169722f76311f011f63316432653366342d356136622d376338642d396530662d6131623263336434653566361f0473a56eced343896b8adeea1d0a26b196f4e0ebb4209c601a46ef6a27c5477451f13b88419aff65c0c1112310f1e6e5bf1ba82589f889f0f228e1cec9ed88f8bd1f040d0918a04198474605615b6df90fdcb34791fb3ecb822f4b26eb6e4fc4511b9d19b90c1b83c0c35cfbbb31ead32bb52ae33622f57e3cc1638097ce97f430baba"
+    },
+    {
+      "name": "encapsulationKey",
+      "why": "HKDF-SHA-256 over the raw agreement, empty salt, that info, 32 bytes",
+      "lengthBytes": 32,
+      "hex": "f9b5bcb734b498b34b2c171f94e50d66242bed2defd424c5458fc89107261aee"
+    },
+    {
+      "name": "wrappedPrivateKey",
+      "why": "the stored value: AEAD version || nonce || ciphertext || tag, exactly 167",
+      "lengthBytes": 167,
+      "hex": "01b0b1b2b3b4b5b6b7b8b9babba9d4dda9edcd8b4c41ffbd248593b5c0853a41f8936641085dcf85f531b29914044a271ac37f041b01fe06ed9410281e81c0b968ab8af043f93fda87bc229a440e55800babf8659819d8af5786a6a3a901d6ccd3f3158cd229483f01d067c43d4ceb58b0a098f24745d303659ec14340ceea4c2c42191e11cd2d14ef3cfb511e88ce2719cd99671ed8ef8156b4204338e753b3b109d14248e58a"
+    },
+    {
+      "name": "encapsulatedAccountKeys",
+      "why": "the stored value: encapsulation version || ephemeral point || nonce || ciphertext || tag, exactly 158. Its plaintext is contentKey || indexKey, CONTENT KEY FIRST - reversed it is the right width, the right version, and opens",
+      "lengthBytes": 158,
+      "hex": "010473a56eced343896b8adeea1d0a26b196f4e0ebb4209c601a46ef6a27c5477451f13b88419aff65c0c1112310f1e6e5bf1ba82589f889f0f228e1cec9ed88f8bdc0c1c2c3c4c5c6c7c8c9cacbc28ed079fcaf844f674993e20b8f02262b25a1c13a01bcf8ae8418f5ba6b70797f49bb212c106c2cb075bb388ea9fbe12a57ecf9ffd0f497d375676009d2c27dbef26c7d21ac7c68d54f493b83d927a5"
+    },
+    {
+      "name": "manifestPlaintext",
+      "why": "three factors SUPPLIED OUT OF ORDER. Two of the identifiers order one way by their canonical spelling and the other way by .NET's mixed-endian Guid.ToByteArray(), so an implementation sorting on raw Guid bytes produces a different plaintext here and an identical one for most other triples",
+      "suppliedOrder": [
+        "fd34509e-becf-42ed-89b9-948a1b6b1239",
+        "c1d2e3f4-5a6b-7c8d-9e0f-a1b2c3d4e5f6",
+        "8cef41e9-b3ec-40ac-8abe-e9b673674052"
+      ],
+      "expectedOrder": [
+        "8cef41e9-b3ec-40ac-8abe-e9b673674052",
+        "c1d2e3f4-5a6b-7c8d-9e0f-a1b2c3d4e5f6",
+        "fd34509e-becf-42ed-89b9-948a1b6b1239"
+      ],
+      "lengthBytes": 310,
+      "hex": "331f38636566343165392d623365632d343061632d386162652d6539623637333637343035321f04310577e49315ba62911ad18d962d491fc675f023396c74ba3d46d999a95dca0613dbaaefb958e1c478236c3ae6132dd89c11c0eb2eb78598db7067feaa31e8be1f63316432653366342d356136622d376338642d396530662d6131623263336434653566361f040d0918a04198474605615b6df90fdcb34791fb3ecb822f4b26eb6e4fc4511b9d19b90c1b83c0c35cfbbb31ead32bb52ae33622f57e3cc1638097ce97f430baba1f66643334353039652d626563662d343265642d383962392d3934386131623662313233391f044ff3893c70650ba2c8f879be1e8339630d0a2cc8e9a3e930e163f077243961533f71d70f91aa349522cbddf7c9653bcb94d52d37d2a0e875df9567fd8732532a"
+    },
+    {
+      "name": "manifestPlaintext",
+      "why": "eleven factors - a passkey and a card of ten, which is what a registration actually writes. The count leads as the two characters '11', not as one byte",
+      "lengthBytes": 1135,
+      "hex": "31311f30303030303030302d303030302d343030302d383030302d3030303030303030303030301f04fe7e1c6ce2e8495be1e71fa1eee1b63f0480eefe205eda5139cf73f8d9f4a033fc04ee70996b19a6b4322f99057b2b77ff2b6ce0756e8ea64bf17fcd4c7b122e1f30303030303030312d303030302d343030302d383030302d3030303030303030303030311f04ec0cfb739b16da2113531ee772e88f8c675031d9e584b2a6c07d37140144c7e19cd8001db321639bef0bff150d884f0e3c6575bbdcda4fbb6df4a5162d0aa4011f30303030303030322d303030302d343030302d383030302d3030303030303030303030321f0429b29c95788c310d25ae9647824a87659d4779e1b1598dff3c151cb6b1170c619b5124cc838e61c8c0fe75e40b67e0f9fa064ef9d32ea68c52562bf3fbeeb4e11f30303030303030332d303030302d343030302d383030302d3030303030303030303030331f04fa5f191bcd72f9fa899f2c0facf5ef9bcf6a06a6687df6e7e8a6f70157a0db256a2ac21dd1206eb81ad4b712fe34acc9ec60704bd0bf87c546802afac4b021181f30303030303030342d303030302d343030302d383030302d3030303030303030303030341f048fccbcdb4f6e8b4ee6ea0329a078364778db7cd56ba6a60892c3bcfdf4c835e79e511f1babd6d7db13c8ee8c5dfeed77b9cb3bf6804f075c3b4e92da2ab479171f30303030303030352d303030302d343030302d383030302d3030303030303030303030351f0401f237b980c13d40b3ee62024e17b4d73849decbf2060d45b97b5e8bba8a32df873e77f8b5b766aca15c5c183a75cfd17d264e9cc386bd5890202a0a6e06a7e61f30303030303030362d303030302d343030302d383030302d3030303030303030303030361f0434b38a718c6b21ef11070aa8e88d4b8526777bff966d6a5055030ce04c4c74dcaf59a592843207118d441b47b332bb670e9d160db517f36e3382b5e39a1ef0981f30303030303030372d303030302d343030302d383030302d3030303030303030303030371f0486458f60e1f9d416b5db33f079f6e6eeca5c4340b4bea64ab103913eb13e3d3fdfc447001c449189cdfe5a408ea7911543dc93e4fc58c57587810f61909067601f30303030303030382d303030302d343030302d383030302d3030303030303030303030381f04afdd77503606df8ba0901ffe6c8f677528ab2f7da1ebb73403cee7da855055ab4cc7e9f4a777869000596c7146030ebeeeebf0475ee9c66365bf1bc39d0090171f30303030303030392d303030302d343030302d383030302d3030303030303030303030391f042d1c5292ac10b22b6dde54b46a5eab5c6ffca0f0f4376814d304bfba4c0c9a05c11a19516cc3f826c513ff4b977839396a9653ec78bdd8e00609a38d7244d48e1f30303030303030612d303030302d343030302d383030302d3030303030303030303030611f04c1b90860bd179f79e4b699e6292b031f6806ccfe68e333881b6a8fe3abae3fc305a74f3297d5a51f1037f51fe39617d15c8004bfba9349fb93ea64e897f42dd9"
+    },
+    {
+      "name": "manifestSealed",
+      "why": "the manifest under the account's CONTENT key at epoch 1, AEAD framing, within the 29..4096 the server enforces",
+      "rotationEpoch": 1,
+      "lengthBytes": 339,
+      "hex": "01d0d1d2d3d4d5d6d7d8d9dadbcf76e40db595afb57943eb1f7f02cdaa4cc33aa71f16b897920cc05a01ffbe9b7f1a8cd7812274d47cd0b89ea8017c5bc98738289d4fadbf3d438afc25876fa203db790f5daae5bf8a0d5031310fd1fc51564f080b59a2d37a242c942399844ad931b33f57019d172f970af4bfd168a8ae136cf7fe0cadbde4b86da5a3c691e472245f5b2289a54fafd1270a3d968e54d9711177b27b146743eaff3fb6011edb597fd275bee60ff9f05ec23c9ba87a67e2de769e9fd91db1b5e5d1726cad9f806929a0bb1ede9c920fdd761e215e8a2e69cd663b78d09b359421b9e941672ce62111dbd2b4b71ceaab4c886a6b540390391fa6940c9c63f901e9154ae30bd91cdf9d67de60d6ff9d9970c2a85e63d06ac5ae6716d1798fe7c9543418ba9ae7013f4c09ed1534660f664259015e103fefb9a452ac9912809dfe8489ceb6147ecfcaca9109e517"
+    }
+  ],
+  "pointValidation": {
+    "_what": "Encodings a client may be handed at either place a point is read: where it performs key agreement, and where a point enters a manifest entry. Two DIFFERENT requirements are checked by two different mechanisms, and each case below says which one turns it away.",
+    "_theDelta": "The rows where platformAccepts is true AND encodingGuardRefuses is true are the whole reason the synchronous guard exists - there, the platform is not the guard. The rows where the opposite holds are why the guard is not asked to do curve arithmetic: reimplementing on-curve validation in BigInt would add unvectored cryptography to duplicate a check the platform already makes.",
+    "_measuredOn": "Node's WebCrypto. Not yet confirmed on Chrome, Firefox or WebKit; the hybrid row in particular is a platform behaviour a browser could differ on, and the guard is what makes that difference not matter.",
+    "cases": [
+      {
+        "name": "uncompressed",
+        "why": "the only encoding this scheme accepts",
+        "lengthBytes": 65,
+        "hex": "040d0918a04198474605615b6df90fdcb34791fb3ecb822f4b26eb6e4fc4511b9d19b90c1b83c0c35cfbbb31ead32bb52ae33622f57e3cc1638097ce97f430baba",
+        "platformAccepts": true,
+        "encodingGuardRefuses": false,
+        "refusedBy": "NOTHING - this is the valid encoding"
+      },
+      {
+        "name": "hybrid-parity-consistent",
+        "why": "THE case the guard exists for: 65 bytes, on the curve, and the platform ACCEPTS it, so a length-only guard lets it through. Its prefix carries a parity bit, so it must be built to match this key’s Y or the platform refuses it for the wrong reason and the test proves nothing",
+        "lengthBytes": 65,
+        "hex": "060d0918a04198474605615b6df90fdcb34791fb3ecb822f4b26eb6e4fc4511b9d19b90c1b83c0c35cfbbb31ead32bb52ae33622f57e3cc1638097ce97f430baba",
+        "platformAccepts": true,
+        "encodingGuardRefuses": true,
+        "refusedBy": "the encoding guard alone"
+      },
+      {
+        "name": "compressed",
+        "why": "33 bytes and accepted by the platform; refused here because IFR-019 fixes the uncompressed form",
+        "lengthBytes": 33,
+        "hex": "020d0918a04198474605615b6df90fdcb34791fb3ecb822f4b26eb6e4fc4511b9d",
+        "platformAccepts": true,
+        "encodingGuardRefuses": true,
+        "refusedBy": "the encoding guard alone"
+      },
+      {
+        "name": "prefix-05",
+        "why": "65 bytes with a prefix that is neither uncompressed nor hybrid",
+        "lengthBytes": 65,
+        "hex": "050d0918a04198474605615b6df90fdcb34791fb3ecb822f4b26eb6e4fc4511b9d19b90c1b83c0c35cfbbb31ead32bb52ae33622f57e3cc1638097ce97f430baba",
+        "platformAccepts": false,
+        "encodingGuardRefuses": true,
+        "refusedBy": "both"
+      },
+      {
+        "name": "off-curve",
+        "why": "0x04 and 65 bytes, but not a point on P-256",
+        "lengthBytes": 65,
+        "hex": "040d0918a04198474605615b6df90fdcb34791fb3ecb822f4b26eb6e4fc4511b9d19b90c1b83c0c35cfbbb31ead32bb52ae33622f57e3cc1638097ce97f430babb",
+        "platformAccepts": false,
+        "encodingGuardRefuses": false,
+        "refusedBy": "the platform alone"
+      },
+      {
+        "name": "all-zero-coordinates",
+        "why": "0x04 followed by zeroes",
+        "lengthBytes": 65,
+        "hex": "0400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "platformAccepts": false,
+        "encodingGuardRefuses": false,
+        "refusedBy": "the platform alone"
+      },
+      {
+        "name": "too-short-64",
+        "why": "the coordinates with no prefix",
+        "lengthBytes": 64,
+        "hex": "0d0918a04198474605615b6df90fdcb34791fb3ecb822f4b26eb6e4fc4511b9d19b90c1b83c0c35cfbbb31ead32bb52ae33622f57e3cc1638097ce97f430baba",
+        "platformAccepts": false,
+        "encodingGuardRefuses": true,
+        "refusedBy": "both"
+      },
+      {
+        "name": "too-long-66",
+        "why": "one trailing byte",
+        "lengthBytes": 66,
+        "hex": "040d0918a04198474605615b6df90fdcb34791fb3ecb822f4b26eb6e4fc4511b9d19b90c1b83c0c35cfbbb31ead32bb52ae33622f57e3cc1638097ce97f430baba00",
+        "platformAccepts": false,
+        "encodingGuardRefuses": true,
+        "refusedBy": "both"
+      }
+    ],
+    "_twoMechanisms": {
+      "encodingGuard": "IFR-019 - the uncompressed 65-byte form and no other encoding. A synchronous check of length and leading byte, and nothing else. `encodingGuardRefuses` is exactly `length !== 65 || point[0] !== 0x04`.",
+      "platformImport": "IFR-023 - partial public-key validation: a point not on the curve, and the point at infinity. crypto.subtle.importKey performs this, measured. `platformAccepts` records what it actually did with these bytes.",
+      "together": "Every case below is refused by at least one of the two. Neither subsumes the other, which is why both exist: the platform accepts two encodings IFR-019 forbids, and the encoding guard cannot see whether a well-encoded point is on the curve."
+    }
+  },
+  "adversarial": {
+    "_what": "Values built to be opened successfully by an implementation that skips a check, so that a test asserting REFUSAL fails when the check is missing. A round trip cannot produce these.",
+    "guardIsActuallyCalled": {
+      "why": "A 158-byte value whose ephemeral point is a parity-consistent HYBRID encoding, used consistently in the framing AND in the HKDF info. An implementation that imports the ephemeral point without checking its encoding derives the right key and OPENS THIS SUCCESSFULLY, returning the correct account keys - crypto.subtle.importKey accepts a hybrid point, measured. An implementation that calls the encoding guard on the ephemeral point refuses it. So a test asserting that openFactorKeypair REJECTS this is the only thing here that can tell those two implementations apart: it is the difference between exporting a correct guard and actually wiring it in.",
+      "factorId": "c1d2e3f4-5a6b-7c8d-9e0f-a1b2c3d4e5f6",
+      "keyEncryptionKeyHex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "wrappedPrivateKeyHex": "01b0b1b2b3b4b5b6b7b8b9babba9d4dda9edcd8b4c41ffbd248593b5c0853a41f8936641085dcf85f531b29914044a271ac37f041b01fe06ed9410281e81c0b968ab8af043f93fda87bc229a440e55800babf8659819d8af5786a6a3a901d6ccd3f3158cd229483f01d067c43d4ceb58b0a098f24745d303659ec14340ceea4c2c42191e11cd2d14ef3cfb511e88ce2719cd99671ed8ef8156b4204338e753b3b109d14248e58a",
+      "encapsulatedAccountKeysHex": "0107354e03501697a9129c9b9bd262397594542e6c8bc2254368ef5fc3eb018f7db12259edd7439412f9bc4f7d7fcc3dd5c6fc6b865940c72fcaa3c673083767f4efe0e1e2e3e4e5e6e7e8e9eaebb33751ae437b783c3c960870f04a1f5dee582f06963cf70617f7bd1f7081c673ed1d607428ace5954dfe4061d3690696b51136fa8700fe2dd6198c91e295772b073efd8d28a4d89faa8240a462c43e64",
+      "lengthBytes": 158,
+      "ephemeralPointHex": "07354e03501697a9129c9b9bd262397594542e6c8bc2254368ef5fc3eb018f7db12259edd7439412f9bc4f7d7fcc3dd5c6fc6b865940c72fcaa3c673083767f4ef",
+      "_opensIfUnguarded": "content key 202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f, index key 404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f"
+    },
+    "secondInstance": {
+      "_why": "A wholly independent instance - a different key-encryption key, a different factor identifier, a different factor keypair and a DIFFERENT pair of account keys. Every other vector in this file shares one instance, so an implementation that ignores its keyEncryptionKey or keys arguments and returns the frozen values passes all of them. It cannot pass both instances.",
+      "factorId": "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0",
+      "keyEncryptionKeyHex": "fedcba98765432100123456789abcdeffedcba98765432100123456789abcdef",
+      "contentKeyHex": "606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f",
+      "indexKeyHex": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+      "factorPublicKeyHex": "044c6336e3b8b3de771b613a1c7a1734834cd69c1a4f5ffecb240c63bc0ddb1574f6896c5d14ca44e0037791c2300333259a71b901e5258575d107e5b8ac48b424",
+      "factorPkcs8Hex": "308187020100301306072a8648ce3d020106082a8648ce3d030107046d306b02010104201112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f30a144034200044c6336e3b8b3de771b613a1c7a1734834cd69c1a4f5ffecb240c63bc0ddb1574f6896c5d14ca44e0037791c2300333259a71b901e5258575d107e5b8ac48b424",
+      "wrappedPrivateKeyHex": "01101112131415161718191a1b72a6f09bf1ee78363918e76c8e74b9d2528c29e199df99a16f16785a0960a80fa51a3d3a2545491410967c99cc6bc32012c01193a91d4ae1b4aa1247ef3d9c2ccdf353fb71898f70402c87edd224665bfbe1baa01380db6291d4beb147121bde36a5f1ea8ba8b9656e57075c747ccf15548f41ce2943cee41d860a765fc95749221fbad8d0f421739df59ddd996d4eb82dfaeb58cb12d504f05f",
+      "encapsulatedAccountKeysHex": "01040c7fcc321c77119203dbe79864907e4f0a01917789dea2d4731531a52a22e2bac1766d21e4617d72fbbef87d6edf2d8f80b526956e3c2c1701f16b7f311500c6202122232425262728292a2bb7f9c7e7ad12827f522dc5f36924b9b8439b90d7504953c6c74f96adb0ce048a7bb13d47cca86e620287a1bb1563b96235addc19b1f5ad6a2192a26a1ecf1d49870ff446073cf9b4d8398fc50ae2c45c",
+      "wrappedPrivateKeyLengthBytes": 167,
+      "encapsulatedAccountKeysLengthBytes": 158
+    }
+  },
+  "manifestPlaintextRefusals": {
+    "_what": "Manifest PLAINTEXTS that a reader of the manifestPlaintext grammar must refuse - not sealed envelopes, and not inputs to the AEAD. A consumer seals each one itself, under the account's content key with the manifest associated data for the epoch it is testing, and hands the result to its own manifest reader. Every refusal here is therefore exercised on the path production uses, rather than on a parser called directly: a check that exists but was never wired into the open-then-read path refuses nothing, and calling the parser by hand is exactly how that goes unnoticed for as long as it takes somebody to send a forged manifest.",
+    "_whyTheseAreHere": "The manifest grammar is the one place a client decides which public keys belong to an account. A reader that merely DECODES is indistinguishable from one that VERIFIES until somebody hands it a forgery - for every manifest this product actually writes, the two return the same set, pass the same tests and ship together. The count leads the plaintext precisely so that a value which lost its tail is a MISMATCH rather than a smaller set, and that only holds if the count is compared against what was read instead of trusted or ignored. These vectors are what stop 'the reader refuses a malformed manifest' from being a sentence in a document.",
+    "_theSameWidthOnes": "Six of the fourteen are exactly 310 bytes - the width of the frozen three-factor positive above: countLow, countHigh, outOfOrder, duplicateFactorId, nonCanonicalFactorId and hybridPoint. They AUTHENTICATE, because the consumer seals them itself and the tag is therefore correct. They are the right size. No width check, no version byte and no seal-and-open round trip can tell any of them from the real manifest, so a reader that opens the envelope and trusts what falls out returns a factor set the account does not have. Only a refusal inside the reader catches these six. The width of a manifest is never evidence about its contents.",
+    "_derivedFrom": "Every case is a stated mutation of the frozen 310-byte three-factor manifestPlaintext vector in `vectors` above - none is an independently generated manifest, so each differs from the positive in exactly the one property its name gives and a failure names its own cause. hybridPoint keeps entry one's own point and re-prefixes it under the parity rule this file's pointValidation table demonstrates in its hybrid-parity-consistent row - one of the two rows where platformAccepts is true and the encoding guard alone refuses. The point is derived here rather than borrowed from that row, because the row's point is the hybrid form of derived.factorPublicKeyHex, which is entry two's key: borrowing it would put the same x and y in two entries and hand a reader a second reason to refuse. So a reader that takes 65 bytes positionally and imports them SUCCEEDS - that case is refused by the manifest reader calling the encoding guard on every entry, or it is not refused at all.",
+    "_howTheseWereMade": "A standalone script walking the frozen positive field by field and mutating it with byte arithmetic alone. It imports no project code, so the parser these vectors judge produced none of them: a vector generated by the implementation under test pins today's behaviour, bug included, and then agrees with itself forever. The script self-checks three things. That its own recomposition of the frozen positive reproduces the frozen bytes exactly - otherwise every mutation below is measured from the wrong baseline and the whole section is fiction. That every case claiming to be the same width really is 310 bytes. And that no refusal case is still well-formed under an independent structural walk - a 'refusal' a correct reader would accept refuses nothing, and it fails the day the reader is fixed rather than the day it breaks.",
+    "cases": [
+      {
+        "name": "countLow",
+        "why": "the count names one fewer entry than the plaintext carries. A reader that loops count times and stops never sees the third entry, and that entry is an authenticator somebody is still holding - the account quietly stops naming a factor that still opens it",
+        "lengthBytes": 310,
+        "hex": "321f38636566343165392d623365632d343061632d386162652d6539623637333637343035321f04310577e49315ba62911ad18d962d491fc675f023396c74ba3d46d999a95dca0613dbaaefb958e1c478236c3ae6132dd89c11c0eb2eb78598db7067feaa31e8be1f63316432653366342d356136622d376338642d396530662d6131623263336434653566361f040d0918a04198474605615b6df90fdcb34791fb3ecb822f4b26eb6e4fc4511b9d19b90c1b83c0c35cfbbb31ead32bb52ae33622f57e3cc1638097ce97f430baba1f66643334353039652d626563662d343265642d383962392d3934386131623662313233391f044ff3893c70650ba2c8f879be1e8339630d0a2cc8e9a3e930e163f077243961533f71d70f91aa349522cbddf7c9653bcb94d52d37d2a0e875df9567fd8732532a"
+      },
+      {
+        "name": "countHigh",
+        "why": "the count names one more entry than the plaintext carries. A reader that walks to the end of the buffer and never compares the count cannot see truncation in this direction at all - which is the direction the count field was added for",
+        "lengthBytes": 310,
+        "hex": "341f38636566343165392d623365632d343061632d386162652d6539623637333637343035321f04310577e49315ba62911ad18d962d491fc675f023396c74ba3d46d999a95dca0613dbaaefb958e1c478236c3ae6132dd89c11c0eb2eb78598db7067feaa31e8be1f63316432653366342d356136622d376338642d396530662d6131623263336434653566361f040d0918a04198474605615b6df90fdcb34791fb3ecb822f4b26eb6e4fc4511b9d19b90c1b83c0c35cfbbb31ead32bb52ae33622f57e3cc1638097ce97f430baba1f66643334353039652d626563662d343265642d383962392d3934386131623662313233391f044ff3893c70650ba2c8f879be1e8339630d0a2cc8e9a3e930e163f077243961533f71d70f91aa349522cbddf7c9653bcb94d52d37d2a0e875df9567fd8732532a"
+      },
+      {
+        "name": "countLeadingZero",
+        "why": "the count spelled '03'. Number('03') is 3, so one factor set would have two valid plaintexts - the exact property the grammar's ordering and decimal spelling exist to prevent",
+        "lengthBytes": 311,
+        "hex": "30331f38636566343165392d623365632d343061632d386162652d6539623637333637343035321f04310577e49315ba62911ad18d962d491fc675f023396c74ba3d46d999a95dca0613dbaaefb958e1c478236c3ae6132dd89c11c0eb2eb78598db7067feaa31e8be1f63316432653366342d356136622d376338642d396530662d6131623263336434653566361f040d0918a04198474605615b6df90fdcb34791fb3ecb822f4b26eb6e4fc4511b9d19b90c1b83c0c35cfbbb31ead32bb52ae33622f57e3cc1638097ce97f430baba1f66643334353039652d626563662d343265642d383962392d3934386131623662313233391f044ff3893c70650ba2c8f879be1e8339630d0a2cc8e9a3e930e163f077243961533f71d70f91aa349522cbddf7c9653bcb94d52d37d2a0e875df9567fd8732532a"
+      },
+      {
+        "name": "countNotDigits",
+        "why": "the count spelled '+3'. Number('+3') is 3 and parseInt('+3') is 3, measured, so every reader that coerces the count accepts this and only one that requires decimal digits refuses it - which is the whole discrimination. A count of '+' alone would prove nothing: Number('+') is NaN, so a coercing reader refuses it too, for free and for the wrong reason. The sign costs a byte, so this case is 311 and sits outside the same-width group",
+        "lengthBytes": 311,
+        "hex": "2b331f38636566343165392d623365632d343061632d386162652d6539623637333637343035321f04310577e49315ba62911ad18d962d491fc675f023396c74ba3d46d999a95dca0613dbaaefb958e1c478236c3ae6132dd89c11c0eb2eb78598db7067feaa31e8be1f63316432653366342d356136622d376338642d396530662d6131623263336434653566361f040d0918a04198474605615b6df90fdcb34791fb3ecb822f4b26eb6e4fc4511b9d19b90c1b83c0c35cfbbb31ead32bb52ae33622f57e3cc1638097ce97f430baba1f66643334353039652d626563662d343265642d383962392d3934386131623662313233391f044ff3893c70650ba2c8f879be1e8339630d0a2cc8e9a3e930e163f077243961533f71d70f91aa349522cbddf7c9653bcb94d52d37d2a0e875df9567fd8732532a"
+      },
+      {
+        "name": "countAstronomical",
+        "why": "a count no buffer could hold. A reader that sizes a container from the declared count allocates before it has read a single entry",
+        "lengthBytes": 324,
+        "hex": "3939393939393939393939393939391f38636566343165392d623365632d343061632d386162652d6539623637333637343035321f04310577e49315ba62911ad18d962d491fc675f023396c74ba3d46d999a95dca0613dbaaefb958e1c478236c3ae6132dd89c11c0eb2eb78598db7067feaa31e8be1f63316432653366342d356136622d376338642d396530662d6131623263336434653566361f040d0918a04198474605615b6df90fdcb34791fb3ecb822f4b26eb6e4fc4511b9d19b90c1b83c0c35cfbbb31ead32bb52ae33622f57e3cc1638097ce97f430baba1f66643334353039652d626563662d343265642d383962392d3934386131623662313233391f044ff3893c70650ba2c8f879be1e8339630d0a2cc8e9a3e930e163f077243961533f71d70f91aa349522cbddf7c9653bcb94d52d37d2a0e875df9567fd8732532a"
+      },
+      {
+        "name": "truncatedEntry",
+        "why": "the last entry's public key is 20 bytes short. subarray(pos, pos + 65) never throws - it returns a short array, so the length has to be checked after the slice and not assumed by taking it",
+        "lengthBytes": 290,
+        "hex": "331f38636566343165392d623365632d343061632d386162652d6539623637333637343035321f04310577e49315ba62911ad18d962d491fc675f023396c74ba3d46d999a95dca0613dbaaefb958e1c478236c3ae6132dd89c11c0eb2eb78598db7067feaa31e8be1f63316432653366342d356136622d376338642d396530662d6131623263336434653566361f040d0918a04198474605615b6df90fdcb34791fb3ecb822f4b26eb6e4fc4511b9d19b90c1b83c0c35cfbbb31ead32bb52ae33622f57e3cc1638097ce97f430baba1f66643334353039652d626563662d343265642d383962392d3934386131623662313233391f044ff3893c70650ba2c8f879be1e8339630d0a2cc8e9a3e930e163f077243961533f71d70f91aa349522cbddf7"
+      },
+      {
+        "name": "trailingBytes",
+        "why": "a shaved fourth entry left on the end with the count untouched. A reader that stops after count entries never looks, so the bytes it authenticated and the bytes it read are not the same bytes",
+        "lengthBytes": 330,
+        "hex": "331f38636566343165392d623365632d343061632d386162652d6539623637333637343035321f04310577e49315ba62911ad18d962d491fc675f023396c74ba3d46d999a95dca0613dbaaefb958e1c478236c3ae6132dd89c11c0eb2eb78598db7067feaa31e8be1f63316432653366342d356136622d376338642d396530662d6131623263336434653566361f040d0918a04198474605615b6df90fdcb34791fb3ecb822f4b26eb6e4fc4511b9d19b90c1b83c0c35cfbbb31ead32bb52ae33622f57e3cc1638097ce97f430baba1f66643334353039652d626563662d343265642d383962392d3934386131623662313233391f044ff3893c70650ba2c8f879be1e8339630d0a2cc8e9a3e930e163f077243961533f71d70f91aa349522cbddf7c9653bcb94d52d37d2a0e875df9567fd8732532a1f38636566343165392d623365632d343061632d"
+      },
+      {
+        "name": "leadingSeparator",
+        "why": "a separator before the count. A split-based reader produces a zero-length first field and Number('') is 0, so this arrives as a manifest naming nobody rather than as a malformed one",
+        "lengthBytes": 311,
+        "hex": "1f331f38636566343165392d623365632d343061632d386162652d6539623637333637343035321f04310577e49315ba62911ad18d962d491fc675f023396c74ba3d46d999a95dca0613dbaaefb958e1c478236c3ae6132dd89c11c0eb2eb78598db7067feaa31e8be1f63316432653366342d356136622d376338642d396530662d6131623263336434653566361f040d0918a04198474605615b6df90fdcb34791fb3ecb822f4b26eb6e4fc4511b9d19b90c1b83c0c35cfbbb31ead32bb52ae33622f57e3cc1638097ce97f430baba1f66643334353039652d626563662d343265642d383962392d3934386131623662313233391f044ff3893c70650ba2c8f879be1e8339630d0a2cc8e9a3e930e163f077243961533f71d70f91aa349522cbddf7c9653bcb94d52d37d2a0e875df9567fd8732532a"
+      },
+      {
+        "name": "trailingSeparator",
+        "why": "a separator after the last public key. The grammar puts one between fields and none at either end, so a reader that trims or ignores it has given one factor set a second spelling",
+        "lengthBytes": 311,
+        "hex": "331f38636566343165392d623365632d343061632d386162652d6539623637333637343035321f04310577e49315ba62911ad18d962d491fc675f023396c74ba3d46d999a95dca0613dbaaefb958e1c478236c3ae6132dd89c11c0eb2eb78598db7067feaa31e8be1f63316432653366342d356136622d376338642d396530662d6131623263336434653566361f040d0918a04198474605615b6df90fdcb34791fb3ecb822f4b26eb6e4fc4511b9d19b90c1b83c0c35cfbbb31ead32bb52ae33622f57e3cc1638097ce97f430baba1f66643334353039652d626563662d343265642d383962392d3934386131623662313233391f044ff3893c70650ba2c8f879be1e8339630d0a2cc8e9a3e930e163f077243961533f71d70f91aa349522cbddf7c9653bcb94d52d37d2a0e875df9567fd8732532a1f"
+      },
+      {
+        "name": "outOfOrder",
+        "why": "entries one and two exchanged - same width, same set. A reader that sorts what it read instead of refusing accepts it, and from that moment no second implementation can reproduce these bytes from the set they name",
+        "lengthBytes": 310,
+        "hex": "331f63316432653366342d356136622d376338642d396530662d6131623263336434653566361f040d0918a04198474605615b6df90fdcb34791fb3ecb822f4b26eb6e4fc4511b9d19b90c1b83c0c35cfbbb31ead32bb52ae33622f57e3cc1638097ce97f430baba1f38636566343165392d623365632d343061632d386162652d6539623637333637343035321f04310577e49315ba62911ad18d962d491fc675f023396c74ba3d46d999a95dca0613dbaaefb958e1c478236c3ae6132dd89c11c0eb2eb78598db7067feaa31e8be1f66643334353039652d626563662d343265642d383962392d3934386131623662313233391f044ff3893c70650ba2c8f879be1e8339630d0a2cc8e9a3e930e163f077243961533f71d70f91aa349522cbddf7c9653bcb94d52d37d2a0e875df9567fd8732532a"
+      },
+      {
+        "name": "duplicateFactorId",
+        "why": "entry two carries entry one's identifier, same width. This is the value that separates '<' from '<=', so do not delete it as covered by outOfOrder: a reader enforcing strict ascent refuses it on the ordering and never reaches a duplicate check, but relaxing the comparison to '<=' - which reads as a harmless tidy-up - makes the ordering hold, and then only a distinct duplicate refusal is left to catch it. Without one, a Map keyed on the identifier lets the last write win, the count still agrees with the number of entries read, and a factor the account actually serves is left unnamed",
+        "lengthBytes": 310,
+        "hex": "331f38636566343165392d623365632d343061632d386162652d6539623637333637343035321f04310577e49315ba62911ad18d962d491fc675f023396c74ba3d46d999a95dca0613dbaaefb958e1c478236c3ae6132dd89c11c0eb2eb78598db7067feaa31e8be1f38636566343165392d623365632d343061632d386162652d6539623637333637343035321f040d0918a04198474605615b6df90fdcb34791fb3ecb822f4b26eb6e4fc4511b9d19b90c1b83c0c35cfbbb31ead32bb52ae33622f57e3cc1638097ce97f430baba1f66643334353039652d626563662d343265642d383962392d3934386131623662313233391f044ff3893c70650ba2c8f879be1e8339630d0a2cc8e9a3e930e163f077243961533f71d70f91aa349522cbddf7c9653bcb94d52d37d2a0e875df9567fd8732532a"
+      },
+      {
+        "name": "nonCanonicalFactorId",
+        "why": "entry one's identifier in upper case, same width. A reader that folds it through canonicalFactorId before comparing accepts it, and one set then has two plaintexts",
+        "lengthBytes": 310,
+        "hex": "331f38434546343145392d423345432d343041432d384142452d4539423637333637343035321f04310577e49315ba62911ad18d962d491fc675f023396c74ba3d46d999a95dca0613dbaaefb958e1c478236c3ae6132dd89c11c0eb2eb78598db7067feaa31e8be1f63316432653366342d356136622d376338642d396530662d6131623263336434653566361f040d0918a04198474605615b6df90fdcb34791fb3ecb822f4b26eb6e4fc4511b9d19b90c1b83c0c35cfbbb31ead32bb52ae33622f57e3cc1638097ce97f430baba1f66643334353039652d626563662d343265642d383962392d3934386131623662313233391f044ff3893c70650ba2c8f879be1e8339630d0a2cc8e9a3e930e163f077243961533f71d70f91aa349522cbddf7c9653bcb94d52d37d2a0e875df9567fd8732532a"
+      },
+      {
+        "name": "hybridPoint",
+        "why": "entry one's own point, re-prefixed 0x04 to 0x06 because its y is even, same width and same x and y as the entry already carried. crypto.subtle.importKey takes it, measured on this exact value, so the encoding guard is the only thing that can refuse it: a reader handing 65 bytes straight to importKey accepts this manifest and reports nothing. Building it from entry one rather than borrowing a sibling's point is what keeps the case honest - with a borrowed point, two entries share x and y, and a reader refusing repeated public keys would refuse this for a reason that has nothing to do with encoding",
+        "lengthBytes": 310,
+        "hex": "331f38636566343165392d623365632d343061632d386162652d6539623637333637343035321f06310577e49315ba62911ad18d962d491fc675f023396c74ba3d46d999a95dca0613dbaaefb958e1c478236c3ae6132dd89c11c0eb2eb78598db7067feaa31e8be1f63316432653366342d356136622d376338642d396530662d6131623263336434653566361f040d0918a04198474605615b6df90fdcb34791fb3ecb822f4b26eb6e4fc4511b9d19b90c1b83c0c35cfbbb31ead32bb52ae33622f57e3cc1638097ce97f430baba1f66643334353039652d626563662d343265642d383962392d3934386131623662313233391f044ff3893c70650ba2c8f879be1e8339630d0a2cc8e9a3e930e163f077243961533f71d70f91aa349522cbddf7c9653bcb94d52d37d2a0e875df9567fd8732532a"
+      },
+      {
+        "name": "emptyPlaintext",
+        "why": "no bytes at all; there is no count field to read. Sealed, it is a 29-byte envelope - the framing floor, so nothing beneath the reader turns it away",
+        "lengthBytes": 0,
+        "hex": ""
+      }
+    ],
+    "positiveEdgeCase": {
+      "_whyItIsNotFiledWithTheRefusals": "zeroFactors is NOT a refusal, and filing it among them is how somebody makes the parser reject it. A manifest naming nobody parses cleanly to an empty set; what turns it away is set equality one layer up, against the account's live factor set - never the grammar. Make the parser refuse it and an account midway through losing its last factor cannot be read at all, which is the one moment its owner most needs to see what is left.",
+      "name": "zeroFactors",
+      "why": "the count '0' and no entries: well-formed, and answered by the layer that compares sets",
+      "lengthBytes": 1,
+      "hex": "30"
+    }
+  }
+}

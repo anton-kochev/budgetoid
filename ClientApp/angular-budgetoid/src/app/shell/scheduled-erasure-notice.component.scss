@@ -1,0 +1,18 @@
+// A prose block above the routed screen, inset like the screens' own content
+// — not a banner: no fill, no border and no `--bud-over`, because colour is
+// not the message and the sentence reads the same without any. The screen
+// below owns its own inset, so the notice brings its own.
+:host {
+  display: block;
+}
+
+// `body`, capped at the reading measure.
+.n-notice {
+  margin: 0;
+  max-width: 65ch;
+  padding: var(--bud-space-6) var(--bud-gutter) 0;
+  color: var(--bud-text);
+  font-family: var(--bud-font-ui);
+  font-size: 0.875rem;
+  line-height: 1.55;
+}

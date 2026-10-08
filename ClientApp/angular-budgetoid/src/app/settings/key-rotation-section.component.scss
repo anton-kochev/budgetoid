@@ -1,0 +1,140 @@
+// The host is a grid item of the settings screen's own column, which supplies
+// the `--bud-space-7` to the next section. Nothing here restates that gap: a
+// second copy would be one the screen and this file could disagree about.
+:host {
+  display: block;
+}
+
+// A settings section per the spec: one grid column at every width,
+// `justify-items: start`, `--bud-space-4` between the heading and the content.
+// One column for the reason the two sections above give — one control, no rows,
+// and nothing for a second column to carry.
+//
+// **The order inside is the reading order the act needs**: standing prose,
+// consequence block, the rename block when there is one, checkbox, control,
+// progress block. The consequence is read before the gate and the gate before
+// the press, and nothing between them competes for the eye.
+.k-section {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--bud-space-4);
+  justify-items: start;
+}
+
+// `eyebrow` role: the uppercase is a type style, so the copy stays sentence case
+// and a screen reader still hears a sentence rather than an initialism.
+.k-eyebrow {
+  margin: 0;
+  color: var(--bud-text-muted);
+  font-family: var(--bud-font-display);
+  font-weight: 600;
+  font-size: 0.75rem;
+  line-height: 1.2;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+// `body`, capped at the reading measure. The size and line height are literals
+// for the reason `settings.component.scss` gives at its own `.s-prose`: the book
+// names no type-scale token, so there is nothing to reference here yet.
+.k-prose {
+  margin: 0;
+  max-width: 65ch;
+  font-size: 0.875rem;
+  line-height: 1.55;
+}
+
+// The consequence block. Its own class rather than a second `.k-prose`, because
+// the two are different things: one is standing prose about what rotating does,
+// and this one is the thing that has to be able to stand on its own next to the
+// gate. Same measure and same type; the separation is so that a later change to
+// one cannot silently move the other.
+.k-consequence {
+  margin: 0;
+  max-width: 65ch;
+  font-size: 0.875rem;
+  line-height: 1.55;
+}
+
+// The rename block: the lead line over its one field, as a unit. Full width so
+// the field has the column to span — the section's `justify-items: start` would
+// otherwise shrink it to its intrinsic width.
+.k-rename {
+  display: grid;
+  gap: var(--bud-space-2);
+  width: 100%;
+}
+
+// Capped at the reading measure with the prose above it.
+.k-name {
+  width: 100%;
+  max-width: 65ch;
+}
+
+// The date the staged run began, in the line above **Finish rotating**.
+// `caption`, muted: it tells somebody which run they are being offered, and it
+// is not the headline of the block.
+.k-started {
+  margin: 0;
+  color: var(--bud-text-muted);
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
+// Colour is never the message here: each failure line reads as a sentence with
+// the colour removed.
+.k-error {
+  margin: 0;
+  max-width: 65ch;
+  color: var(--bud-over);
+  font-size: 0.875rem;
+  line-height: 1.55;
+}
+
+// **The phase sentence reserves one line box**, so nothing below it moves when a
+// phase changes — the label/value rule applied to a value whose label is the
+// section heading.
+.k-outcome {
+  display: grid;
+  gap: var(--bud-space-2);
+  justify-items: start;
+  min-height: 1lh;
+}
+
+// The bar and the count it is counting, as one block so that the pair moves
+// together and the count never wraps away from what it describes. Full width, so
+// the bar has something to span: the section sets `justify-items: start`, which
+// would otherwise shrink it to nothing.
+.k-progress {
+  display: grid;
+  gap: var(--bud-space-2);
+  width: 100%;
+}
+
+.k-bar {
+  width: 100%;
+}
+
+// `caption`, muted. Plain text and not a target, and outside the live region
+// with the bar it belongs to.
+.k-count {
+  margin: 0;
+  color: var(--bud-text-muted);
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
+// **Destructive**, which is `--bud-over` fill with a `#FFFFFF` label — the one
+// hard-coded hex on this screen, and it is here because the Buttons chapter
+// names it. Written as Material's own tokens rather than as `background` and
+// `color` declarations, so the state layer, the ripple and the disabled
+// appearance stay Material's and only the two values the book states are taken
+// over.
+//
+// Material's M3 height is below the system's touch minimum.
+.k-button {
+  min-height: var(--bud-touch-target);
+  --mat-button-filled-container-color: var(--bud-over);
+  --mat-button-filled-label-text-color: #ffffff;
+  --mat-button-filled-state-layer-color: #ffffff;
+}

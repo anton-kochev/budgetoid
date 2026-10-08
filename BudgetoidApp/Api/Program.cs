@@ -3,9 +3,11 @@ using Api.Endpoints;
 using Api.Infrastructure;
 using Application;
 using Application.Abstractions;
+using Application.Users;
 using Infrastructure;
 using Infrastructure.Persistence;
 using Infrastructure.Persistence.Provisioning;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Cors.Infrastructure;
@@ -18,15 +20,55 @@ WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
 
 builder.AddServiceDefaults();
 
+// Outside Development nothing below Warning is written, except the host's startup and shutdown lines
+// (FR-033). With no logging configuration ASP.NET's floor is Information, which puts a "Request
+// starting" and a "Request finished" line — method, path with its row ids, status, time — on stdout
+// for every request, and from there into Log Analytics: a trail of who did what and when, which the
+// product owes nobody. EF's command log and other framework categories write at the same level.
+// !IsDevelopment() rather than IsProduction(), so a Staging host is covered too; Development keeps
+// its request lines.
+//
+// A default rule, not a list of noisy categories: a category nobody named is silenced too. AddFilter
+// rather than SetMinimumLevel, because a minimum level only applies where no rule matches and a
+// Logging__LogLevel__Default in the environment is a rule. Two rules of equal specificity resolve to
+// the one added last, and configuration's rules are added when CreateBuilder runs, before this line —
+// so this floor outranks a configured default. Two configured rules still outrank it: a *category*
+// rule, being longer, and a *provider-scoped* rule (Logging__Console__LogLevel__Default, or the same
+// under OpenTelemetry), because a rule naming a provider outranks every rule that names none. Either
+// is an operator opening output on purpose; nothing in the deployment sets one today.
+if (!builder.Environment.IsDevelopment())
+{
+    builder.Logging.AddFilter(category: null, LogLevel.Warning);
+    builder.Logging.AddFilter("Microsoft.Hosting.Lifetime", LogLevel.Information);
+}
+
+// Kestrel's 30 MB default is a file-upload default, and this API accepts no files: every endpoint
+// takes a small JSON object, the largest being a passkey registration response whose attestation
+// object is a few kilobytes. Until this line, the anonymous sign-in endpoint would read 30 MB into
+// memory before the handler had looked at a single byte of it, and a scale-to-zero container's whole
+// memory budget is a small multiple of that.
+//
+// Global rather than on the two anonymous endpoints, for two reasons. A per-endpoint limit has to be
+// in force before the body is read, and a minimal-API endpoint filter runs after model binding — by
+// the time one could refuse the request the body has already been read into the strings it would have
+// judged. And a global ceiling is the shape that cannot be forgotten on whatever endpoint is added
+// next. An endpoint that legitimately needs more can raise it on itself; none does.
+//
+// This bounds the body. PasskeyPayloadLimits bounds each decoded member, and neither replaces the
+// other: this keeps 30 MB from being read at all, and those keep a body well inside this limit from
+// being validated and decoded four times over before the first check that could refuse it.
+const long maxRequestBodyBytes = 64 * 1024;
+builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = maxRequestBodyBytes);
+
 // Registered non-pooled (AddDbContext, scoped) because BudgetoidDbContext depends on the scoped
 // IBudgetContext for its budget isolation query filters, and pooled contexts can't take scoped
 // dependencies. Aspire's AddNpgsqlDbContext pools contexts; the Enrich call re-applies Aspire's
 // retry/health/telemetry defaults here.
-// The (serviceProvider, options) overload, not the plain one: BudgetSessionInterceptor is scoped
-// because it reads the scoped IBudgetContext, and this overload's optionsLifetime defaults to
-// Scoped, so it resolves from the request scope. The interceptor is what puts the ambient budget on
-// each connection for the row-level security policies — without it the role's every policied query
-// fails with 22P02.
+// The (serviceProvider, options) overload, not the plain one: SessionContextInterceptor is scoped
+// because it reads the scoped IBudgetContext and IUserContext, and this overload's optionsLifetime
+// defaults to Scoped, so it resolves from the request scope. The interceptor is what puts the
+// signed-in user and the ambient budget on each connection for the row-level security policies —
+// without it the role's every policied query fails with 22P02.
 //
 // The Azure enrichment, not the plain EnrichNpgsqlDbContext: the deployed API holds no database
 // password. EnrichAzureNpgsqlDbContext layers a password provider onto the data source that fetches
@@ -48,14 +90,50 @@ builder.Services.AddDbContext<BudgetoidDbContext>((serviceProvider, options) =>
         .UseNpgsql(BuildConnectionString(
             builder.Configuration.GetConnectionString("budgetoid"),
             builder.Environment.IsDevelopment()))
-        .AddInterceptors(serviceProvider.GetRequiredService<BudgetSessionInterceptor>()));
+        .AddInterceptors(serviceProvider.GetRequiredService<SessionContextInterceptor>()));
 builder.EnrichAzureNpgsqlDbContext<BudgetoidDbContext>();
 builder.Services.AddApplication();
 builder.Services.AddInfrastructure();
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<CurrentUser>();
 builder.Services.AddScoped<IBudgetContext, HttpContextBudgetContext>();
-builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+// Readers and writer are three registrations over the one scoped CurrentUser on purpose: everything
+// that needs to know who is signed in takes IUserContext, everything that needs the tenant takes
+// IBudgetContext, and only what may *change* either takes IUserContextWriter. So the capability to
+// name the request's identity and its budget is declared in the constructors that use it rather than
+// travelling with every read. The three adapters registered here are also the only types that take
+// CurrentUser itself, and that is what the claim rests on: injecting the scoped state anywhere else —
+// a middleware or an authentication handler included — gives that collaborator both fields with
+// neither interface, and the clearing rule CurrentUserWriter.ResolveUser carries stops applying to
+// whatever it publishes.
+builder.Services.AddScoped<IUserContext, HttpContextUserContext>();
+builder.Services.AddScoped<IUserContextWriter, CurrentUserWriter>();
+// Singleton because it holds nothing of a request's: it opens a scope of its own for each displacement,
+// and that scope — not the request's — is where the displaced session's owner is published.
+builder.Services.AddSingleton<SessionCookieWriter>();
+// Singleton, unlike the two contexts above: the relying party and the origin allow-list are
+// configuration rather than request state, and one instance per request would only add a way for the
+// two legs of one sign-in to disagree about which site they are.
+builder.Services.AddSingleton<IPasskeyCeremonyPolicy, ConfiguredPasskeyCeremonyPolicy>();
+// The session cookie is the default scheme, and it is the only way into the product's own surface.
+// A request that presents no cookie, or one naming no session row, is answered NoResult by the
+// handler and challenged — which is what makes "an authenticated request can never name an account
+// that does not exist" a structural fact rather than a check: the cookie is only ever issued over a
+// session row, and a session row is only ever written beside the account it names.
+//
+// JwtBearer stays registered, but nothing defaults to it any more. It is reached by exactly two
+// policies, each naming ProviderAuthentication.SchemeName — the registration group's, because an
+// account may not exist without a completed provider exchange, and POST /api/locked-session's, because
+// a provider sign-in is the whole proof a locked session is opened on. Beyond those it is reached only by
+// ProviderAuthorizationGate, on a route that declares RequireProviderAuthorization(): there the bearer is
+// a second proof judged beside the session, never the request's identity. A bearer presented to any
+// other route therefore authenticates nothing at all.
+builder.Services.AddAuthentication(SessionCookieAuthenticationHandler.SchemeName)
+    // No options of its own: everything this scheme reads is on the request, and the collaborator it
+    // needs is resolved per request from the container. See SessionCookieAuthenticationHandler.
+    .AddScheme<AuthenticationSchemeOptions, SessionCookieAuthenticationHandler>(
+        SessionCookieAuthenticationHandler.SchemeName,
+        _ => { })
     .AddJwtBearer(options =>
     {
         options.Authority = "https://accounts.google.com";
@@ -69,12 +147,29 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             ValidIssuers = ["https://accounts.google.com", "accounts.google.com"],
             ValidateAudience = true,
             ValidateLifetime = true,
-            ValidateIssuerSigningKey = true,
+            ValidateIssuerSigningKey = true
         };
     });
+// The fallback policy carries three rules: authenticated at all, a session that reads the account's
+// budget content, and a locked session on a route marked for one. It applies to every route that
+// declares no policy of its own, which is everything outside the AllowAnonymous surface, the
+// registration group and the locked sign-in — so the second rule reaches the routes nobody thought about, and a route that
+// must admit a locked session declares AllowsLockedSessionAttribute and says why. See that attribute
+// for the polarity argument and FullSessionRequirement for the decision. The third judges only a route
+// carrying RequiresLockedSessionAttribute, which therefore carries the opt-out too; see
+// LockedSessionOnlyRequirement.
+//
+// It names the session cookie scheme, which is also the default one. Restating it is worth the line:
+// it makes the fallback readable off the route table, the way RegistrationRouteTests already reads the
+// registration group's own scheme, and it means a later change of default cannot silently move every
+// route that declares nothing onto some other handler.
+builder.Services.AddSingleton<IAuthorizationHandler, FullSessionRequirementHandler>();
+builder.Services.AddSingleton<IAuthorizationHandler, LockedSessionOnlyRequirementHandler>();
 builder.Services.AddAuthorizationBuilder()
     .SetFallbackPolicy(new AuthorizationPolicyBuilder()
+        .AddAuthenticationSchemes(SessionCookieAuthenticationHandler.SchemeName)
         .RequireAuthenticatedUser()
+        .AddRequirements(new FullSessionRequirement(), new LockedSessionOnlyRequirement())
         .Build());
 builder.Services.ConfigureHttpJsonOptions(options =>
 {
@@ -92,15 +187,34 @@ builder.Services.AddOptions<CorsOptions>().Configure<IConfiguration>((options, c
 {
     string[] allowedOrigins = configuration
         .GetSection("Cors:AllowedOrigins").Get<string[]>() ?? [];
+    // AllowCredentials, because the session cookie is a credential and a browser drops a cross-origin
+    // response carrying one unless this header says true — silently: the request succeeded, the server
+    // wrote the Set-Cookie, and the cookie jar is simply empty afterwards. The allow-list is unchanged
+    // and stays the control; what this adds is that credentials may travel to the origins already
+    // argued for, and to no others.
+    //
+    // AllowAnyOrigin must never appear beside it. The two together are rejected at runtime by the CORS
+    // middleware, and the reason it refuses them is the reason not to reach for it: an origin
+    // wildcard plus credentials is every site on the internet reading this API as the signed-in user.
     options.AddDefaultPolicy(policy =>
         policy.WithOrigins(allowedOrigins)
             .AllowAnyHeader()
-            .AllowAnyMethod());
+            .AllowAnyMethod()
+            .AllowCredentials());
 });
 builder.Services.AddExceptionHandler<ValidationExceptionHandler>();
 builder.Services.AddExceptionHandler<BadRequestExceptionHandler>();
 builder.Services.AddExceptionHandler<NotFoundExceptionHandler>();
 builder.Services.AddExceptionHandler<ConflictExceptionHandler>();
+// Before the catch-all, which would otherwise turn a refused sign-in into a 500 and log it as a
+// fault. Handlers run in registration order and the first to claim the exception wins.
+builder.Services.AddExceptionHandler<PasskeyVerificationExceptionHandler>();
+// Beside the passkey one and before the catch-all, for the same reason — and a handler of its own
+// rather than a second exception routed into that one: "The passkey could not be verified." on a
+// recovery-code route is a wrong sentence, which is worse for the person holding a card than an
+// uninformative one. Neither handler can claim the other's exception, so the order between these two
+// is free; the order against the catch-all is not.
+builder.Services.AddExceptionHandler<RecoveryCodeRedemptionExceptionHandler>();
 builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
 builder.Services.AddOpenApi();
 
@@ -114,6 +228,75 @@ WebApplication app = builder.Build();
 _ = app.Configuration["Authentication:Google:ClientId"]
     ?? throw new InvalidOperationException("Authentication:Google:ClientId is required.");
 
+// The passkey ceremony's configuration is refused at boot for the same reason as the Google client
+// id above: a deployment that comes up healthy and only breaks when somebody attempts a ceremony is a
+// deployment whose defect surfaces to a user instead of to the pipeline. Boot is the last moment the
+// pipeline is still watching.
+//
+// Both values are refused, and the second is the dangerous one. A relying party id is hashed into
+// every credential an authenticator stores, so a host that came up with the wrong one registers
+// passkeys nobody can ever use and no migration repairs them — but at least it is wrong loudly. An
+// empty origin allow-list is not a permissive default: it refuses every ceremony, and refuses it with
+// the one deliberately uninformative 401 that explains nothing, so the misconfiguration reads as a
+// working deployment that users simply cannot sign in to. The key names come from the reader's own
+// constants so the guard and the reader cannot drift apart.
+//
+// Presence is necessary and not sufficient. A value that passes a presence check and then refuses
+// every ceremony is a defect that surfaces to a user rather than to the pipeline, which is the whole
+// reason this guard is at boot rather than in a lazily-resolved singleton — so the form of each value
+// is checked here too, and the two values are checked against each other. The origin the browser puts
+// in client data is a serialized origin: scheme, host, and a non-default port, and nothing else. A
+// frontend origin written as "https://example.com/" or as a bare "example.com" is a plausible thing to
+// paste into a deployment variable and matches no client data that will ever arrive.
+string? relyingPartyId = app.Configuration[ConfiguredPasskeyCeremonyPolicy.RelyingPartyIdKey];
+if (string.IsNullOrWhiteSpace(relyingPartyId))
+{
+    throw new InvalidOperationException(
+        $"{ConfiguredPasskeyCeremonyPolicy.RelyingPartyIdKey} is required: it is the domain every "
+        + "registered passkey is permanently bound to.");
+}
+
+// A relying party id is a bare domain — never a URL, and never an address literal. Checking it here
+// rather than only through the origins below is what keeps a relying party id pasted as
+// "https://example.com" from being reported as every origin being wrong.
+if (Uri.CheckHostName(relyingPartyId) is not UriHostNameType.Dns)
+{
+    throw new InvalidOperationException(
+        $"{ConfiguredPasskeyCeremonyPolicy.RelyingPartyIdKey} is '{relyingPartyId}', which is not a "
+        + "bare domain name: a relying party id carries no scheme, port or path.");
+}
+
+if (app.Configuration.GetSection(ConfiguredPasskeyCeremonyPolicy.AllowedOriginsKey).Get<string[]>()
+    is not { Length: > 0 } allowedOrigins)
+{
+    throw new InvalidOperationException(
+        $"{ConfiguredPasskeyCeremonyPolicy.AllowedOriginsKey} must list at least one origin: no "
+        + "ceremony can be accepted from an empty allow-list.");
+}
+
+foreach (string allowedOrigin in allowedOrigins)
+{
+    RequireCeremonyOrigin(allowedOrigin, relyingPartyId);
+}
+
+// The connection's forbidden options are refused here, post-Build like the checks above and ahead of
+// the Development block that migrates over the database, for the reason argued above
+// BuildConnectionString. ConnectionStrings:budgetoid is the only source of the request-serving
+// connection: on .NET 10 the Azure enrichment reads no connection string of its own, it only
+// configures the data source EF builds from the string handed to UseNpgsql.
+RefuseForbiddenConnectionOptions("ConnectionStrings:budgetoid", app.Configuration.GetConnectionString("budgetoid"));
+
+// Beside it and in the same place, but outside Development only — the argument is above
+// BuildConnectionString. Kept apart from RefuseForbiddenConnectionOptions, whose three options are
+// refused in every environment and on both connection strings: this rule is neither.
+if (!app.Environment.IsDevelopment())
+{
+    RefuseWeakSslMode("ConnectionStrings:budgetoid", app.Configuration.GetConnectionString("budgetoid"));
+}
+
+// Outermost, above the exception handler, so the headers reach every response including the ones no
+// route delegate wrote. SecurityHeadersMiddleware holds the argument.
+app.UseMiddleware<SecurityHeadersMiddleware>();
 app.UseExceptionHandler();
 app.UseStatusCodePages(async statusCodeContext =>
 {
@@ -127,8 +310,14 @@ app.UseStatusCodePages(async statusCodeContext =>
     }
 });
 app.UseCors();
+
+// After CORS and before authentication, and both halves of that are load-bearing. After CORS, so a
+// preflight is answered by the CORS middleware and never reaches a check no OPTIONS request can
+// satisfy — a browser sends no custom header on a preflight. Before authentication, because the
+// control covers the anonymous routes too: those are the ones that set a cookie, and a control
+// starting at authentication would leave login-CSRF open on exactly them.
+app.UseMiddleware<FirstPartyRequestMiddleware>();
 app.UseAuthentication();
-app.UseMiddleware<UserProvisioningMiddleware>();
 app.UseAuthorization();
 
 // Development is the only environment where the application shapes its own database. Production
@@ -146,10 +335,11 @@ if (app.Environment.IsDevelopment())
     // Fail fast on the elevated connection string, for the same reason as the Google client id
     // above: absent, it would surface much later as an opaque Npgsql error from a null connection.
     string adminConnectionString = app.Configuration.GetConnectionString("budgetoid-admin")
-        ?? throw new InvalidOperationException(
-            "ConnectionStrings:budgetoid-admin is required in Development: startup migrates the "
-            + "schema and provisions the application role, and neither can run on the "
-            + "least-privilege connection the application serves requests with.");
+                                   ?? throw new InvalidOperationException(
+                                       "ConnectionStrings:budgetoid-admin is required in Development: startup migrates the "
+                                       + "schema and provisions the application role, and neither can run on the "
+                                       + "least-privilege connection the application serves requests with.");
+    RefuseForbiddenConnectionOptions("ConnectionStrings:budgetoid-admin", adminConnectionString);
 
     // The application role's password is read out of the application connection string rather than
     // from a configuration key of its own: startup sets the role's password to whatever the
@@ -167,9 +357,9 @@ if (app.Environment.IsDevelopment())
     // denied CREATE on the schema and so cannot run MigrateAsync even as a no-op. See the
     // __EFMigrationsHistory note in app-role-grants.sql.
     await using (BudgetoidDbContext db = new(
-        new DbContextOptionsBuilder<BudgetoidDbContext>()
-            .UseNpgsql(adminConnectionString)
-            .Options))
+                     new DbContextOptionsBuilder<BudgetoidDbContext>()
+                         .UseNpgsql(adminConnectionString)
+                         .Options))
     {
         await db.Database.MigrateAsync();
     }
@@ -190,30 +380,144 @@ app.MapTransactionEndpoints();
 app.MapPayeeEndpoints();
 app.MapCategoryGroupEndpoints();
 app.MapCategoryEndpoints();
+app.MapPasskeyEndpoints();
+app.MapAccountErasureEndpoints();
+app.MapEmailChangeEndpoints();
+app.MapCredentialEndpoints();
+app.MapAccountKeyEndpoints();
+app.MapKeyRotationEndpoints();
+app.MapRecoveryCodeEndpoints();
+app.MapDataExportEndpoints();
+app.MapSignedInUserEndpoints();
+app.MapSessionEndpoints();
+app.MapRegistrationEndpoints();
 
 await app.RunAsync();
 
-// Force TLS on the PostgreSQL connection outside local development. Azure Database for PostgreSQL
-// Flexible Server rejects unencrypted connections (28000: no pg_hba.conf entry ... no encryption)
-// and enforces TLS server-side, but the connection string the deployed app is handed carries only
-// the endpoint details — host, database, and the user, plus a password only where password auth is
-// used at all (in production the credential is an Entra token supplied by the Azure enrichment
-// above, not a password in the string). SslMode is absent either way, so Npgsql would otherwise
-// attempt an unencrypted connection. Rebuild the string with SslMode=Require, which (Npgsql 8+)
-// encrypts without validating the server certificate, so Azure's cert chain need not be in the
-// chiseled container's trust store.
+return;
+
+// Refuse one configured passkey origin whose form or whose host cannot produce an accepted ceremony.
+//
+// Three things are checked, and each of them fails silently at runtime if it is not checked here.
+//
+// Form: an origin is scheme, host and a non-default port — no path, query, fragment or userinfo — and
+// the verifier compares it to the string a browser puts in client data, character for character. The
+// canonical serialization is compared rather than the parsed parts because Uri normalizes a trailing
+// slash away, so a "https://example.com/" that is wrong for our purposes parses into something
+// indistinguishable from the value that is right. Comparing against GetLeftPart also catches an
+// explicit default port and an uppercased scheme or host, neither of which a browser ever sends.
+//
+// Scheme: WebAuthn treats an origin as usable only if it is a potentially trustworthy one, which means
+// https everywhere except localhost, where plaintext http is allowed — the development configuration
+// relies on exactly that exception, so it stays.
+//
+// Agreement with the relying party id: the browser refuses a ceremony client-side when the calling
+// origin's host is neither the relying party id nor a subdomain of it. That refusal never reaches this
+// process, so a deployment whose two values drift apart — they arrive from two independent deployment
+// parameters — produces empty logs and a sign-in that simply never works.
+static void RequireCeremonyOrigin(string allowedOrigin, string relyingPartyId)
+{
+    const string key = ConfiguredPasskeyCeremonyPolicy.AllowedOriginsKey;
+
+    if (!Uri.TryCreate(allowedOrigin, UriKind.Absolute, out Uri? origin)
+        // Uri lowercases the scheme it parsed, so these two literals cover every spelling of it.
+        || origin.Scheme is not ("http" or "https"))
+    {
+        throw new InvalidOperationException(
+            $"{key} contains '{allowedOrigin}', which is not an absolute http or https URI: a "
+            + "ceremony origin is written in full, as 'https://example.com'.");
+    }
+
+    if (origin.UserInfo.Length > 0
+        || !string.Equals(allowedOrigin, origin.GetLeftPart(UriPartial.Authority), StringComparison.Ordinal))
+    {
+        throw new InvalidOperationException(
+            $"{key} contains '{allowedOrigin}', which is not a serialized origin: an origin is a "
+            + "scheme, a host and a non-default port and nothing else — no trailing slash, path, "
+            + $"query or fragment. Expected '{origin.GetLeftPart(UriPartial.Authority)}'.");
+    }
+
+    if (origin.Scheme is "http"
+        && !string.Equals(origin.Host, "localhost", StringComparison.OrdinalIgnoreCase))
+    {
+        throw new InvalidOperationException(
+            $"{key} contains '{allowedOrigin}', which is plaintext http on a host other than "
+            + "localhost: a browser will not run a ceremony from an origin that is not potentially "
+            + "trustworthy.");
+    }
+
+    if (!string.Equals(origin.Host, relyingPartyId, StringComparison.OrdinalIgnoreCase)
+        && !origin.Host.EndsWith($".{relyingPartyId}", StringComparison.OrdinalIgnoreCase))
+    {
+        throw new InvalidOperationException(
+            $"{key} contains '{allowedOrigin}', whose host is neither "
+            + $"'{relyingPartyId}' nor a subdomain of it. "
+            + $"{ConfiguredPasskeyCeremonyPolicy.RelyingPartyIdKey} and {key} must describe the same "
+            + "site, or the browser refuses every ceremony before the request is made.");
+    }
+}
+
+// Outside local development, open the PostgreSQL connection with SSL Mode=VerifyFull: encrypted, the
+// server's certificate chained to a trusted root, and the certificate's name matched against Host.
+// Azure Database for PostgreSQL Flexible Server rejects unencrypted connections (28000: no pg_hba.conf
+// entry ... no encryption), but encryption alone proves nothing about who answered. Require encrypts
+// and checks nothing, so anything on the path can present its own certificate and relay the traffic;
+// VerifyCA checks the chain but not the name, so any certificate the authority ever issued passes.
+// Only VerifyFull ties the connection to this server.
+//
+// The connection string the deployed app is handed carries only the endpoint details — host,
+// database, and the user, plus a password only where password auth is used at all (in production the
+// credential is an Entra token supplied by the Azure enrichment above, not a password in the string).
+// SSL Mode is absent, which Npgsql's builder reads as Prefer, so the absent key becomes VerifyFull
+// here. VerifyFull written out is kept. Every weaker mode the builder can name except Prefer —
+// Disable, Allow, Require, VerifyCA — is refused at boot by RefuseWeakSslMode rather than
+// overwritten: the likely edit that writes one is a pasted SslMode=Require to "fix" a certificate
+// error at bring-up, and that must be loud — enforcement means rejecting (ADR 0002), and a silent
+// upgrade would hide from its author that it never took effect. An explicit Prefer is the one weaker
+// mode forced up rather than refused, by choice: it is forced to VerifyFull exactly like the absent
+// key, and nobody writes Prefer to get past a certificate error, because Prefer already accepts any
+// certificate — refusing it would buy nothing.
+//
+// With no Root Certificate set, Npgsql 10 looks for a trust anchor in the PGSSLROOTCERT environment
+// variable, then in ~/.postgresql/root.crt, and only then falls back to the operating system's store.
+// Each of the three replaces which certificates count while the string still reads VerifyFull; none
+// of them is refused here, and the container sets none of them today. The API's base image (the SDK
+// picks aspnet:10.0-noble-chiseled-extra for this project) ships /etc/ssl/certs/ca-certificates.crt
+// carrying DigiCert Global Root G2 and Microsoft RSA Root CA 2017, but not DigiCert Global Root CA
+// (G1) or Baltimore CyberTrust Root. Which root the server's chain ends in is not asserted here: it
+// is settled by a VerifyFull connection from the deployed image, not by this comment. The remedy for
+// a certificate failure is never a downgrade: ship the missing root in the image and point Root
+// Certificate at it.
+//
+// Npgsql checks the certificate against the host name written in the connection string, not the
+// address it resolves to. Host must therefore stay the server's public FQDN — the private DNS zone
+// changes only what that name resolves to (ADR 0009). An IP address fails the check against a
+// certificate issued to a DNS name; so does the privatelink name, unless the server's certificate
+// happens to name it, which nobody has read.
 //
 // Development is deliberately left untouched: the local Aspire and Testcontainers PostgreSQL images
-// have no TLS configured, and SslMode=Require against them fails with "No SSL enabled connection
+// have no TLS configured, and any encrypted mode against them fails with "No SSL enabled connection
 // from this host is configured." A null connection string is returned unchanged so the null case
 // preserves the existing fail-later behavior.
 //
-// Two Npgsql options are now forbidden in any connection string this reaches, because budget
-// isolation is enforced by a session setting (see BudgetSessionInterceptor). `No Reset On Close=true`
-// would keep a returned connection's app.current_budget_id, making the pool reset — now a security
-// control, not a hygiene one — stop clearing one tenant's budget before the next borrower.
-// `Multiplexing=true` interleaves logical sessions over one physical connection, which no
-// session-setting design can survive at all.
+// Three Npgsql options are refused at boot, in every environment, by RefuseForbiddenConnectionOptions
+// rather than here — this function runs lazily inside the DbContext options lambda, once per
+// scope that resolves a context rather than at boot, and returns early in Development, so a check here would do
+// neither.
+//
+// Two of them break budget isolation and user isolation, which both ride on session settings that
+// SessionContextInterceptor writes when a connection opens. `No Reset On Close=true` skips the pool
+// reset — a security control here, not hygiene — so a returned connection hands its
+// app.current_budget_id and app.current_user_id to the next borrower. `Multiplexing=true` interleaves
+// commands from different requests over one physical connection, which no session-setting design can
+// survive at all. Either way row-level security reads another request's tenant and identity.
+//
+// `Include Error Detail=true` makes Npgsql copy PostgreSQL's DETAIL line into every error, and
+// row-level security withholds that line only on a policed table: on the exempt passkey_public_keys
+// and credentials tables a unique violation quotes the colliding webauthn_credential_id or
+// (provider, subject), and EF's save-failure record writes it to the log. The host refuses all three
+// rather than rewriting the value to false, because enforcement means rejecting (ADR 0002) and a
+// silent overwrite would hide from whoever set the option that it never took effect.
 static string? BuildConnectionString(string? connectionString, bool isDevelopment)
 {
     if (connectionString is null || isDevelopment)
@@ -221,10 +525,79 @@ static string? BuildConnectionString(string? connectionString, bool isDevelopmen
         return connectionString;
     }
 
-    NpgsqlConnectionStringBuilder connectionStringBuilder = new(connectionString)
-    {
-        SslMode = SslMode.Require,
-    };
+    // Unconditional: an absent key, an explicit Prefer and VerifyFull all leave here as VerifyFull. A
+    // weaker mode present at boot never reaches this line, because RefuseWeakSslMode stopped the host;
+    // one arriving later — the options are scoped, so this runs per scope and reads configuration each
+    // time, and a reload can hand it in — is forced up like Prefer rather than refused.
+    NpgsqlConnectionStringBuilder connectionStringBuilder = new(connectionString) { SslMode = SslMode.VerifyFull };
 
     return connectionStringBuilder.ConnectionString;
+}
+
+// Refuse a connection string that names an SSL Mode weaker than VerifyFull. Called outside Development
+// only; the argument is above BuildConnectionString. Parsed with Npgsql's builder, never searched as
+// text, so `sslmode=require` and any other spelling of the key resolve to the one property. Prefer is
+// not refused: the deployed string has no SSL Mode key, which this property reads as Prefer, and an
+// explicit Prefer is forced up by choice (see above BuildConnectionString). The message names the configuration key and the canonical keyword, never the
+// connection string or any value from it, which may carry a password.
+static void RefuseWeakSslMode(string configurationKey, string? connectionString)
+{
+    if (connectionString is null)
+    {
+        return;
+    }
+
+    NpgsqlConnectionStringBuilder parsed = new(connectionString);
+
+    if (parsed.SslMode is SslMode.Disable or SslMode.Allow or SslMode.Require or SslMode.VerifyCA)
+    {
+        throw new InvalidOperationException(
+            $"{configurationKey} sets 'SSL Mode' to a mode weaker than VerifyFull, which this "
+            + "application refuses outside Development: only VerifyFull checks both the server's "
+            + "certificate chain and its host name. Remove 'SSL Mode' or set it to VerifyFull. If the "
+            + "server's certificate does not validate, ship its root and set 'Root Certificate'; never "
+            + "lower the mode.");
+    }
+}
+
+// Refuse a connection string that switches on an Npgsql option this application cannot run under.
+// Parsed with Npgsql's own builder, never searched as text: the builder resolves aliases
+// (IncludeErrorDetail) and any key casing to the one property, and reads `=false` as off. One row
+// per option, so forbidding another is one line. The message names the configuration key and the
+// option's canonical keyword, never the connection string, which may carry a password.
+static void RefuseForbiddenConnectionOptions(string configurationKey, string? connectionString)
+{
+    if (connectionString is null)
+    {
+        return;
+    }
+
+    NpgsqlConnectionStringBuilder parsed = new(connectionString);
+
+    (string Keyword, bool IsSet, string Reason)[] forbidden =
+    [
+        ("Include Error Detail", parsed.IncludeErrorDetail,
+            "it copies PostgreSQL's DETAIL line into every error, and on a table exempt from row-level "
+            + "security that line quotes the colliding key — a passkey handle, a provider subject — "
+            + "straight into the log"),
+        ("No Reset On Close", parsed.NoResetOnClose,
+            "row-level security reads app.current_user_id and app.current_budget_id, which "
+            + "SessionContextInterceptor writes only when a connection opens, and without the pool reset "
+            + "a returned connection carries one request's identity and budget into the next borrower"),
+        ("Multiplexing", parsed.Multiplexing,
+            "row-level security reads app.current_user_id and app.current_budget_id, which "
+            + "SessionContextInterceptor writes only when a connection opens, and multiplexing runs "
+            + "commands from different requests over one physical connection, so those settings belong "
+            + "to no single request"),
+    ];
+
+    foreach ((string keyword, bool isSet, string reason) in forbidden)
+    {
+        if (isSet)
+        {
+            throw new InvalidOperationException(
+                $"{configurationKey} sets '{keyword}', which this application refuses: {reason}. "
+                + $"Remove '{keyword}' from the connection string or set it to false.");
+        }
+    }
 }

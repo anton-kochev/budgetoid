@@ -22,8 +22,11 @@ public sealed class CurrencyConfiguration : IEntityTypeConfiguration<Currency>
             // upper-cases its input before matching, so such a row would sit in the table permanently
             // unfindable: a silently broken currency instead of a loud error. The regex also makes
             // this column permanently incompatible with a nondeterministic collation, which fails
-            // regex matching with 0A000; code carries the default collation today, unlike the
-            // case_insensitive name columns, so there is no interaction yet.
+            // regex matching with 0A000 - measured on postgres:17.10 and 18.3 alike, because 18
+            // relaxed that restriction for LIKE and for substring search but not for regular
+            // expressions. code carries the default collation today, unlike users.email, the only
+            // case_insensitive column left in the schema now that the four name columns are bytea and
+            // bytea is not collatable, so there is no interaction yet.
             table.HasCheckConstraint("CK_currencies_code", "code ~ '^[A-Z]{3}$'");
         });
         builder.HasKey(currency => currency.Code);

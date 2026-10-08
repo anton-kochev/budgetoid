@@ -2,10 +2,12 @@ using Domain.Accounts;
 using Domain.Categories;
 using Domain.CategoryGroups;
 using Domain.Payees;
+using Domain.Security;
 using Domain.Transactions;
 using Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
+using TestSupport;
 
 namespace IntegrationTests;
 
@@ -55,22 +57,25 @@ public sealed class TenancySchemaTests
         // Arrange — one account and the transaction on it. The transaction's account reference is
         // composite and mandatory, so there is no shape of transaction this refusal misses.
         await using RepositoryTestHost host = await StartHostAsync();
-        (Guid budgetId, Guid otherBudgetId) = await SeedTwoBudgetsAsync(host);
+        (_, Guid budgetId, Guid otherBudgetId) = await SeedTwoBudgetsAsync(host);
         Guid transactionId;
         await using (BudgetoidDbContext seed = CreateDb(host, budgetId))
         {
             Account account = Account.Create(
-                budgetId, "Checking", AccountType.Checking, 0m, "USD", UsdMinorUnit, SeedInstant);
+                Guid.CreateVersion7(),
+                budgetId,
+                SealedNarrative.Indexed("Checking"), AccountType.Checking, 0m, "USD", UsdMinorUnit, SeedInstant);
             seed.Accounts.Add(account);
             await seed.SaveChangesAsync();
 
             Transaction transaction = Transaction.Create(
+                Guid.CreateVersion7(),
                 budgetId,
                 account.Id,
                 -10m,
                 UsdMinorUnit,
                 new DateOnly(2026, 6, 12),
-                "Groceries",
+                SealedNarrative.Description("Groceries"),
                 SeedInstant);
             seed.Transactions.Add(transaction);
             await seed.SaveChangesAsync();
@@ -112,17 +117,31 @@ public sealed class TenancySchemaTests
         // Arrange — a category always sits in a group, and the reference to that group is composite,
         // so this refusal has no gap either.
         await using RepositoryTestHost host = await StartHostAsync();
-        (Guid budgetId, Guid otherBudgetId) = await SeedTwoBudgetsAsync(host);
+        (Guid userId, Guid budgetId, Guid otherBudgetId) = await SeedTwoBudgetsAsync(host);
         Guid categoryId;
+        Guid categoryGroupId;
         await using (BudgetoidDbContext seed = CreateDb(host, budgetId))
         {
-            CategoryGroup group = CategoryGroup.Create(budgetId, "Everyday", null, 0, SeedInstant);
+            CategoryGroup group = CategoryGroup.Create(
+                Guid.CreateVersion7(),
+                budgetId,
+                SealedNarrative.Indexed("Everyday"),
+                null,
+                0,
+                SeedInstant);
             seed.CategoryGroups.Add(group);
             Category category = Category.Create(
-                budgetId, group.Id, "Groceries", null, 0, SeedInstant);
+                Guid.CreateVersion7(),
+                budgetId,
+                group.Id,
+                SealedNarrative.Indexed("Groceries"),
+                null,
+                0,
+                SeedInstant);
             seed.Categories.Add(category);
             await seed.SaveChangesAsync();
             categoryId = category.Id;
+            categoryGroupId = group.Id;
         }
 
         // Act — the admin connection, on the same terms as the transaction test above: it is enough
@@ -147,6 +166,53 @@ public sealed class TenancySchemaTests
             .IsEqualTo(1L);
         await Assert.That(await CountRowsAsync(connection, "categories", "budget_id", otherBudgetId))
             .IsEqualTo(0L);
+
+        // THE SUCCESS HALF, AND THIS TABLE HAD NONE AT ALL UNTIL THIS SLICE. Every count above is a
+        // count of rows that did not move, and a refusal proves nothing on its own: a role that could
+        // update NO column of this table satisfies every assertion so far. The pair is what makes the
+        // refusal mean "budget_id is withheld" rather than "categories is read-only to this role".
+        //
+        // THE CONNECTION DIFFERS FROM THE REFUSAL'S, unlike on category_groups, and the reason is the
+        // reason this table never had a control: the refusal above is a composite FOREIGN KEY doing the
+        // work, and a foreign key needs no grant, so it fires on the admin connection and the case was
+        // complete without ever opening an app-role one. That is exactly how a grant hole survives here
+        // — the tenancy question is answered by a constraint, and the grant question is never asked.
+        // The success half therefore opens an app connection of its own, carrying the same user and the
+        // same ambient budget.
+        //
+        // FIVE COLUMNS IN ONE STATEMENT, AND FOUR WOULD NOT DO. This is the longest grant list of the
+        // four sealed tables, and the argument is category_groups' with one more column on it: EF names
+        // only what changed, so a rename leaving the note alone emits `name, name_key` and passes under
+        // a grant missing `description`, while a description-only edit emits `description, name` and
+        // passes under one missing `name_key`. Measured this slice under the real hole,
+        // GRANT UPDATE (name, description, position, category_group_id): a genuine rename answers
+        // `42501: permission denied for table categories`, while `set category_group_id = ...` and
+        // `set position = ...` both answer UPDATE 1 on the same connection in the same request. Naming
+        // all five is the only shape that reddens on any single missing column.
+        //
+        // PostgreSQL names the RELATION and nothing else — `permission denied for table categories`,
+        // from aclcheck_error — so a 42501 here tells a reader which table and never which column. That
+        // is why the statement is spelled out inline: the SQL is the only place the five column names
+        // appear together, and a helper would hide the one list a person debugging this needs to read.
+        //
+        // The values go through SealedNarrative for the reason the account and group cases give, and the
+        // description is deliberately NON-NULL: writing null would still exercise the grant but would
+        // leave the case unable to tell "the column was written" from "the column was cleared".
+        await using NpgsqlConnection app = await host.OpenAppConnectionAsync(userId, budgetId);
+        IndexedName renamedTo = SealedNarrative.Indexed("Food Shopping");
+        NarrativeField note = SealedNarrative.Description("Weekly food shop");
+        await using NpgsqlCommand rewrite = new(
+            "update categories set name = @name, name_key = @name_key, "
+            + "description = @description, position = @position, "
+            + "category_group_id = @category_group_id where id = @id",
+            app);
+        rewrite.Parameters.AddWithValue("name", renamedTo.Name.Envelope.ToArray());
+        rewrite.Parameters.AddWithValue("name_key", renamedTo.BlindIndex.ToArray());
+        rewrite.Parameters.AddWithValue("description", note.Envelope.ToArray());
+        rewrite.Parameters.AddWithValue("position", 1);
+        rewrite.Parameters.AddWithValue("category_group_id", categoryGroupId);
+        rewrite.Parameters.AddWithValue("id", categoryId);
+        await Assert.That(await rewrite.ExecuteNonQueryAsync()).IsEqualTo(1);
     }
 
     [Test]
@@ -157,12 +223,14 @@ public sealed class TenancySchemaTests
         // thing standing between it and another budget's ledger is the app role's grant list, in
         // which accounts.budget_id does not appear.
         await using RepositoryTestHost host = await StartHostAsync();
-        (Guid budgetId, Guid otherBudgetId) = await SeedTwoBudgetsAsync(host);
+        (Guid userId, Guid budgetId, Guid otherBudgetId) = await SeedTwoBudgetsAsync(host);
         Guid accountId;
         await using (BudgetoidDbContext seed = CreateDb(host, budgetId))
         {
             Account account = Account.Create(
-                budgetId, "Checking", AccountType.Checking, 0m, "USD", UsdMinorUnit, SeedInstant);
+                Guid.CreateVersion7(),
+                budgetId,
+                SealedNarrative.Indexed("Checking"), AccountType.Checking, 0m, "USD", UsdMinorUnit, SeedInstant);
             seed.Accounts.Add(account);
             await seed.SaveChangesAsync();
             accountId = account.Id;
@@ -174,7 +242,7 @@ public sealed class TenancySchemaTests
         // and the refusal it is paired with would go vacuous. The destination budget is real (see
         // SeedTwoBudgetsAsync), so if the grant ever leaked budget_id the move would succeed
         // outright instead of tripping a foreign key and passing for the wrong reason.
-        await using NpgsqlConnection app = await host.OpenAppConnectionAsync(budgetId);
+        await using NpgsqlConnection app = await host.OpenAppConnectionAsync(userId, budgetId);
         PostgresException exception = await ThrowsPostgresExceptionAsync(
             app, "accounts", accountId, otherBudgetId);
 
@@ -188,11 +256,35 @@ public sealed class TenancySchemaTests
         await Assert.That(await CountRowsAsync(connection, "accounts", "budget_id", otherBudgetId))
             .IsEqualTo(0L);
 
-        // The success half of the pair (see the class remarks): name is on the accounts grant
-        // list, so the same role renaming the same row must go through. Same connection as the
-        // refusal, so the session's ambient budget is identical too and only the column differs.
-        await Assert.That(await UpdateNameAsync(app, "accounts", accountId, "Everyday Checking"))
-            .IsEqualTo(1);
+        // The success half of the pair (see the class remarks): name and name_key are both on the
+        // accounts grant list, so the same role renaming the same row must go through. Same connection
+        // as the refusal, so the session's ambient budget is identical too and only the column differs.
+        //
+        // SPELLED OUT INLINE, AS ALL THREE FLIPPED TESTS NOW ARE, and the divergence is the
+        // point rather than a duplication to fold back. There used to be a helper writing one text
+        // `name`; category_groups was its last caller and it left when that column was sealed. It was
+        // wrong for a bytea column in two separate ways.
+        // A text literal into a bytea column is refused by the TYPE CHECKER with 42804 — before any
+        // grant or policy is consulted, so it never reaches the question this pair is asking, and its
+        // SQLSTATE is easy to mistake for a refusal somebody measured. And one column is not the
+        // operation: Account.Update takes an IndexedName and writes the envelope and the index in one
+        // statement, so a rename this role can actually perform names both columns, and a grant that
+        // covered only one would refuse the whole statement while leaving a one-column probe green.
+        // That is not hypothetical — AppRoleGrantsTests carried exactly that probe.
+        //
+        // Two further traps under the values themselves, both of which answer 23514 and both of which
+        // would be read as the row-level-security verdict this file is about: a short or wrongly
+        // versioned envelope trips CK_accounts_name_length or CK_accounts_name_version, and an index
+        // of any width but 32 trips CK_accounts_name_key_length. SealedNarrative.Indexed is what makes
+        // both halves well-formed by construction.
+        IndexedName renamedTo = SealedNarrative.Indexed("Everyday Checking");
+        await using NpgsqlCommand rename = new(
+            "update accounts set name = @name, name_key = @name_key where id = @id",
+            app);
+        rename.Parameters.AddWithValue("name", renamedTo.Name.Envelope.ToArray());
+        rename.Parameters.AddWithValue("name_key", renamedTo.BlindIndex.ToArray());
+        rename.Parameters.AddWithValue("id", accountId);
+        await Assert.That(await rename.ExecuteNonQueryAsync()).IsEqualTo(1);
     }
 
     [Test]
@@ -202,11 +294,17 @@ public sealed class TenancySchemaTests
         // the categories foreign key has no row to object with, so the grant list on
         // category_groups — which does not carry budget_id — is the rule's only enforcement.
         await using RepositoryTestHost host = await StartHostAsync();
-        (Guid budgetId, Guid otherBudgetId) = await SeedTwoBudgetsAsync(host);
+        (Guid userId, Guid budgetId, Guid otherBudgetId) = await SeedTwoBudgetsAsync(host);
         Guid groupId;
         await using (BudgetoidDbContext seed = CreateDb(host, budgetId))
         {
-            CategoryGroup group = CategoryGroup.Create(budgetId, "Everyday", null, 0, SeedInstant);
+            CategoryGroup group = CategoryGroup.Create(
+                Guid.CreateVersion7(),
+                budgetId,
+                SealedNarrative.Indexed("Everyday"),
+                null,
+                0,
+                SeedInstant);
             seed.CategoryGroups.Add(group);
             await seed.SaveChangesAsync();
             groupId = group.Id;
@@ -214,7 +312,7 @@ public sealed class TenancySchemaTests
 
         // Act — app role connection carrying budgetId, real destination budget, on the same terms
         // as the account test above.
-        await using NpgsqlConnection app = await host.OpenAppConnectionAsync(budgetId);
+        await using NpgsqlConnection app = await host.OpenAppConnectionAsync(userId, budgetId);
         PostgresException exception = await ThrowsPostgresExceptionAsync(
             app, "category_groups", groupId, otherBudgetId);
 
@@ -228,11 +326,45 @@ public sealed class TenancySchemaTests
         await Assert.That(await CountRowsAsync(connection, "category_groups", "budget_id", otherBudgetId))
             .IsEqualTo(0L);
 
-        // The success half of the pair (see the class remarks): name is on the category_groups
-        // grant list, so the same role renaming the same row must go through. Same connection as
-        // the refusal, so the session's ambient budget is identical too.
-        await Assert.That(await UpdateNameAsync(app, "category_groups", groupId, "Essentials"))
-            .IsEqualTo(1);
+        // The success half of the pair (see the class remarks): all four mutable columns are on the
+        // category_groups grant list, so the same role rewriting the same row must go through. Same
+        // connection as the refusal, so the session's ambient budget is identical too.
+        //
+        // UpdateNameAsync IS GONE AND THIS WAS ITS LAST CALLER. That helper wrote one text `name`,
+        // which is wrong here in the two ways it was already wrong on accounts and payees - a text
+        // literal into a bytea column is refused by the TYPE CHECKER with 42804, before any grant or
+        // policy is consulted, so it never reaches the question this pair asks, and its SQLSTATE reads
+        // like a refusal somebody measured - plus one that is this table's own.
+        //
+        // FOUR COLUMNS IN ONE STATEMENT, AND THREE WOULD NOT DO. On accounts and payees a rename always
+        // names both halves of the name, so ANY rename catches a half grant. Here EF names only the
+        // columns that changed, so a rename leaving the description alone emits two columns and
+        // SUCCEEDS under a grant missing `description` - measured on postgres:17.10 under
+        // GRANT UPDATE (name, name_key, position): the two-column statement answers UPDATE 1, the
+        // three-column one answers 42501, and `set description = null` answers 42501. `position` shares
+        // the same grant list, so a three-column control cannot tell a four-column grant from a
+        // three-column one either. Only naming all four in one statement reddens on any single missing
+        // column, which is why this is spelled out inline rather than behind a helper that would invite
+        // the next table to reuse a shape that does not fit it.
+        //
+        // The values are built by SealedNarrative for the reason the two cases above give, and this
+        // table adds two more traps to the list: a short or wrongly versioned description trips
+        // CK_category_groups_description_length or CK_category_groups_description_version, both 23514
+        // and both easy to read as the row-level-security verdict this file is about. The description
+        // is deliberately NON-NULL here - writing null would still exercise the grant, but it would
+        // leave the case unable to tell "the column was written" from "the column was cleared".
+        IndexedName renamedTo = SealedNarrative.Indexed("Essentials");
+        NarrativeField note = SealedNarrative.Description("Required spending");
+        await using NpgsqlCommand rewrite = new(
+            "update category_groups set name = @name, name_key = @name_key, "
+            + "description = @description, position = @position where id = @id",
+            app);
+        rewrite.Parameters.AddWithValue("name", renamedTo.Name.Envelope.ToArray());
+        rewrite.Parameters.AddWithValue("name_key", renamedTo.BlindIndex.ToArray());
+        rewrite.Parameters.AddWithValue("description", note.Envelope.ToArray());
+        rewrite.Parameters.AddWithValue("position", 1);
+        rewrite.Parameters.AddWithValue("id", groupId);
+        await Assert.That(await rewrite.ExecuteNonQueryAsync()).IsEqualTo(1);
     }
 
     [Test]
@@ -243,11 +375,11 @@ public sealed class TenancySchemaTests
         // for that whole window the grant list on payees — no budget_id in it — is the only thing
         // holding the tenancy line.
         await using RepositoryTestHost host = await StartHostAsync();
-        (Guid budgetId, Guid otherBudgetId) = await SeedTwoBudgetsAsync(host);
+        (Guid userId, Guid budgetId, Guid otherBudgetId) = await SeedTwoBudgetsAsync(host);
         Guid payeeId;
         await using (BudgetoidDbContext seed = CreateDb(host, budgetId))
         {
-            Payee payee = Payee.Create(budgetId, "Corner Shop", SeedInstant);
+            Payee payee = Payee.Create(Guid.CreateVersion7(), budgetId, SealedNarrative.Indexed("Corner Shop"), SeedInstant);
             seed.Payees.Add(payee);
             await seed.SaveChangesAsync();
             payeeId = payee.Id;
@@ -255,7 +387,7 @@ public sealed class TenancySchemaTests
 
         // Act — app role connection carrying budgetId, real destination budget, on the same terms
         // as the two tests above.
-        await using NpgsqlConnection app = await host.OpenAppConnectionAsync(budgetId);
+        await using NpgsqlConnection app = await host.OpenAppConnectionAsync(userId, budgetId);
         PostgresException exception = await ThrowsPostgresExceptionAsync(
             app, "payees", payeeId, otherBudgetId);
 
@@ -269,11 +401,34 @@ public sealed class TenancySchemaTests
         await Assert.That(await CountRowsAsync(connection, "payees", "budget_id", otherBudgetId))
             .IsEqualTo(0L);
 
-        // The success half of the pair (see the class remarks): name is on the payees grant list,
-        // so the same role renaming the same row must go through. Same connection as the refusal,
-        // so the session's ambient budget is identical too.
-        await Assert.That(await UpdateNameAsync(app, "payees", payeeId, "Corner Shop Deli"))
-            .IsEqualTo(1);
+        // The success half of the pair (see the class remarks): name and name_key are both on the
+        // payees grant list, so the same role renaming the same row must go through. Same connection
+        // as the refusal, so the session's ambient budget is identical too and only the column differs.
+        //
+        // SPELLED OUT INLINE, LIKE ITS TWO NEIGHBOURS, and the divergence is the point rather
+        // than a duplication to fold back. The deleted helper wrote one text `name`, which was wrong
+        // here in two separate ways once payees.name became bytea. A text literal into a bytea column is
+        // refused by the TYPE CHECKER with 42804 — before any grant or policy is consulted, so it never
+        // reaches the question this pair is asking, and its SQLSTATE is easy to mistake for a refusal
+        // somebody measured. And one column is not the operation: Payee.Rename takes an IndexedName and
+        // writes the envelope and the index in one statement, so a rename this role can actually
+        // perform names both columns, and a grant that covered only one would refuse the whole
+        // statement while leaving a one-column probe green. That is not hypothetical — it is exactly
+        // the shape that let a (name)-only grant ship on accounts with nothing red.
+        //
+        // Two further traps under the values themselves, both of which answer 23514 and both of which
+        // would be read as the row-level-security verdict this file is about: a short or wrongly
+        // versioned envelope trips CK_payees_name_length or CK_payees_name_version, and an index of any
+        // width but 32 trips CK_payees_name_key_length. SealedNarrative.Indexed is what makes both
+        // halves well-formed by construction.
+        IndexedName renamedTo = SealedNarrative.Indexed("Corner Shop Deli");
+        await using NpgsqlCommand rename = new(
+            "update payees set name = @name, name_key = @name_key where id = @id",
+            app);
+        rename.Parameters.AddWithValue("name", renamedTo.Name.Envelope.ToArray());
+        rename.Parameters.AddWithValue("name_key", renamedTo.BlindIndex.ToArray());
+        rename.Parameters.AddWithValue("id", payeeId);
+        await Assert.That(await rename.ExecuteNonQueryAsync()).IsEqualTo(1);
     }
 
     /// <summary>
@@ -283,8 +438,10 @@ public sealed class TenancySchemaTests
     private static readonly DateTime SeedInstant = new(2026, 6, 12, 13, 14, 15, DateTimeKind.Utc);
 
     /// <summary>
-    /// Seeds one owner with two budgets and returns both ids: the one every row starts in, and the
-    /// one every UPDATE moves it to.
+    /// Seeds one owner with two budgets and returns the owner together with both budget ids: the
+    /// one every row starts in, and the one every UPDATE moves it to. The owner is returned because
+    /// an app-role session names a user as well as a budget — see
+    /// <see cref="RepositoryTestHost.OpenAppConnectionAsync" />.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -296,20 +453,30 @@ public sealed class TenancySchemaTests
     /// characterization tests would report a gap as closed when it is wide open.
     /// </para>
     /// <para>
-    /// The destination is also left empty. Accounts, category groups, categories and payees each
-    /// carry a case-insensitive unique index on <c>(budget_id, name)</c>, so a same-named row
-    /// waiting in the destination would make the UPDATE fail with <c>23505</c> instead of doing
-    /// what the test is about. The two budget names differ for the same reason, against
-    /// <c>IX_budgets_user_id_name</c>.
+    /// The destination is also left empty. All four named tables keep one name per budget, by two
+    /// mechanisms rather than one. <c>categories</c> alone still indexes the name COLUMN, under the
+    /// <c>case_insensitive</c> collation, as <c>IX_categories_budget_id_name</c>. On <c>accounts</c>,
+    /// <c>payees</c> and now <c>category_groups</c> the name is a <c>bytea</c> envelope this server
+    /// holds no key for, so <c>IX_accounts_budget_id_name_key</c>, <c>IX_payees_budget_id_name_key</c>
+    /// and <c>IX_category_groups_budget_id_name_key</c> are unique over <c>(budget_id, name_key)</c> —
+    /// the blind index the client computes over a name it case-folded first — and the
+    /// <c>case_insensitive</c> collation left all three columns BY FORCE, because <c>bytea</c> is not a
+    /// collatable type. The consequence for this helper is the same
+    /// either way: a row waiting in the destination under the same name — the same index value on the
+    /// sealed pair — would make the UPDATE fail with <c>23505</c> instead of doing what the test is
+    /// about. The two budgets differ for the same reason, against <c>IX_budgets_user_id_name</c>: that
+    /// column is an envelope too and carries no blind index, so what a duplicate would collide on is
+    /// raw byte equality, which two seeds of one label produce because
+    /// <see cref="SealedNarrative.Name" /> is deterministic in its label.
     /// </para>
     /// </remarks>
-    private static async Task<(Guid BudgetId, Guid OtherBudgetId)> SeedTwoBudgetsAsync(
+    private static async Task<(Guid UserId, Guid BudgetId, Guid OtherBudgetId)> SeedTwoBudgetsAsync(
         RepositoryTestHost host)
     {
         Guid userId = await host.SeedUserAsync("google-1", "person@example.com");
         Guid budgetId = await host.SeedAdditionalBudgetAsync(userId, "Household");
         Guid otherBudgetId = await host.SeedAdditionalBudgetAsync(userId, "Holiday Fund");
-        return (budgetId, otherBudgetId);
+        return (userId, budgetId, otherBudgetId);
     }
 
     /// <summary>
@@ -317,8 +484,9 @@ public sealed class TenancySchemaTests
     /// the connection rather than handing over a string, because the two refusals under test live
     /// on different ones and the app-role one is not interchangeable with its connection string:
     /// composite-FK refusals fire anywhere, so the admin connection exercises them, while grant
-    /// refusals only exist for the app role — and an app-role connection has to carry its ambient
-    /// budget, which only <see cref="RepositoryTestHost.OpenAppConnectionAsync" /> arranges.
+    /// refusals only exist for the app role — and an app-role connection has to carry the signed-in
+    /// user and its ambient budget, which only
+    /// <see cref="RepositoryTestHost.OpenAppConnectionAsync" /> arranges.
     /// </summary>
     private static async Task<PostgresException> ThrowsPostgresExceptionAsync(
         NpgsqlConnection connection,
@@ -338,27 +506,6 @@ public sealed class TenancySchemaTests
         }
 
         throw new InvalidOperationException("Expected PostgresException.");
-    }
-
-    /// <summary>
-    /// Renames a row over <paramref name="connection" /> and returns the affected-row count. The
-    /// flipped tests use it as the success half of their refusal/success pair: <c>name</c> is a
-    /// granted column on <c>accounts</c>, <c>category_groups</c> and <c>payees</c> alike. It takes
-    /// the open connection so the pair runs on one session — the affected count is only evidence of
-    /// a grant if the row was visible to that session in the first place.
-    /// </summary>
-    private static async Task<int> UpdateNameAsync(
-        NpgsqlConnection connection,
-        string table,
-        Guid rowId,
-        string newName)
-    {
-        await using NpgsqlCommand command = new(
-            $"update {table} set name = @name where id = @id",
-            connection);
-        command.Parameters.AddWithValue("name", newName);
-        command.Parameters.AddWithValue("id", rowId);
-        return await command.ExecuteNonQueryAsync();
     }
 
     private static NpgsqlCommand BuildMove(

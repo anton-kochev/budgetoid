@@ -1,0 +1,1455 @@
+<!-- `tabindex="-1"`: where focus lands when the Scheduled erasure section
+     leaves from under it with no result to take it — focusable, never a tab
+     stop. -->
+<h1 #screenHeading class="s-title" tabindex="-1">Settings</h1>
+
+<!-- **Scheduled erasure**, first on the screen while one stands: it is the one
+     thing here with a date on it that the person did not choose. Drawn while
+     a schedule stands, while a press on it runs, and while its result is true
+     — so the result sentence outlives the `null` the `204` publishes, and
+     gives way to the prose and a live Cancel if a schedule is filed again.
+     The date itself is the shell's notice, above every screen; this section
+     is the act. `focusin` feeds the focus rescue. -->
+@if (cancellationDrawn()) {
+  @let cancelPhase = cancellation.phase();
+  <section
+    #erasureSection
+    class="s-section"
+    aria-labelledby="scheduled-erasure-heading"
+    (focusin)="noteSectionFocus($event)"
+  >
+    <h2 class="s-eyebrow" id="scheduled-erasure-heading">Scheduled erasure</h2>
+
+    @if (cancellationResultShown()) {
+      <!-- The result, outside the region: Cancel has left the DOM, so focus
+           moves here — `tabindex="-1"` lets it take focus without adding a
+           tab stop — and focus is what reads it. In the region as well it
+           would be read twice. The standing prose goes with the control,
+           because *This account is scheduled to be erased* is no longer
+           true. -->
+      <p #cancellationResult class="s-prose" tabindex="-1">
+        The erasure is cancelled. Nothing is scheduled for this account.
+      </p>
+    } @else {
+      <!-- Standing prose: what cancelling takes, and the one thing that
+           doesn't — the act that filed the schedule cannot withdraw it. -->
+      <p class="s-prose">
+        This account is scheduled to be erased. Cancelling needs a passkey
+        registered to this account &mdash; signing in with Google again
+        doesn&rsquo;t cancel it.
+      </p>
+
+      @let cancelHeld = cancelHold();
+      <!-- Why Cancel is off, one sentence per term, departing's whenever it is
+           true. Above the control, outside the region, and named by the
+           control while it renders. -->
+      @if (cancelHeld === 'departing') {
+        <p class="s-prose" id="cancel-erasure-hold">
+          Cancelling is off while this tab goes to Google, because if the page
+          left part-way through, nothing could tell you whether the erasure was
+          cancelled.
+        </p>
+      } @else if (cancelHeld === 'email') {
+        <p class="s-prose" id="cancel-erasure-hold">
+          Cancelling is off while this tab asks your passkey to confirm your
+          email change, because your browser runs one passkey check at a time.
+          It comes back when that check ends.
+        </p>
+      } @else if (cancelHeld === 'unlock') {
+        <p class="s-prose" id="cancel-erasure-hold">
+          Cancelling is off while this tab unlocks your account, because your
+          browser runs one passkey check at a time. It comes back when that
+          check ends.
+        </p>
+      } @else if (cancelHeld === 'rotation') {
+        <p class="s-prose" id="cancel-erasure-hold">
+          Cancelling is off while this tab asks your passkey for the key
+          rotation, because your browser runs one passkey check at a time. It
+          comes back when that check ends.
+        </p>
+      }
+
+      <!-- Outline: not Destructive, because nothing is lost — it takes an act
+           back — and not Primary, for Export's reason. `disabledInteractive`,
+           so it keeps its tab stop and the sentence it names stays reachable;
+           the gate is `cancelPressable`, read here and by `cancelErasure()`.
+           `undetermined` leaves it live: the route is idempotent. -->
+      <button
+        #cancelControl
+        class="s-button"
+        mat-stroked-button
+        type="button"
+        [disabled]="!cancelPressable()"
+        [disabledInteractive]="true"
+        [attr.aria-busy]="cancellation.working() ? 'true' : null"
+        [attr.aria-describedby]="
+          cancelHeld !== null ? 'cancel-erasure-hold' : null
+        "
+        (click)="cancelErasure()"
+      >
+        Cancel the erasure
+      </button>
+    }
+
+    <!-- One region, in the DOM from the section's first paint and empty at
+         rest, holding one line at a time: the in-flight line wins, and a press
+         clears the previous word as it starts. Every refusal says the erasure
+         is still scheduled, except `undetermined`, which cannot. Colour is
+         never the message — each reads the same with `--bud-over` removed. -->
+    <div class="s-outcome" role="status">
+      @if (cancelPhase === 'asserting') {
+        <p class="s-prose">Waiting for your passkey.</p>
+      } @else if (cancelPhase === 'cancelling') {
+        <p class="s-prose">Cancelling the erasure&hellip;</p>
+      } @else if (cancelPhase === 'idle') {
+        @switch (cancellation.failure()) {
+          @case ('unsupported') {
+            <p class="s-error">
+              This browser can&rsquo;t check a passkey, so the erasure is still
+              scheduled. Open Budgetoid in a different browser, or on a phone or
+              laptop that can.
+            </p>
+          }
+          @case ('dismissed') {
+            <p class="s-error">
+              The passkey check didn&rsquo;t finish, so the erasure is still
+              scheduled. Try again whenever you&rsquo;re ready.
+            </p>
+          }
+          @case ('no-prf') {
+            <p class="s-error">
+              Your device couldn&rsquo;t finish the passkey check, so the
+              erasure is still scheduled. Try again, or choose another passkey.
+            </p>
+          }
+          @case ('ceremony-failed') {
+            <p class="s-error">
+              Your device couldn&rsquo;t finish the passkey check, so the
+              erasure is still scheduled. Try again, or choose another passkey.
+            </p>
+          }
+          @case ('unstarted') {
+            <p class="s-error">
+              Budgetoid couldn&rsquo;t start the passkey check, so the erasure
+              is still scheduled. Try again in a minute.
+            </p>
+          }
+          @case ('refused') {
+            <p class="s-error">
+              Budgetoid didn&rsquo;t accept that passkey, so the erasure is
+              still scheduled. Try again with a passkey registered to this
+              account.
+            </p>
+          }
+          @case ('unrecognised') {
+            <p class="s-error">
+              Budgetoid couldn&rsquo;t read this request, so the erasure is
+              still scheduled. Reload the page and try again.
+            </p>
+          }
+          <!-- The one line that cannot say what happened, and says exactly
+               that: the request may have reached the server and committed.
+               Cancel stays live, because the route is idempotent, so the way
+               to find out is the press it names. -->
+          @case ('undetermined') {
+            <p class="s-error">
+              Budgetoid didn&rsquo;t hear back, so the erasure may already be
+              cancelled. Press again to check &mdash; cancelling twice changes
+              nothing.
+            </p>
+          }
+        }
+      }
+    </div>
+  </section>
+}
+
+<section class="s-section" aria-labelledby="account-heading">
+  <h2 class="s-eyebrow" id="account-heading">Account</h2>
+
+  <dl class="s-facts">
+    <dt>Email address</dt>
+    <dd>{{ settings.email() }}</dd>
+  </dl>
+
+  <!-- An address that never arrived and an account with no address look the
+       same in an empty value, so the failure says which one this is. The
+       address resolves after the first paint and so does this sentence, so it
+       has to land inside a region that was already being watched; the region
+       stays in the DOM while empty, because one inserted together with its text
+       is announced by nothing. Polite, not assertive: assertive is reserved for
+       a failure to save something the person typed.
+
+       **The email change's lines join it here rather than in a second region
+       beside it**: every one of them is about the row above. Nothing from the
+       flow until the screen has painted once, so a word that arrived with the
+       load — `unconfirmed` — lands in a region that was already being watched.
+
+       One line from the flow at a time, and one chain: a running phase wins,
+       and a press clears the previous word as it starts, so the two never
+       compete. Every refusal says nothing changed; colour is never the message
+       — each reads the same with `--bud-over` removed. -->
+  @let phase = emailChange.phase();
+  <div class="s-outcome" role="status">
+    @if (painted()) {
+      @if (phase === 'leaving') {
+        <p class="s-prose">Taking you to Google&hellip;</p>
+      } @else if (phase === 'asserting') {
+        <p class="s-prose">Waiting for your passkey.</p>
+      } @else if (phase === 'changing') {
+        <p class="s-prose">Changing your email address&hellip;</p>
+      } @else {
+        @switch (emailChange.word()) {
+          <!-- **The result, never the act**: the address the re-read shows,
+               from the row and not from the Google answer — the flow has
+               dropped that by now, and the row is what this line is true of.
+               Three branches and no pipe, for the recovery count's reason;
+               zero and a count this bundle could not read take no clause. -->
+          @case ('changed') {
+            @let ended = emailChange.sessionsEnded();
+            <p class="s-prose">
+              @if (ended === 1) {
+                Your email address is
+                <span class="s-address">{{ settings.email() }}</span
+                >, and 1 browser signed in with your old Google account is now
+                signed out.
+              } @else if (ended !== null && ended !== 0) {
+                Your email address is
+                <span class="s-address">{{ settings.email() }}</span
+                >, and {{ ended }} browsers signed in with your old Google
+                account are now signed out.
+              } @else {
+                Your email address is
+                <span class="s-address">{{ settings.email() }}</span
+                >.
+              }
+            </p>
+          }
+          <!-- Before the row's own failure line below: two requests, two
+               lines, this flow's first. -->
+          @case ('changed-unread') {
+            <p class="s-error">
+              Budgetoid accepted your confirmation but couldn&rsquo;t load your
+              email address back. Reload the page to see which address the
+              account has.
+            </p>
+          }
+          @case ('unavailable') {
+            <p class="s-error">
+              Budgetoid couldn&rsquo;t reach Google, so nothing changed. Try
+              again in a minute.
+            </p>
+          }
+          @case ('unconfirmed') {
+            <p class="s-error">
+              Google didn&rsquo;t send back a sign-in, so nothing changed. Try
+              again whenever you&rsquo;re ready.
+            </p>
+          }
+          @case ('unsupported') {
+            <p class="s-error">
+              This browser can&rsquo;t confirm with a passkey, so nothing
+              changed. Start again in a different browser, or on a phone or
+              laptop that can.
+            </p>
+          }
+          @case ('cancelled') {
+            <p class="s-error">
+              The passkey check was cancelled or timed out. Try again whenever
+              you&rsquo;re ready &mdash; nothing changed.
+            </p>
+          }
+          @case ('no-prf') {
+            <p class="s-error">
+              Your device couldn&rsquo;t finish the passkey check. Try again, or
+              choose another passkey &mdash; nothing changed.
+            </p>
+          }
+          @case ('ceremony-failed') {
+            <p class="s-error">
+              Your device couldn&rsquo;t finish the passkey check. Try again, or
+              choose another passkey &mdash; nothing changed.
+            </p>
+          }
+          @case ('unstarted') {
+            <p class="s-error">
+              Budgetoid couldn&rsquo;t start the passkey check. Try again in a
+              minute &mdash; nothing changed.
+            </p>
+          }
+          @case ('provider-refused') {
+            <p class="s-error">
+              That Google sign-in expired or wasn&rsquo;t accepted, so nothing
+              changed. Start again with Change email address.
+            </p>
+          }
+          @case ('unverified') {
+            <p class="s-error">
+              Google hasn&rsquo;t verified that address, so nothing changed.
+              Start again and choose a different Google account.
+            </p>
+          }
+          @case ('assertion-refused') {
+            <p class="s-error">
+              Budgetoid didn&rsquo;t accept that passkey for this account. Try
+              again with a passkey you made for it &mdash; nothing changed.
+            </p>
+          }
+          @case ('address-taken') {
+            <p class="s-error">
+              That address already belongs to another Budgetoid account, so
+              nothing changed. Start again and choose a different Google
+              account.
+            </p>
+          }
+          @case ('google-account-taken') {
+            <p class="s-error">
+              That Google account is already attached to another Budgetoid
+              account, so nothing changed. Start again and choose a different
+              Google account.
+            </p>
+          }
+          <!-- Refusal-coloured, and the one such line that says something
+               changed — somewhere else. -->
+          @case ('moved') {
+            <p class="s-error">
+              Your email address was changed somewhere else while this was
+              running, so this change wasn&rsquo;t made.
+            </p>
+          }
+          @case ('failed') {
+            <p class="s-error">
+              Budgetoid couldn&rsquo;t accept this request, so nothing changed.
+              Reload the page and try again.
+            </p>
+          }
+          @case ('undetermined') {
+            <p class="s-error">
+              Budgetoid can&rsquo;t tell whether your email address changed.
+              Reload the page to find out.
+            </p>
+          }
+        }
+      }
+    }
+
+    @if (settings.emailFailed()) {
+      <p class="s-error">
+        Couldn&rsquo;t load your email address. Reload the page.
+      </p>
+    }
+  </div>
+
+  <!-- Standing prose, so both blocks are true at rest, held off, waiting for a
+       passkey and after an outcome: each says what the act *does*. Two blocks,
+       and the second is the consequence, for the Key rotation chapter's reason
+       — a cost folded into the sentence about the act is read once by somebody
+       who came for the act. Neither offers a field, a code or an email to wait
+       for, because there is none: the new address is Google's assertion. -->
+  <p class="s-prose">
+    Changing your email address takes you to Google to choose the account whose
+    address you want, then brings you back here to confirm with a passkey. The
+    new address is the one Google holds for that account &mdash; there&rsquo;s
+    nothing to type and no email to wait for.
+  </p>
+  <p class="s-prose">
+    Coming back reloads this page. That locks your account&rsquo;s keys in this
+    tab, so you&rsquo;ll unlock again afterwards, and it would stop a key
+    rotation running in this tab where it is.
+  </p>
+
+  <!-- **Exactly one of the two controls**, never both: Confirm replaces Change
+       while a return holds an answer, because two would ask a person to choose
+       between starting over and finishing. -->
+  @if (confirmDrawn()) {
+    <!-- States what came back and promises nothing about the result: a
+         refusal below can still turn that address away. Prose in reading
+         order, and what Confirm is described by. -->
+    <p class="s-prose" id="email-change-lead">
+      Google sent back
+      <span class="s-address">{{ emailChange.address() }}</span
+      >. Nothing changes until you confirm with your passkey.
+    </p>
+
+    @let confirmHold = emailChange.confirmHold();
+    <!-- Why Confirm is off while another passkey check on this screen runs —
+         the browser runs one at a time. The flow picks one, the rotation's
+         first. Above the control, outside the region, and named by it beside
+         the lead line while it renders. -->
+    @if (confirmHold === 'rotation') {
+      <p class="s-prose" id="email-confirm-hold">
+        Confirming is off while this tab asks your passkey for the key rotation,
+        because your browser runs one passkey check at a time. It comes back
+        when that check ends.
+      </p>
+    } @else if (confirmHold === 'unlock') {
+      <p class="s-prose" id="email-confirm-hold">
+        Confirming is off while this tab unlocks your account, because your
+        browser runs one passkey check at a time. It comes back when that check
+        ends.
+      </p>
+    } @else if (confirmHold === 'cancellation') {
+      <p class="s-prose" id="email-confirm-hold">
+        Confirming is off while this tab asks your passkey to cancel the
+        erasure, because your browser runs one passkey check at a time. It comes
+        back when that check ends.
+      </p>
+    }
+
+    <!-- Outline: not Destructive, for Change's reason, and not Primary, for
+         Export's. Inert while its own press runs and while another passkey
+         check does — Change's reasons describe a moment before a trip, and
+         this control exists only after one. The gate is `confirmPressable`,
+         read here and by `confirm()`, because the press reaches a `<button>`
+         whatever this attribute says. -->
+    <button
+      #confirmControl
+      class="s-button"
+      mat-stroked-button
+      type="button"
+      [attr.aria-describedby]="
+        confirmHold === null
+          ? 'email-change-lead'
+          : 'email-change-lead email-confirm-hold'
+      "
+      [disabled]="!emailChange.confirmPressable()"
+      [disabledInteractive]="true"
+      [attr.aria-busy]="
+        phase === 'asserting' || phase === 'changing' ? 'true' : null
+      "
+      (click)="emailChange.confirm()"
+    >
+      Confirm with your passkey
+    </button>
+  } @else {
+    @let hold = emailChange.changeHold();
+    <!-- Why Change is off, one sentence per reason and none shared with
+         Export's: the rotation's, the erasure cancellation's, the export's,
+         then the unlock's, and the flow picks one. Visible prose above the control and outside the
+         region — it says why a control is off, not what a press did — and
+         named by the control with `aria-describedby` while it renders, never
+         only there. On its way to Google is busy, not held: that line is in
+         the region. -->
+    @if (hold === 'rotating') {
+      <p class="s-prose" id="email-change-hold">
+        Changing your email address is off while this tab gives your account new
+        keys, because the trip to Google would stop the rotation. It comes back
+        when the rotation finishes.
+      </p>
+    } @else if (hold === 'cancelling') {
+      <p class="s-prose" id="email-change-hold">
+        Changing your email address is off while this tab cancels the erasure,
+        because the trip to Google would cut it short. It comes back when that
+        ends.
+      </p>
+    } @else if (hold === 'exporting') {
+      <p class="s-prose" id="email-change-hold">
+        Changing your email address is off while this tab writes your export,
+        because the trip to Google would lose the file. It comes back when the
+        export ends.
+      </p>
+    } @else if (hold === 'unlocking') {
+      <p class="s-prose" id="email-change-hold">
+        Changing your email address is off while this tab unlocks your account,
+        because the trip to Google would cut the unlock short. It comes back
+        when the unlock ends.
+      </p>
+    }
+
+    <!-- Outline: a secondary action of the section, beside Sign out at the
+         same weight. The label names its object, because a bare Change in a
+         list of buttons says nothing about what it changes. A button and not
+         a link: the press prepares Google's request before the page leaves.
+
+         `disabledInteractive`, so it keeps its tab stop while held off and the
+         sentence it names stays reachable. The gate is `changePressable`, one
+         predicate read here and by `change()` — Material halts the click on
+         anchors only, so an ungated handler would reload the tab under a
+         running rotation. `aria-busy` resolves to null except on the way to
+         Google, so the attribute is absent at rest. -->
+    <button
+      #changeControl
+      class="s-button"
+      mat-stroked-button
+      type="button"
+      [disabled]="!emailChange.changePressable()"
+      [disabledInteractive]="true"
+      [attr.aria-busy]="phase === 'leaving' ? 'true' : null"
+      [attr.aria-describedby]="hold !== null ? 'email-change-hold' : null"
+      (click)="emailChange.change()"
+    >
+      Change email address
+    </button>
+  }
+
+  <!-- The one control on this screen that is never off, and it belongs under
+       Account rather than under Ways to sign in: that section is about what is
+       attached to the account, and this is about the browser holding it right
+       now.
+
+       Outline, per the book's table: a secondary action. Not Primary — Export is
+       this screen's one main action — and not Destructive, because nothing is
+       lost. Signing in again restores everything, which is exactly what the
+       erasure control below cannot say.
+
+       No sentence beside it and no disabled state: it is the way out, and a
+       person who cannot leave an account is in a worse position than one who
+       cannot register a second passkey. -->
+  <button
+    class="s-button"
+    mat-stroked-button
+    type="button"
+    (click)="settings.signOut()"
+  >
+    Sign out
+  </button>
+</section>
+
+<section class="s-section" aria-labelledby="credentials-heading">
+  <h2 class="s-eyebrow" id="credentials-heading">Ways to sign in</h2>
+
+  <!-- Read once into a local rather than called at each site. The computed is
+       cheap, but the three places below all have to be looking at the *same*
+       answer: `null` is "the request has not come back", `[]` is "nothing is
+       attached", and a template that re-read the signal between them could
+       render a loading line above a list that had arrived in between. -->
+  @let credentials = credentialRows();
+
+  <!-- Two sentences, because the two dead controls in this section are still
+       not waiting on the same thing — but the line between them has moved, and
+       where it moved to is worth writing down.
+
+       **Register a passkey** waits on the account's keys **as bytes**, and on
+       nothing else. A new passkey is a new *factor*, and what a factor holds is
+       an ECDH P-256 keypair rather than a wrapped copy of each account key: its
+       private half *wrapped under* the key-encryption key that factor derives,
+       and the content key and index key *encapsulated to* its public half as one
+       64-byte plaintext, content key first. `mintFactorKeypair` therefore takes
+       those two keys themselves rather than the ability to use them.
+
+       **The clause naming what is missing has now been narrowed twice, each time
+       by a capability that landed.** It first said Budgetoid could not unlock
+       the keys in the browser, which stopped being true when
+       `GET /api/me/account-keys` and `AccountKeyCustodyService` arrived. It then
+       said the copy takes *a passkey this screen doesn't ask for* — and the
+       Account keys section below puts an **Unlock** on this very screen, so that
+       clause has become the same defect one step removed, against a control the
+       reader has just used.
+
+       What is left is the part unlocking does not close. `unlock` takes
+       the key-encryption key as an **argument** and hands it to custody in one
+       statement, and custody keeps what it opened as two non-extractable
+       `CryptoKey` objects behind no accessor. There is no route from anything
+       this tab is holding back to bytes: bytes come only from opening a factor's
+       pair again under a key-encryption key *held long enough to encapsulate
+       with*, and holding one that long is exactly what the unlock path refuses
+       to do.
+
+       **Revoke** waits on a confirmation step of its own, because revoking
+       cannot be undone. It no longer names a passkey Budgetoid checks itself as
+       the missing piece: the Key rotation section and the erasure dialog both
+       ask for exactly that passkey on this screen, so that clause became the
+       same defect a third time. `POST /api/me/credentials/{id}/revocation` is
+       live and the assertion it takes is one this client already runs; what a
+       person would meet — the step that says what revoking costs — is what is
+       not built. Plural for the per-row buttons.
+
+       **Every inert control carries a sentence of its own, and none is pasted
+       over another's**: registering waits on the account's keys as bytes,
+       generating on two surfaces a person would meet, revoking on a
+       confirmation. Pasting one over another puts a sentence on the screen that
+       is true of a different control — and collapsing the first two in
+       particular erases the answer to "why can't I just add another way in".
+       Erase everything carries none: its confirmation is built.
+
+       Both above the list and both as visible prose rather than a title or an
+       aria-describedby: the controls they explain are disabled, so they are out
+       of the tab order and anything hung on them is read to nobody. Said per row
+       instead, either sentence would be read once per entry — the same paragraph
+       three times on an account with three credentials. The account-keys one is
+       above the *list* and not merely above the Register control it explains,
+       because the first inert control a reader meets here is a row's Revoke:
+       below the rows the sentence is an apology, above them an instruction. -->
+  <p class="s-prose">
+    A new passkey needs its own copy of your account&rsquo;s keys, and unlocking
+    lets this browser use those keys without ever getting hold of them. The
+    button stays off until that copy can be made.
+  </p>
+  <p class="s-prose">
+    Revoking a passkey can&rsquo;t be undone, so it needs a confirmation step of
+    its own, and this screen doesn&rsquo;t have one yet. Those buttons stay off
+    until it does.
+  </p>
+
+  <!-- Both lines arrive after the first paint, so they land inside a region
+       that was already being watched; the region stays in the DOM while empty,
+       because one inserted together with its text is announced by nothing.
+
+       The two states are exclusive by structure, not by coincidence: a load
+       that failed is not still loading, and saying both would ask the reader to
+       keep waiting on a request that already gave up. The empty case is not
+       here at all — "nothing is attached to your account" is a fact about the
+       account rather than something that just happened, so it is content, and
+       it sits outside beside the list it replaces. -->
+  <div class="s-outcome" role="status">
+    @if (settings.credentialsFailed()) {
+      <p class="s-error">
+        Couldn&rsquo;t load your ways to sign in. Reload the page.
+      </p>
+    } @else if (credentials === null) {
+      <p class="s-prose">Loading your ways to sign in&hellip;</p>
+    }
+  </div>
+
+  @if (credentials !== null) {
+    @if (credentials.length === 0) {
+      <p class="s-prose">Nothing is attached to your account yet.</p>
+    } @else {
+      <!-- `role="list"` written out even though `ul` carries it implicitly:
+           `list-style: none` makes Safari drop list semantics, and without the
+           explicit role nobody hears "list, 2 items" — the rows are announced
+           as loose paragraphs. -->
+      <ul class="s-credentials" role="list">
+        @for (credential of credentials; track credential.id) {
+          <li class="s-credential">
+            <div class="s-credential-facts">
+              <!-- The type in the words the person recognises: the button they
+                   pressed, not the value the server stores. `federated` is a
+                   word no reader of this screen can connect to anything. -->
+              <p class="s-credential-type">{{ credential.type }}</p>
+              <!-- The rendered day is the reader's own, computed from the
+                   stored instant in their zone; the `datetime` attribute is the
+                   record. A `<time>` with no `datetime` says nothing a span
+                   would not, and a row printing the stored stamp instead would
+                   show a UTC day that is not the day the reader had.
+
+                   Nothing else goes on the row — no device name, no nickname,
+                   no last-used instant, no identifier. Two passkeys registered
+                   on the same day are told apart by nothing better, and that is
+                   the honest maximum: registration deliberately collects no
+                   device identity to show. -->
+              <!-- The whole paragraph goes, caption included, when the stored
+                   instant could not be read. Not the `<time>` alone: `Registered`
+                   with nothing after it is a sentence that stops after one word,
+                   and a screen reader says it exactly like that. Not a
+                   placeholder either — an em dash or the raw stored value would
+                   put a string nobody can work out on the screen and claim it is
+                   a date. And no empty element left behind: a `datetime`
+                   attribute exists to be parsed, so one carrying a value no
+                   parser accepts is a worse answer than an absent element. The
+                   row states the type and is deliberately silent about the day.
+                   `registeredOn` is empty exactly when `storedInstant` is null,
+                   so this one condition covers both. -->
+              <!-- The caption word comes from the row, not from this line: a
+                   passkey and a provider sign-in were **Registered**, and a
+                   recovery-code set was **Generated**, because a set's instant
+                   moves every time it is replaced. Everything after the word is
+                   identical, including the formatter, so there is no second
+                   date path for a UTC day to leak back into. -->
+              @if (credential.registeredOn) {
+                <p class="s-credential-date">
+                  {{ credential.dateCaption }}
+                  <time [attr.datetime]="credential.storedInstant">{{
+                    credential.registeredOn
+                  }}</time>
+                </p>
+              }
+            </div>
+
+            <!-- Only on a row something can actually revoke, and a null label
+                 is that statement. A disabled control elsewhere on this screen
+                 is a promise — the wiring lands, the sentence above the list
+                 goes, and the button starts working. A recovery-code set has no
+                 revocation to enable at all (it is replaced by generating
+                 again, and the route behind Revoke is scoped to passkeys by
+                 type), and a federated credential opens no session that reads
+                 budget content any more, so there is nothing on that row to
+                 revoke even in principle. A button on either row promises a
+                 release that is not coming, which is worse than not offering
+                 it.
+
+                 Outline, not Destructive: revoking is destructive, but the
+                 destructive treatment is spent on the control that commits the
+                 act, and there is no confirmation behind this one yet.
+
+                 Plain `disabled`, unlike the export button's
+                 `disabledInteractive`: that carve-out exists to hold focus on a
+                 control that comes back on this screen — busy, or waiting on a
+                 state of this tab that can change under the reader's focus.
+                 This one is unavailable for the whole life of the screen, so
+                 keeping it focusable would only offer the keyboard a stop that
+                 answers every press with silence.
+
+                 The accessible name begins with the visible label so voice
+                 control still reaches it by what it can see, and carries the
+                 row's own facts because two buttons named "Revoke" cannot be
+                 told apart by anyone not looking at the screen — on the one
+                 action where reaching the wrong control is unrecoverable. -->
+            @if (credential.revokeLabel !== null) {
+              <button
+                class="s-button"
+                mat-stroked-button
+                type="button"
+                disabled
+                [attr.aria-label]="credential.revokeLabel"
+              >
+                Revoke
+              </button>
+            }
+          </li>
+        }
+      </ul>
+    }
+  }
+
+  <!-- Present even though it does nothing, so the section is honest about what
+       it will eventually do rather than hiding the capability until it works. -->
+  <button class="s-button" mat-stroked-button type="button" disabled>
+    Register a passkey
+  </button>
+</section>
+
+<!-- Between Ways to sign in and Export, and not after it: Export and Erase are a
+     pair — the alternative offered beside the destructive act — and nothing goes
+     between them. -->
+<section class="s-section" aria-labelledby="recovery-heading">
+  <h2 class="s-eyebrow" id="recovery-heading">Recovery codes</h2>
+
+  <!-- Read once into a local, for the reason the credential list gives: the
+       three branches below all have to be looking at the *same* answer, and
+       `null` is a state of its own rather than a zero. -->
+  @let remaining = settings.recoveryRemaining();
+
+  <!-- Loading, failure and the answer. All three arrive after the first paint,
+       so they land inside a region that was already being watched; one created
+       at the moment it gains content is announced by nothing. `status`, never
+       `alert`: polite is right for the result of a read the screen started on
+       its own, and assertive is reserved for a failure to save something the
+       person typed.
+
+       Loading and failure are exclusive by structure, not by coincidence — a
+       load that failed is not still loading, and rendering both would ask the
+       reader to keep waiting on a request that has already given up. -->
+  <div class="s-outcome" role="status">
+    @if (settings.recoveryFailed()) {
+      <p class="s-error">
+        Couldn&rsquo;t load your recovery codes. Reload the page.
+      </p>
+    } @else if (settings.recoveryLoading()) {
+      <p class="s-prose">Loading your recovery codes&hellip;</p>
+    }
+
+    <!-- Inside the region, and last: this is the answer to what the loading
+         line announced as pending. `ngOnInit` sets loading synchronously,
+         before the first update pass, so this region has held "Loading your
+         recovery codes…" since first paint — and text being *removed* from a
+         live region is announced by nothing. With the count outside, a
+         screen-reader user present during the request hears that something
+         started and never learns how it ended, on the one section whose only
+         job is saying whether there is a way back into the account. A reader
+         arriving after the response loses nothing: the count is still in normal
+         reading order, in the same place on the page.
+
+         The paragraph is unconditional and holds one line box, so the page does
+         not shift when the number arrives — the label/value rule, applied to a
+         value whose label is the section heading. At rest it is blank, and
+         blank is not zero: a blank line says the answer has not arrived, and
+         "You have no recovery codes." is a fact about the account.
+
+         Three branches and no pipe. `I18nPluralPipe` would silently pin every
+         count to `en-US` plural rules, because nothing in this app provides
+         `LOCALE_ID` — the same trap `credential-registration-date.ts` exists to
+         avoid for dates. The zero branch drops the word the other two carry:
+         *left* presupposes a set that once existed, and `0` is equally the
+         answer for an account that has never generated one. -->
+    <p class="s-prose s-count">
+      @if (remaining === 0) {
+        You have no recovery codes.
+      } @else if (remaining === 1) {
+        You have 1 recovery code left.
+      } @else if (remaining !== null) {
+        You have {{ remaining }} recovery codes left.
+      }
+    </p>
+  </div>
+
+  <!-- **This section's own sentence, and no longer the credential list's.** The
+       two were word for word while one fact held both controls off. It no longer
+       does, and the split is the specification.
+
+       **It names what a person would meet, not a capability, because Key
+       rotation retired both capabilities the old sentence named.** That section
+       asks for a passkey the server checks and opens a factor to encapsulate
+       the account's keys — the two things this sentence used to say generating
+       waited on. A sentence still naming either would be false a few sections
+       down the page, against a control the reader may have just used.
+
+       What is left is two surfaces: a confirmation, because replacing a set
+       invalidates every code printed from the old one and cannot be undone, and
+       a place that shows the ten new codes once. Neither is built, and the
+       sentence says both.
+
+       Visible prose above the control, never a title, a tooltip or an
+       aria-describedby: the button is disabled, so it is out of the tab order
+       and anything hung on it is read to nobody. -->
+  <p class="s-prose">
+    Generating replaces every code you have now, and there&rsquo;s no undo. This
+    screen doesn&rsquo;t yet have a step to confirm that, or a place to show the
+    new codes once, so the button stays off until it has both.
+  </p>
+
+  <!-- Outline rather than Destructive even though generating replaces an
+       existing set and invalidates every code printed from it: the Destructive
+       fill is a promise that a confirmation follows, and there is no
+       confirmation behind this control. Plain `disabled`, not
+       `disabledInteractive` — that carve-out is for a *busy* control that comes
+       back within the second, not for one unavailable for the whole life of the
+       screen. No composed accessible name: it is the only Generate here, so
+       there is nothing to tell it apart from, and no count belongs in a label. -->
+  <button class="s-button" mat-stroked-button type="button" disabled>
+    Generate recovery codes
+  </button>
+</section>
+
+<!-- Between Recovery codes and Export, on the placement rule the recovery-codes
+     section above already states: Export and Erase are a pair, so nothing goes
+     between them and everything else arrives above them both.
+
+     **A locked account is a browser holding no content key, and every tab starts
+     in one** — nothing about the keys survives a page load. It is *not* a locked
+     session, which is a different word for a different thing: everybody reading
+     this section is signed in, and what they are missing is a key. No sentence
+     here may suggest otherwise. -->
+<section class="s-section" aria-labelledby="account-keys-heading">
+  <h2 class="s-eyebrow" id="account-keys-heading">Account keys</h2>
+
+  <!-- What unlocking is for, in the register the "What we can read" section
+       below uses: a fact about the system, with no apology around it.
+
+       Both sentences are standing prose, so both have to be true in all three
+       states — keys held, ceremony running, and nothing asked for yet. *Until
+       you unlock, this tab can't read…* is the sentence a writer reaches for,
+       and it is a statement that the account is locked, said in prose beside a
+       control that says it already. Written as what unlocking *does*, the same
+       fact reads true in every state.
+
+       Neither sentence may promise more than the account's keys open — the
+       narrative, and every amount, date and figure is readable whatever this
+       tab is holding. The rule runs in both directions, and the second is the
+       one that shipped: copy saying unlocking changes nothing anybody can see
+       was false from the moment a screen sealed a name. -->
+  <p class="s-prose">
+    Your passkey holds the keys your records are encrypted with. Budgetoid never
+    sees them, and this browser forgets them every time the page reloads.
+  </p>
+  <p class="s-prose">
+    Unlocking is what lets this tab read the names and notes on your accounts,
+    categories and transactions.
+  </p>
+
+  <!-- Read once into a local, for the reason the two lists above give: every
+       branch below has to be looking at the *same* answer, and the whole
+       composition rule is about which of two objects that answer comes from. -->
+  @let keys = custody.status();
+  @let ceremony = unlocking.failure();
+  @let read = custody.unlockFailure();
+  <!-- "Either half is running", which is the book's phrase for the busy
+       treatment. It is not a screen-state enum and must not become one: it
+       carries no reading of lockedness, only of motion, and the two states it
+       is composed of are owned by two different objects that are both still
+       read by name below.
+
+       **Read from the service, never assembled here, and that is the fix for a
+       defect rather than a tidy-up.** This local used to compute
+       `keys === 'unlocking' || unlocking.busy()` while
+       `AccountUnlockService.unlock()` guarded on `busy` alone — two definitions
+       of one fact, in two files, disagreeing for the whole length of the
+       account-key read. The control was drawn disabled and the handler took the
+       press anyway, because `disabledInteractive` leaves the DOM `disabled`
+       property false on a `<button>`. One owner is what keeps the attribute and
+       the guard the same width: whichever way the reading moves, both sides
+       move with it. -->
+  @let working = unlocking.working();
+
+  <!-- One region, in the DOM from first paint and empty at rest, carrying every
+       line this section says: both waits, all ten refusals — the flow's five
+       and custody's five — and the line saying the keys are held. A live
+       region inserted together with its text is announced by nothing — argued
+       at length in the account and recovery sections above and not argued a
+       third time here. `status` and never
+       `alert`: the person asked for this, and assertive is reserved for a
+       failure to save something they typed.
+
+       **RULE ONE — which block renders is `custody.status()`'s answer and only
+       its.** The chain below branches on `keys` at the top level; motion is
+       consulted *inside* the `locked` arm and nowhere else, where `working` can
+       only be true of the flow's own half — custody reads `locked` there by
+       construction. **The
+       order is the rule, not a style.** The two in-flight states overlap on
+       purpose: `AccountUnlockService` hands custody the key *before* it clears
+       `busy`, so that no frame exists in which both are false and the section
+       flashes back to its resting state with a second press available. Something
+       has to break that tie, and it is not arbitrary which way — once the key
+       has been handed over the ceremony is finished, so the truer sentence is
+       about the read that is running now rather than about the device that has
+       already answered. Test `busy` first and somebody watching a network
+       request is told their passkey is still being waited on, and the thing that
+       sentence tells them to do — touch a sensor — cannot help, because nothing
+       is asking them for anything.
+
+       A template that tests `busy` first passes almost every assertion in
+       `settings.component.spec.ts`: both sentences exist and both render on
+       their own. The one that catches it is "says the read is running, not that
+       it still waits, once the key is handed over", which sets both in-flight
+       states true at once — a real state, not a contrived one.
+
+       **Two in-flight sentences and not one flag**, because they are two
+       different moments and a person can act on the difference: *Waiting for
+       your passkey.* is the system sheet, and the thing to do is touch a sensor
+       or pick a key up off the desk; *Opening your account…* is a request, and
+       the thing to do is wait. -->
+  <div class="s-outcome" role="status">
+    @if (keys === 'unlocking') {
+      <p class="s-prose">Opening your account&hellip;</p>
+    } @else if (keys === 'locked') {
+      @if (working) {
+        <p class="s-prose">Waiting for your passkey.</p>
+      } @else if (ceremony !== null) {
+        <!-- **RULE TWO — the flow's failure wins, and custody's renders only
+             when the flow reports none.** Both are readable at once and the
+             state that produces it is ordinary rather than contrived: press one
+             is answered `unopened` — the envelopes were read and none opened —
+             then press two is cancelled at the system sheet, which never reaches
+             custody, so custody's answer from the previous press is still
+             standing. Rendered together the section gives two answers to one
+             question and marks neither as the older. This `@else if` is what
+             makes "at most one sentence" true by structure rather than by
+             whichever branch happens to be written first; drop it and "says one
+             thing when a cancelled attempt follows one that opened nothing"
+             reddens, and nothing else does.
+
+             Five sentences, because these are five different next steps: open a
+             different browser, try again when ready, go and get the device that
+             holds the passkey, run the ceremony again, run the whole thing
+             again. Colour is never the message — each reads the same with
+             `--bud-over` removed. -->
+        @switch (ceremony) {
+          @case ('unsupported') {
+            <p class="s-error">
+              This browser can&rsquo;t check a passkey. Open Budgetoid in a
+              different browser, or on a phone or laptop that can.
+            </p>
+          }
+          @case ('cancelled') {
+            <p class="s-error">
+              The passkey check was cancelled or timed out. Try again whenever
+              you&rsquo;re ready &mdash; nothing changed.
+            </p>
+          }
+          @case ('no-prf') {
+            <p class="s-error">
+              This device can&rsquo;t open your account&rsquo;s keys. Try the
+              device that holds the passkey you made this account with.
+            </p>
+          }
+          @case ('ceremony-failed') {
+            <p class="s-error">
+              Your device didn&rsquo;t finish the passkey check. Nothing has
+              changed.
+            </p>
+          }
+          @case ('unknown') {
+            <p class="s-error">
+              Budgetoid couldn&rsquo;t finish unlocking. Nothing has changed
+              &mdash; try again.
+            </p>
+          }
+        }
+      } @else if (read !== null) {
+        <!-- Custody's five, and they are five because a person's next move is
+             five different things: present another factor, press again in a
+             minute, sign in again, reload the page, and — the one this section
+             can send nobody anywhere for — stop, because nothing they hold will
+             open this account. Collapsing any two sends somebody down a road
+             that cannot help them.
+
+             `unopened`'s sentence names only doors that exist — redeeming a
+             recovery code has no surface anywhere in the product, so "another
+             way in" can offer another passkey and nothing else. It gains its
+             second clause the day redemption lands, and not before.
+
+             **`unopened` and `inconsistent` are the pair this block exists to
+             keep apart, and they were one sentence until now.** Both follow a
+             read that came back; what differs is whether anything the person
+             holds can change the answer. Every factor of an account
+             encapsulates the same two keys, so when what came out of one will
+             not open the account's own manifest, another passkey and all ten
+             recovery codes produce the same pair — in this browser, in any
+             other, after every reload. Told `unopened`'s sentence, somebody
+             spends their whole recovery card one code at a time on a door that
+             cannot open.
+
+             **The screen says "sign in again" and does not sign anybody out.**
+             `AccountUnlockService` injects the ceremony and custody and nothing
+             else — no `SessionService`, no `Router` — so a template that
+             navigated to `/welcome` here would be doing from markup exactly what
+             the class refuses to do from its code, to somebody whose session may
+             be perfectly live: a `403` is what the CSRF control answers a browser
+             whose session is intact. **Sign out** is on this screen, several
+             sections up, under the label the sentence names. -->
+        @switch (read) {
+          @case ('unopened') {
+            <p class="s-error">
+              Budgetoid couldn&rsquo;t open your account&rsquo;s keys with that
+              passkey. If this account has another passkey, try again and choose
+              that one.
+            </p>
+          }
+          @case ('unreachable') {
+            <p class="s-error">
+              Budgetoid couldn&rsquo;t reach the server. Try again in a minute.
+            </p>
+          }
+          @case ('unauthenticated') {
+            <p class="s-error">
+              Budgetoid wouldn&rsquo;t hand your keys back to this browser. Sign
+              out and sign in again.
+            </p>
+          }
+          <!-- The fourth, and the only one whose remedy is a reload. The server
+               answered and this tab could not read the answer, which is a fact
+               about this read rather than about the factor, the network or the
+               session — so the sentence offers the one act that can change the
+               answer at all. A reload refetches the bundle from the static
+               host; nothing else in the product does.
+
+               **It offers the reload and stops there, where it used to end
+               "this tab is running an older version".** That was a diagnosis
+               the evidence cannot carry: the same refusal covers the retired
+               bare-array body, which is this tab being the *newer* side of the
+               skew — and there the sentence is false and the act it names
+               returns the same bundle forever. What was observed is that the
+               answer came back in a shape this client does not recognise, and
+               a reload is worth trying because nothing else can change it.
+
+               It is not `unreachable`'s sentence with a different verb. That
+               one says "try again in a minute", which here is advice that can
+               never succeed: the next minute runs this same bundle against that
+               same route. -->
+          @case ('unrecognised') {
+            <p class="s-error">
+              Budgetoid couldn&rsquo;t read what the server sent back. Reload
+              the page &mdash; that&rsquo;s the one thing here that can change
+              the answer.
+            </p>
+          }
+          <!-- The fifth, and the only sentence in this section that offers
+               nothing to do, because there is nothing. A factor opened and what
+               came out of it does not agree with the account's own manifest —
+               which is a fact about the account's key material, not about the
+               authenticator in somebody's hand. It says so in both halves: what
+               is wrong, and that no factor will change it. Anything softer
+               ("try again later", "try another passkey") is an instruction to
+               keep pressing a control that cannot succeed.
+
+               There is no way out of this state on this screen and the sentence
+               does not invent one. The section's Unlock control stays where it
+               is, for the reason every other refusal here leaves it: this
+               section has nowhere else to send anybody. -->
+          @case ('inconsistent') {
+            <p class="s-error">
+              Something about this account&rsquo;s keys doesn&rsquo;t line up
+              &mdash; no passkey or recovery code will change it.
+            </p>
+          }
+        }
+      }
+      <!-- **There is no line saying the account is locked.** The Unlock control
+           being on the screen is that statement, and a sentence beside it would
+           say the same thing twice: once in prose a reader has to parse, once in
+           a control they can press. -->
+    }
+
+    <!-- The region's last child, and it holds one line box open whether or not
+         it has anything to say — the label/value rule applied to a value whose
+         label is the section heading, exactly as `.s-count` above applies it to
+         the recovery number. Blank is not a sentence: at rest this says nothing,
+         and the control below it is what says the account is locked. -->
+    <p class="s-prose s-held">
+      @if (keys === 'unlocked') {
+        Your account is unlocked in this tab.
+      }
+    </p>
+  </div>
+
+  <!-- **Not rendered at all once the keys are held**, and that is a rule rather
+       than a tidy-up. Custody drops both keys the instant `unlock` starts — its
+       invariant is that "status is not `unlocked`" implies "this instance holds
+       no key" at every moment — so a press made on an open account and then
+       refused at any point after the key was handed over leaves the account
+       locked, having gained nothing. A control whose best outcome is no change
+       and whose ordinary failure is a loss is not a control.
+
+       **It does not leave on a refusal, however the ceremony was refused.** This
+       section has nowhere else to send anybody: its one control is the way out of
+       the state the section exists for, so removing it would leave an account
+       locked with nothing on screen to change that. A second press is a
+       genuinely different attempt on most of these, because the *authenticator*
+       chooses which credential answers. `unsupported` is the one real dead end,
+       and its sentence carries the way out — a different browser — rather than
+       the control doing it.
+
+       Outline, and the near miss is worth stating because a reader will propose
+       it: a Primary *while locked* reads as the obvious move. Refused twice
+       over. Export is this screen's one main action, and a screen with two is a
+       screen with none; and to anybody not tracking lock state — which is
+       everybody, since on this screen only this section and the Export section
+       are drawn differently when it flips — a Primary that comes and goes is
+       just two Primary buttons on one screen. Not
+       Destructive either: nothing is lost whichever way this goes.
+
+       No composed accessible name: it is the only Unlock on the screen, so there
+       is nothing to tell it apart from. No sentence beside it at rest, because
+       at rest it waits on nothing — the "not built yet" pattern its disabled
+       neighbours use is for a control that refuses a press. Two states of the
+       email change and the erasure cancellation's passkey check do refuse one,
+       and each gets a sentence of its own above it, inside this block so an
+       unlocked account hears none: departing's first, because it ends the
+       screen, then the email change's check, then the cancellation's. Its own
+       busy state
+       gets none; the region already says what is happening.
+
+       `disabledInteractive` rather than a plain `disabled`, for the Export
+       control's reason: a button that goes truly disabled under the finger drops
+       focus to <body>, and somebody who pressed Unlock from the keyboard loses
+       their place in the document at the moment the outcome is announced.
+       `aria-busy` resolves to null at rest so the attribute is absent instead of
+       asserting that no work is happening.
+
+       The guard is in the screen's `unlock()` as well as in this attribute, and
+       that is not redundancy: Material's click-halt is applied to anchors only,
+       so on a `<button>` the DOM `disabled` property stays false and the press
+       arrives whatever this attribute says. The handler is what refuses it, and
+       it refuses it by reading the same `unlockHeld` bound here — so the two
+       can never cover different halves of an attempt again. `aria-busy` reads
+       `working` alone: the email change's terms are not work this control is
+       doing. -->
+  @if (keys !== 'unlocked') {
+    @let unlockHold = outerHold();
+    @if (unlockHold === 'departing') {
+      <p class="s-prose" id="unlock-hold">
+        Unlock is off while this tab goes to Google, because coming back reloads
+        the page and would lock your account again.
+      </p>
+    } @else if (unlockHold === 'asking') {
+      <p class="s-prose" id="unlock-hold">
+        Unlock is off while this tab asks your passkey to confirm your email
+        change, because your browser runs one passkey check at a time. It comes
+        back when that check ends.
+      </p>
+    } @else if (unlockHold === 'cancellation') {
+      <p class="s-prose" id="unlock-hold">
+        Unlock is off while this tab asks your passkey to cancel the erasure,
+        because your browser runs one passkey check at a time. It comes back
+        when that check ends.
+      </p>
+    }
+
+    <button
+      class="s-button"
+      mat-stroked-button
+      type="button"
+      [disabled]="unlockHeld()"
+      [disabledInteractive]="true"
+      [attr.aria-busy]="working ? 'true' : null"
+      [attr.aria-describedby]="unlockHold !== null ? 'unlock-hold' : null"
+      (click)="unlock()"
+    >
+      Unlock
+    </button>
+  }
+</section>
+
+<!-- Between Account keys and **What we can read**, which is narrower than the
+     placement rule alone requires and is argued in that section's own chapter:
+     a rotation is not one of the remedies the transparency statement names, and
+     a control offered directly under that statement, beside two that answer it,
+     is offered as a third answer to it.
+
+     **Neither key section waits on the other.** A rotation runs its own passkey
+     ceremony and holds its own copy of both generations, so Rotate is offered on
+     a locked account at full strength and the two controls can be pressed in
+     either order. Neither section's copy implies a sequence. -->
+<app-key-rotation-section />
+
+<section class="s-section" aria-labelledby="export-heading">
+  <h2 class="s-eyebrow" id="export-heading">Export</h2>
+
+  <!-- Standing prose, so both paragraphs are true locked, unlocking, mid-run or
+       ready: each says what exporting *does*, never whether it can right now.
+       Neither promises more than the keys open — amounts and dates are in the
+       file whatever this tab holds, and the keys are what make the names and
+       notes readable. *Every one in the file is readable* holds because the file
+       is whole or nothing. -->
+  <p class="s-prose">
+    Download everything Budgetoid holds about you as one JSON file &mdash; your
+    account, your budget, and every account, category group, category, payee and
+    transaction in it. This tab opens the names and notes with your
+    account&rsquo;s keys before saving, so every one in the file is readable.
+  </p>
+  <p class="s-prose">
+    Budgetoid sends it all in one request, and this tab writes the file.
+    There&rsquo;s no queue, no email, and nothing to ask anyone for.
+  </p>
+
+  @let block = settings.exportBlock();
+
+  <!-- The fourth reason a control on this screen is off, in its own words —
+       none of the three sentences above may be pasted over it, nor it over them.
+       Which one renders is the service's word, on the notice's terms: the run's
+       wins whenever this tab knows a run is in flight, because pressing Unlock
+       mid-run opens none of the re-sealed rows; nothing renders while unlocking,
+       because advice given while unsure is advice to press a button somebody is
+       already holding down.
+
+       Visible prose immediately above the control and outside the region: it
+       says why a control is off, which is not the outcome of anything the person
+       did. The control keeps its tab stop, so it also names this sentence with
+       `aria-describedby` while it renders — never *only* there. No line box is
+       reserved: on an unlock it leaves with the Unlock control, which has
+       already moved everything beneath Account keys.
+
+       Departing's wins over both: it ends the screen and every sentence on
+       it, and it can meet a locked account and a staged run alike. -->
+  @if (block === 'departing') {
+    <p class="s-prose" id="export-block">
+      Export is off while this tab goes to Google to change your email address,
+      because leaving the page would lose the file.
+    </p>
+  } @else if (block === 'rotating') {
+    <p class="s-prose" id="export-block">
+      Export is off while Budgetoid gives this account new keys. It comes back
+      when the key rotation above finishes.
+    </p>
+  } @else if (block === 'locked') {
+    <p class="s-prose" id="export-block">
+      Export is off while this tab can&rsquo;t read your names and notes &mdash;
+      the file is written with them. Press Unlock in Account keys above to turn
+      it back on.
+    </p>
+  }
+
+  <!-- **Pressable only when ready and not busy, and drawn off the same way in
+       both cases.** `pressable` has one owner, the service, and `export()`'s
+       guard reads the same signal — Material halts the click on anchors only, so
+       on a `<button>` the press arrives whatever this attribute says, and a gate
+       written only here would be an ungated action wearing a disabled look.
+
+       `disabledInteractive` rather than the plain `disabled` Register and
+       Generate take: those are off for the life of the screen, and this one
+       comes back one press away and can change under the reader's focus — a
+       rotation begun higher up, or custody letting go of the keys. A button that
+       goes truly disabled in that moment drops focus to <body>.
+
+       Primary while off as well: the disabled appearance takes the fill away,
+       and a Primary that swapped to Outline with a state nobody is tracking is
+       two Primary buttons on one screen.
+
+       `aria-busy` reads `exporting` alone, not `!pressable`: not ready is not
+       busy, and busy tells a screen reader to wait for something that is not
+       coming. It resolves to null rather than 'false' so the attribute is
+       absent at rest instead of asserting that no work is happening. -->
+  <button
+    class="s-button"
+    mat-flat-button
+    type="button"
+    [disabled]="!settings.pressable()"
+    [disabledInteractive]="true"
+    [attr.aria-busy]="settings.exporting() ? 'true' : null"
+    [attr.aria-describedby]="block !== null ? 'export-block' : null"
+    (click)="settings.export()"
+  >
+    Export
+  </button>
+
+  <!-- The browser saves the file with no visible act of its own, so the outcome
+       has to be said here. The region stays in the DOM while empty; a live
+       region inserted together with its text is announced by nothing.
+
+       One outcome at a time, and one chain rather than an `@if` beside a
+       `@switch`: the in-flight line wins, and a press clears the previous word
+       as it starts. Every failure says nothing was saved, because the file is
+       whole or nothing — no partial file, and none with a dash where a name was.
+       Every word reports what was observed and none names a cause or a control:
+       by the time somebody reads `locked`, the sentence above the button is the
+       one that knows whether Unlock or the rotation is what is needed. Colour is
+       never the message — each reads the same with `--bud-over` removed. -->
+  <div class="s-outcome" role="status">
+    @if (settings.exporting()) {
+      <p class="s-prose">Preparing your file&hellip;</p>
+    } @else if (settings.exported()) {
+      <p class="s-prose">Exported.</p>
+    } @else {
+      @switch (settings.exportFailure()) {
+        @case ('failed') {
+          <p class="s-error">
+            The export couldn&rsquo;t be built, so nothing was saved &mdash;
+            Budgetoid sends the whole file or none of it. Try again in a few
+            minutes.
+          </p>
+        }
+        @case ('unrecognised') {
+          <p class="s-error">
+            Budgetoid couldn&rsquo;t read what the server sent back, so nothing
+            was saved. Reload the page and export again &mdash; a reload is the
+            one thing here that can change the answer.
+          </p>
+        }
+        @case ('locked') {
+          <p class="s-error">
+            This tab stopped holding your account&rsquo;s keys before the file
+            was finished, so nothing was saved. Export again once it holds them.
+          </p>
+        }
+        <!-- The one outcome offering nothing to do: the keys were here and a
+             value did not authenticate under them, every factor holds the same
+             two keys, and a retry opens the same bytes. The run gate does not
+             rule out a rotation. It closes over a run this tab *knows* is
+             staged — read at start-up and when the rotation section loads, with
+             a failed read reading as none — so after a rotation finished on
+             another device this tab can still hold the retired pair, and a
+             reload plus Unlock does change this answer. For a value that
+             genuinely fails, nothing does, and the copy cannot tell the two
+             apart. -->
+        @case ('unreadable') {
+          <p class="s-error">
+            Some names or notes didn&rsquo;t open with the keys this tab holds,
+            so nothing was saved &mdash; Budgetoid sends the whole file or none
+            of it.
+          </p>
+        }
+      }
+    }
+  </div>
+</section>
+
+<section class="s-section" aria-labelledby="erase-heading">
+  <h2 class="s-eyebrow" id="erase-heading">Erase everything</h2>
+
+  <p class="s-prose">
+    Erasing removes your account and everything in it &mdash; every budget,
+    account, category, payee and transaction. There is no undo, and Budgetoid
+    offers no way to bring an account back.
+  </p>
+  <p class="s-prose">
+    Erased data stays in point-in-time database backups for up to 7 days, and
+    nowhere else on Budgetoid&rsquo;s servers. Your passkeys stay on your
+    devices until you remove them there.
+  </p>
+
+  <!-- The way into the erasure dialog, and live. Both paragraphs above are
+       standing prose about what erasing *does*, so they read the same before
+       the dialog opens, while it is open, and after one was cancelled — and the
+       retention figure is said here and only here, because a second copy in the
+       dialog is a second place for a number another project decides to drift.
+
+       **No sentence beside it at rest**, Sign out's position for Sign out's
+       reason: at rest it refuses no press. The email change's two states and
+       the erasure cancellation's passkey check do, and each gets a sentence of
+       its own above it — departing's first. The trigger takes
+       `disabledInteractive` without `aria-busy` while any holds, and
+       `openErasure()` refuses on the same `erasureHeld`, because
+       the press reaches a `<button>` whatever the attribute says. The
+       dialog's commit takes neither term: the trigger is held before a dialog
+       can open.
+
+       **Outline, not Destructive.** The fill promises that a confirmation
+       follows and that there is no way back, and this press keeps neither: it
+       opens the confirmation and destroys nothing. The fill is spent once on
+       this path, on the dialog's commit — two red controls in one act teach a
+       reader that the first is the dangerous one, which is exactly wrong. Not
+       Primary either: Export is the screen's one main action.
+
+       **Two interactions and no more** — this press and the dialog's commit.
+       Nothing is minted on this one: the challenge waits for the commit.
+
+       `aria-haspopup="dialog"`, so a screen reader says what the press opens
+       before it is made. -->
+  @let erasureHold = outerHold();
+  @if (erasureHold === 'departing') {
+    <p class="s-prose" id="erase-hold">
+      Erasing is off while this tab goes to Google, because if the page left
+      part-way through an erasure, nothing could tell you whether it happened.
+    </p>
+  } @else if (erasureHold === 'asking') {
+    <p class="s-prose" id="erase-hold">
+      Erasing is off while this tab asks your passkey to confirm your email
+      change, because your browser runs one passkey check at a time. It comes
+      back when that check ends.
+    </p>
+  } @else if (erasureHold === 'cancellation') {
+    <p class="s-prose" id="erase-hold">
+      Erasing is off while this tab asks your passkey to cancel the erasure,
+      because your browser runs one passkey check at a time. It comes back when
+      that check ends.
+    </p>
+  }
+
+  <button
+    #erasureTrigger
+    class="s-button"
+    mat-stroked-button
+    type="button"
+    aria-haspopup="dialog"
+    [disabled]="erasureHeld()"
+    [disabledInteractive]="true"
+    [attr.aria-describedby]="erasureHold !== null ? 'erase-hold' : null"
+    (click)="openErasure()"
+  >
+    Erase everything
+  </button>
+</section>
+
+<section class="s-section" aria-labelledby="readable-heading">
+  <h2 class="s-eyebrow" id="readable-heading">What we can read</h2>
+
+  <!-- Three paragraphs, three questions, and the order is the argument. *What
+       can you see?* goes first, because a statement that leads with what it
+       cannot read is selling something. *What can you not see?* second, where
+       it is worth something, having been said after the first paragraph rather
+       than instead of it. *What is left over?* third, because the short code
+       beside each name is the one part of this design that is neither readable
+       nor invisible, and a reader who works it out later reads its absence as
+       this section's one omission.
+
+       The first list is long on purpose and may not be summarised: *everything
+       except the words* is shorter, reads better, and has chosen what to leave
+       out where the reader cannot see what was dropped. Every item in it is a
+       column this server reads in the clear.
+
+       First person throughout, and this is the one section on the screen where
+       that is true. Everywhere else the subject is the software; here it is the
+       people who run the service and hold its database. -->
+  <p class="s-prose">
+    We can read the numbers and the structure of what you record: amounts,
+    dates, currency codes, account types, the order you arrange things in, the
+    timestamps on every row, and the identifiers behind them. We can see how
+    many accounts, payees, categories and transactions you have and which of
+    them point at each other, and we can read your email address.
+  </p>
+  <p class="s-prose">
+    We can&rsquo;t read the names and notes you type. Your browser encrypts
+    those before they&rsquo;re sent, under keys it takes from your passkey or
+    one of your recovery codes, and we never receive one of those keys. What we
+    can see about a name or a note is how long it is.
+  </p>
+  <p class="s-prose">
+    Names on accounts, payees, categories and category groups are stored beside
+    a short code your browser works out from the name, under a key of its own
+    that we never receive. The code is what lets your browser spot a name it has
+    already used without sending us the name. The same name always gives the
+    same code, so we can tell when one of these names changes and when one comes
+    back. The code can&rsquo;t be turned back into a name, and we can&rsquo;t
+    check a guess against one.
+  </p>
+</section>

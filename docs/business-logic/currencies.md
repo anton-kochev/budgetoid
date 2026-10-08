@@ -57,6 +57,16 @@ erDiagram
     `ICurrencyReadService.GetByCodeAsync` so the caller gets a validation error rather than a
     constraint violation, but the foreign key is what makes the guarantee hold for every write path.
 
+### MUST NOT
+
+- **A currency MUST NOT be deleted while any account is denominated in it.** The negative half of
+  the two rules above, stated so this section is not mistaken for an omission.
+  - **Why**: the currency supplies the symbol and the decimal precision of every amount recorded
+    against it — deleting one would strand every such account.
+  - **Enforced in**: the same `accounts.currency_code → currencies.code` foreign key on `Restrict`;
+    no delete path exists in the application at all, so the constraint guards migrations and manual
+    statements rather than a route.
+
 ## Business Rules & Invariants
 
 - **Rule**: `Code` is normalized to uppercase and must be exactly 3 ASCII letters (A–Z).
@@ -79,7 +89,7 @@ erDiagram
   so an unnormalized seed would be worse still: two rows for one currency, and accounts joining
   whichever they happened to reference. `CK_currencies_code` is what closes that second door — the
   lower-case row is refused rather than accepted and then never found.
-- **Source**: `[SOURCE: discussion — 2026-07-26]`
+- **Source**: `[SOURCE: discussion]`
 
 ---
 
@@ -109,7 +119,7 @@ erDiagram
   typed is silently gone, and the currency they were promised is one the schema cannot store — which
   is why the ceiling is the column's scale rather than an arbitrary sanity bound, and why the two
   numbers have to move together.
-- **Source**: `[SOURCE: discussion — 2026-07-26]`
+- **Source**: `[SOURCE: discussion]`
 
 ---
 
@@ -146,7 +156,7 @@ erDiagram
 - **Counterexample**: rounding every amount to the widest precision any currency may declare. It
   moves the falsehood rather than removing it — a USD account would accept `10.0001`, which is not
   money in the currency that account is denominated in.
-- **Source**: `[SOURCE: discussion — 2026-07-28]`
+- **Source**: `[SOURCE: discussion]`
 
 ## Workflows & State Transitions
 

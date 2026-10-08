@@ -19,7 +19,11 @@ That mattered because three families of rules were held **only by the shape of t
 
 - **X1** — a budget-owned row never changes `budget_id`. No method on `Account`, `CategoryGroup`,
   `Category`, `Payee` or `Transaction` reaches `BudgetId`.
-- **B2** — a `budgets` row is never updated at all. `Budget` exposes no mutator of any kind.
+- **B2** — no command updates a `budgets` row. No route accepts a rename and `Budget` exposes no
+  public mutator. The rule was written as "never updated at all" while that was indistinguishable
+  from what it means; a content-key rotation (FR-099) re-seals `budgets.name` under a new key, so
+  the two came apart and the narrower sentence is the one that was always intended. What a rotation
+  changes is which key the text is sealed under, never what the text says.
 - **A1** — `accounts.currency_code` never changes after creation. `UpdateAccountCommand` does not
   carry it, and `Account` has no path that sets it.
 
@@ -72,18 +76,38 @@ privileges are additive.** This is the single most important thing about the fil
 `REVOKE UPDATE (col) ON t` cannot subtract a column from a table-wide `GRANT UPDATE ON t` — it only
 removes a column-level privilege that was granted column-level. So every `UPDATE` grant names its
 columns, and an immutable column is one that is simply not on the list: `budget_id` appears on none
-of the five owned tables, `currency_code` is absent from `accounts`, `google_subject` is absent from
-`users`, `created_at_utc` is absent everywhere, and `budgets` has no `UPDATE` grant of any shape,
-which is the whole content of B2. **"Simplifying" any column-list grant into a table-wide one
-silently re-opens every hole the list exists to close**, and nothing fails at the time it is done.
+of the five owned tables, `currency_code` is absent from `accounts`, `created_at_utc` is absent
+everywhere, `budgets` grants `UPDATE (name)` and nothing else, and `credentials` has no `UPDATE`
+grant of any shape — the whole content of B2, and of the rule that a credential's **identity**
+(`user_id`, `type`, `provider`, `subject`, `created_at_utc`) is written once and never edited.
+`budgets` is the sharper illustration of the mechanism now that its list is not empty: `user_id`,
+`base_currency_code`, `created_at_utc` and `id` are immutable **because they are not on a list that
+exists**, which is a stronger position than being immutable because no list exists at all — the
+latter is one table-wide grant away from being nothing. On `credentials` the empty grant is the
+present state of that list rather than a property of the table: a passkey signature counter and a
+last-used timestamp are both specified, and each joins the list while the identity columns stay off
+it.
+**"Simplifying" any column-list grant into a table-wide one silently re-opens every hole the list
+exists to close**, and nothing fails at the time it is done.
+Omission has one precondition: the role's own `UPDATE` must be the only thing that can write the
+column. A trigger, a rewrite rule and a foreign key's referential action each write columns the
+statement never named, with someone else's privileges, so any one of them would make an omitted
+column writable while every grant still reads correct. The deploy refuses a user-defined trigger,
+an added rewrite rule, and a referential action or generated column that writes a column the role
+cannot `UPDATE`, reading the live database each time
+([ADR 0026](0026-verify-at-deploy-the-reach-the-grant-script-cannot-take-back.md)).
 
-**The script is idempotent and convergent, and is deliberately not an EF migration.** Each table's
-block is `REVOKE ALL` followed by the grants it should have, so a re-run converges the role to
-exactly what is written — deleting a line removes the privilege on the next run rather than leaving
-it behind on a database that already has it. It must never become a migration: the repository keeps a
-single regenerated baseline, hand-added SQL in it is lost on every regeneration, and grants target a
-**role** rather than the schema, so they belong to a step that re-runs rather than to a history that
-applies once.
+**The script is idempotent and convergent, and is deliberately not an EF migration.** It first
+revokes all on every table and sequence in `public` from the role, and each table's block is then
+`REVOKE ALL` followed by the grants it should have, so a re-run converges the role's own grants
+there to exactly what is written — deleting a line removes the privilege on the next run rather than
+leaving it behind on a database that already has it. Convergence reaches only the entries recorded
+against the script's own grantor, because a `REVOKE` takes back nothing another grantor recorded;
+what `AppRoleReach` reads of what it leaves standing is refused at deploy instead
+([ADR 0026](0026-verify-at-deploy-the-reach-the-grant-script-cannot-take-back.md)). It must never
+become a migration: the repository keeps a single regenerated baseline, hand-added SQL in it is
+lost on every regeneration, and grants target a **role** rather than the schema, so they belong to
+a step that re-runs rather than to a history that applies once.
 
 **Migrations always run as admin, and that was measured rather than assumed.** `SELECT` on
 `__EFMigrationsHistory` is not enough to run `MigrateAsync` even against an already-migrated
@@ -104,7 +128,10 @@ grant that unblocks it, never `GRANT ALL`.
 error.** Every column the role cannot write is one no domain method reaches, so a `42501` arriving at
 a user means the domain was bypassed — by raw SQL, an `ExecuteUpdate`, or a write path built without
 the entity. A 400 would be a lie about whose mistake it was; a 500 naming the real failure is the
-honest answer, and `GlobalExceptionHandler` already produces it.
+honest answer, and `GlobalExceptionHandler` already produces it. `PrivilegeRefusalSurfacingTests`
+holds that on two routes whose repositories already catch `23505` — a 500 with no `conflictKind`
+and no `errors`, nothing written, and an Error record carrying `42501` — so widening either catch
+to swallow the refusal is red.
 
 **The tests run under the role, because a test on the admin connection measures nothing.** PostgreSQL
 skips every privilege check for a superuser, and the test containers' account is one — so a

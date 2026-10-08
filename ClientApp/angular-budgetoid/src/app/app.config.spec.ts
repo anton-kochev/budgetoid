@@ -1,0 +1,637 @@
+import {
+  HttpClient,
+  HttpContext,
+  HttpErrorResponse,
+} from '@angular/common/http';
+import {
+  HttpTestingController,
+  provideHttpClientTesting,
+} from '@angular/common/http/testing';
+import {
+  ApplicationInitStatus,
+  createEnvironmentInjector,
+  EnvironmentInjector,
+  ErrorHandler,
+  NgZone,
+} from '@angular/core';
+import { TestBed } from '@angular/core/testing';
+import { Router } from '@angular/router';
+import {
+  KeyRotationApiService,
+  type KeyRotationStateDto,
+} from '@app-core/api/key-rotation-api.service';
+import { MeApiService } from '@app-core/api/me-api.service';
+import { PROVIDER_CREDENTIAL } from '@app-core/interceptors/provider-credential.token';
+import { FailureErrorHandler } from '@app-core/logging/failure-error-handler';
+import { FailureOAuthLogger } from '@app-core/logging/failure-oauth-logger';
+import type { FailureProjection } from '@app-core/logging/log-failure';
+import { provideFailureLogging } from '@app-core/logging/provide-failure-logging';
+import { AuthService } from '@app-core/services/auth-service';
+import { ConfigurationService } from '@app-core/services/configuration.service';
+import { SessionService } from '@app-core/session/session.service';
+import { OAuthLogger, OAuthService } from 'angular-oauth2-oidc';
+import { of } from 'rxjs';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+// Types only: the global `Zone` declaration. The runtime is the polyfill the
+// builder already loaded, and a second load would throw.
+import type {} from 'zone.js';
+import {
+  expectOneErrorLine,
+  spyOnEveryConsoleMethod,
+  type ConsoleSpies,
+} from '../testing/console-spies';
+import { appConfig } from './app.config';
+
+const API_BASE_URL = 'https://api.budgetoid.app';
+const API_URL = `${API_BASE_URL}/api/me`;
+const CLIENT_HEADER = 'X-Budgetoid-Client';
+
+describe('appConfig', () => {
+  let httpMock: HttpTestingController;
+  // How many times bootstrapping asked whether a rotation is staged. Counted
+  // rather than spied, because the count is what the third test below asserts
+  // and a spy would need restoring — nothing in this project configures
+  // `restoreMocks`.
+  let rotationStateReads: number;
+  // The budget the `GET /api/me` stub names. The probe reads it once, and the
+  // session expiry interceptor's judgement of a 401 reads it again; a case
+  // that moves it between the two is the cookie jar now holding another
+  // budget's session.
+  let ownerBudgetId: string;
+
+  beforeEach(() => {
+    rotationStateReads = 0;
+    ownerBudgetId = '3f5b0a91-7c24-4a1e-9d3b-6e8f0c2a5471';
+    // The real providers, with only the backend swapped: everything
+    // `provideHttpClient` set up — the interceptor chain included — is still the
+    // one the application ships. `api-credentials.interceptor.spec.ts` calls the
+    // function directly and so can never see whether anybody registered it; this
+    // spec exists for exactly that half, and emptying the `withInterceptors([…])`
+    // array in `app.config.ts` is what it goes red on.
+    // `TestBed.inject` finalizes the test module, which runs the `APP_INITIALIZER`
+    // from `core.providers.ts`, whose real dependencies fetch `app-config.json`,
+    // ask `GET /api/me` who the visitor is, and — on a page the provider
+    // redirected back to — fetch Google's discovery document. The probe needs
+    // silencing for a second reason on top — it asks the very URL this spec
+    // asserts on, so the real one leaves `expectOne` looking at two matching
+    // requests.
+    //
+    // It is silenced at `MeApiService` rather than at `SessionService`, which
+    // is what a reader will expect. `SessionService` is the application's single
+    // owner of "the session ended", and the second test below watches the real
+    // one make that transition; stubbing it would leave that test asserting a
+    // value written by this file. Cutting the probe off at the API service
+    // removes the request just as completely — `getSessionOwner()` never reaches
+    // `HttpClient` — so the first test still sees exactly one request.
+    //
+    // `getSessionOwner` is the method `probe()` calls: the same `/api/me` route
+    // as `getMe`, asked whether there is a session at all rather than for the
+    // address to render, and the only one of the two that carries
+    // `EXPECTS_UNAUTHENTICATED`. Stubbing the wrong one leaves the probe
+    // throwing a `TypeError` that `probe()` swallows into `'unreachable'` —
+    // both tests below still pass, and the silencing this comment describes is
+    // no longer happening.
+    const configuration: Pick<ConfigurationService, 'getConfig' | 'load'> = {
+      getConfig: () => ({ apiBaseUrl: API_BASE_URL, auth: {} }),
+      load: () => Promise.resolve(true),
+    };
+    // `forgetProviderToken` because `SessionService` discards the provider's
+    // token when the probe finds a session; absent, that call would throw a
+    // `TypeError` the session's own `catch` absorbs, and this fixture would be
+    // exercising the failure path without saying so.
+    // `discardUnreadAnswer` because the initializer's last step calls it on
+    // every boot; absent, that call would reject the initializer.
+    const auth: Pick<
+      AuthService,
+      | 'initialize'
+      | 'providerReturn'
+      | 'forgetProviderToken'
+      | 'discardUnreadAnswer'
+    > = {
+      initialize: () => Promise.resolve(),
+      providerReturn: () => null,
+      forgetProviderToken: () => undefined,
+      discardUnreadAnswer: () => undefined,
+    };
+    // `getSession` because the probe asks it first, and only a full answer
+    // goes on to `getSessionOwner`. Absent, the probe throws a `TypeError` it
+    // swallows into `'unreachable'`, the owner read and the rotation read never
+    // happen, and the silencing described above is no longer what this fixture
+    // does.
+    const me: Pick<MeApiService, 'getSession' | 'getSessionOwner'> = {
+      getSession: () =>
+        of({
+          kind: 'full',
+          expiresAtUtc: '2026-10-17T08:00:00Z',
+          erasure: null,
+        }),
+      getSessionOwner: () =>
+        of({
+          budgetId: ownerBudgetId,
+          email: 'visitor@budgetoid.app',
+        }),
+    };
+    // The initializer's second read, silenced at its API service for the reason
+    // the probe is silenced at `MeApiService`: the real one reaches
+    // `HttpClient`, and a request nothing flushes fails `httpMock.verify()` in
+    // every case in this file. `KeyRotationService` itself stays real, so the
+    // third test watches production code make the call rather than a stub this
+    // file wrote reporting itself.
+    const rotationApi: Pick<KeyRotationApiService, 'getRotationState'> = {
+      getRotationState: () => {
+        rotationStateReads += 1;
+
+        return of<KeyRotationStateDto>({ rotation: null });
+      },
+    };
+    const oAuth: Pick<OAuthService, 'getIdToken'> = {
+      getIdToken: () => '',
+    };
+    // The real `Router` would run a real navigation out of a test that has no
+    // application on screen. Both methods are stubbed, not just the one the
+    // interceptor happens to call today: which of them takes the browser to
+    // `/welcome` is a choice `session-expiry.interceptor.spec.ts` deliberately
+    // leaves to the implementation, and a stub missing the other one would turn
+    // that free choice into a `TypeError` here.
+    const router: Pick<Router, 'navigate' | 'navigateByUrl'> = {
+      navigate: () => Promise.resolve(true),
+      navigateByUrl: () => Promise.resolve(true),
+    };
+
+    TestBed.configureTestingModule({
+      providers: [
+        ...appConfig.providers,
+        provideHttpClientTesting(),
+        // After the spread, so these win. The config stub is what makes the
+        // assertions mean anything: the real service holds an empty `apiBaseUrl`
+        // until `load()` resolves against the real network, the interceptor's
+        // predicate would correctly answer "not our API", and the test would go
+        // red for a reason that has nothing to do with registration.
+        { provide: ConfigurationService, useValue: configuration },
+        { provide: AuthService, useValue: auth },
+        { provide: MeApiService, useValue: me },
+        { provide: KeyRotationApiService, useValue: rotationApi },
+        { provide: OAuthService, useValue: oAuth },
+        { provide: Router, useValue: router },
+      ],
+    });
+
+    httpMock = TestBed.inject(HttpTestingController);
+  });
+
+  afterEach(() => {
+    httpMock.verify();
+    TestBed.resetTestingModule();
+  });
+
+  // Without the registration every request in the product loses the session
+  // cookie and the CSRF header, so the server answers 403 to all of them — and
+  // the build stays green, because nothing else in the suite reaches `HttpClient`
+  // through the application's own providers. The bearer is deliberately not
+  // asserted: it leaves when sign-in leaves the identity provider, these two do
+  // not.
+  it('registers the API credentials interceptor with HttpClient', () => {
+    // Arrange
+    const client = TestBed.inject(HttpClient);
+
+    // Act
+    client.get(API_URL).subscribe();
+    const { request } = httpMock.expectOne(API_URL);
+    const clientHeader = request.headers.get(CLIENT_HEADER);
+
+    // Assert
+    expect(request.withCredentials).toBe(true);
+    // Both lines, because a missing header reads back as `null` and `null?.trim()`
+    // is `undefined`, which is not `''` — the emptiness check alone would pass on
+    // the very absence it is here to catch.
+    expect(clientHeader).not.toBeNull();
+    expect(clientHeader?.trim()).not.toBe('');
+  });
+
+  // The email change is the one request that carries a provider token beside
+  // the session, and it has to arrive with all three through the chain the
+  // application registers: the cookie and the client header like every API
+  // request, and the bearer it was handed on its own context. The interceptor's
+  // own spec calls the function directly and cannot see the chain.
+  it('sends the email change with the cookie, the client header and the credential it was handed', () => {
+    // Arrange
+    const client = TestBed.inject(HttpClient);
+    const emailChangeUrl = `${API_BASE_URL}/api/me/email-change`;
+    const context = new HttpContext().set(
+      PROVIDER_CREDENTIAL,
+      'handed.provider.credential',
+    );
+
+    // Act
+    client.post(emailChangeUrl, {}, { context }).subscribe();
+    const { request } = httpMock.expectOne(emailChangeUrl);
+
+    // Assert
+    expect(request.withCredentials).toBe(true);
+    expect(request.headers.get(CLIENT_HEADER)?.trim()).toBeTruthy();
+    expect(request.headers.get('Authorization')).toBe(
+      'Bearer handed.provider.credential',
+    );
+  });
+
+  // The locked sign-in is the third route that takes its bearer from its own
+  // request context, and the interceptor's spec cannot see whether the path
+  // reaches the registered chain. A path line dropped from the interceptor
+  // sends this request bare — a 401 the release screen reads as Google
+  // refusing the account.
+  it('sends the locked sign-in with the cookie, the client header and the credential it was handed', () => {
+    // Arrange
+    const client = TestBed.inject(HttpClient);
+    const lockedSessionUrl = `${API_BASE_URL}/api/locked-session`;
+    const context = new HttpContext().set(
+      PROVIDER_CREDENTIAL,
+      'handed.locked.credential',
+    );
+
+    // Act
+    client.post(lockedSessionUrl, null, { context }).subscribe();
+    const { request } = httpMock.expectOne(lockedSessionUrl);
+
+    // Assert
+    expect(request.withCredentials).toBe(true);
+    expect(request.headers.get(CLIENT_HEADER)?.trim()).toBeTruthy();
+    expect(request.headers.get('Authorization')).toBe(
+      'Bearer handed.locked.credential',
+    );
+  });
+
+  // The other half of the same hole. Dropping `sessionExpiryInterceptor` from
+  // the `withInterceptors([…])` array costs the application its one path from
+  // a 401 to the session judge — no 401 anywhere is judged, so none ends the
+  // session or leaves for `/welcome` — and nothing else notices, because both
+  // `session-expiry.interceptor.spec.ts` and `session.service.spec.ts` call
+  // their functions directly.
+  //
+  // The assertion is on the real `SessionService`'s state rather than on a
+  // navigation, for two reasons. The destination and the `Router` method that
+  // reaches it are the sibling spec's business, and it declines to pin the
+  // method on purpose — restating either here would make a free implementation
+  // choice fail this file. And the state is written by production code: a spied
+  // `ended()` or a hand-rolled fake would have this file supply the value it
+  // then asserts.
+  //
+  // **A 401 is judged before it ends anything.** The interceptor has the
+  // session re-read whose session the cookie jar holds, and a jar still naming
+  // this tab's budget means the 401 lost a sign-in race: the session rightly
+  // stands. So the jar here names another budget, which makes ending the
+  // session the right verdict, and the assertion waits for that verdict.
+  // Without the interceptor the status stays `'authenticated'`.
+  it('registers the session expiry interceptor with HttpClient', async () => {
+    // Arrange
+    const client = TestBed.inject(HttpClient);
+    const session = TestBed.inject(SessionService);
+    await TestBed.inject(ApplicationInitStatus).donePromise;
+    expect(session.status()).toBe('authenticated');
+    ownerBudgetId = '9c1d2e3f-4a5b-4c6d-8e7f-0a1b2c3d4e5f';
+
+    // Act
+    // The interceptor re-throws, so the 401 arrives at this subscriber. Without
+    // an error handler it would surface as an unhandled rejection and fail the
+    // test for a reason that is not the subject.
+    client.get(API_URL).subscribe({ error: () => undefined });
+    httpMock
+      .expectOne(API_URL)
+      .flush(null, { status: 401, statusText: 'Unauthorized' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // Assert
+    expect(session.status()).toBe('anonymous');
+  });
+
+  // The third registration this file holds, and it is here for the same reason
+  // the two above are. `core.providers.spec.ts` calls `provideAppCore()` itself,
+  // so it can no more see whether the **application** registers it than an
+  // interceptor's own spec can see whether it is in the chain: dropping
+  // `provideAppCore()` from `app.config.ts` leaves that file green and this one
+  // red.
+  //
+  // What it costs when it goes missing is a reload made during a key rotation
+  // drawing a list of half em dashes — the three content screens read "a run is
+  // in flight" from a signal nothing has written.
+  it('runs the core initializer, which asks whether a rotation is staged', async () => {
+    // Arrange — the initializer runs when the module is finalized, which
+    // `TestBed.inject` in `beforeEach` has already done; what is outstanding is
+    // the chain of promises it awaited.
+
+    // Act
+    await TestBed.inject(ApplicationInitStatus).donePromise;
+
+    // Assert — once, for a visitor the probe found authenticated.
+    expect(rotationStateReads).toBe(1);
+  });
+});
+
+// zone.js reads it as `Zone[__symbol__('ignoreConsoleErrorUncaughtError')]`:
+// a property of the `Zone` constructor, never of `window`.
+const ZONE_UNCAUGHT_FLAG = '__zone_symbol__ignoreConsoleErrorUncaughtError';
+// What zone.js calls for a rejection no zone claimed, beside the flag.
+const ZONE_REJECTION_HANDLER =
+  '__zone_symbol__unhandledPromiseRejectionHandler';
+
+// The `Zone` constructor, or a thrown precondition: a runner without zone.js
+// would leave the flag pin passing or failing for a reason that is not the
+// subject.
+function zoneGlobal(): object {
+  const zone: unknown = Reflect.get(globalThis, 'Zone');
+  if (typeof zone !== 'function') {
+    throw new Error('zone.js is not loaded under this runner.');
+  }
+
+  return zone;
+}
+
+// The logging funnel's registrations, held here for the reason the three pins
+// above are: `failure-error-handler.spec.ts` and `failure-oauth-logger.spec.ts`
+// construct their classes directly and can never see whether the application
+// provides them. Removing `provideFailureLogging()` from `app.config.ts`, or
+// placing it before `provideOAuthClient()` so the library's console logger
+// wins, is what these go red on.
+//
+// Its own `describe` because it needs one thing the block above does not:
+// `rethrowApplicationErrors: false`. TestBed's default wraps the application's
+// error handler in one that calls it and then **rethrows** — inside the
+// window's `error` listener that throw lands before `preventDefault()`, so the
+// event would never end prevented however correct the registration. `false`
+// hands errors to the registered `ErrorHandler` and returns, which is what a
+// browser running the application does. The stubs are the block above's,
+// restated rather than shared so that block's `beforeEach` stays as it is.
+describe('appConfig failure logging', () => {
+  const EMAIL = 'alice@example.test';
+  let spies: ConsoleSpies;
+  let httpMock: HttpTestingController;
+  // A child injector a case built on its own. Destroyed before the module is
+  // reset, because it registered window listeners of its own.
+  let childInjector: EnvironmentInjector | undefined;
+  // zone.js's own handler, read when the cases are collected: by the time any
+  // `beforeEach` runs, the `appConfig` block above has built modules that
+  // replaced it, so a read there would save this module's handler as the
+  // original.
+  const originalRejectionHandler: unknown = Reflect.get(
+    zoneGlobal(),
+    ZONE_REJECTION_HANDLER,
+  );
+
+  beforeEach(() => {
+    spies = spyOnEveryConsoleMethod();
+    // Before the module is finalized below, which is when the initializers
+    // run: an earlier case, or an earlier file sharing this worker, may have
+    // left the flag set, and the pin has to watch this module set it.
+    Reflect.deleteProperty(zoneGlobal(), ZONE_UNCAUGHT_FLAG);
+
+    const configuration: Pick<ConfigurationService, 'getConfig' | 'load'> = {
+      getConfig: () => ({ apiBaseUrl: API_BASE_URL, auth: {} }),
+      load: () => Promise.resolve(true),
+    };
+    // `forgetProviderToken` because `SessionService` discards the provider's
+    // token when the probe finds a session; absent, that call would throw a
+    // `TypeError` the session's own `catch` absorbs, and this fixture would be
+    // exercising the failure path without saying so.
+    // `discardUnreadAnswer` because the initializer's last step calls it on
+    // every boot; absent, that call would reject the initializer.
+    const auth: Pick<
+      AuthService,
+      | 'initialize'
+      | 'providerReturn'
+      | 'forgetProviderToken'
+      | 'discardUnreadAnswer'
+    > = {
+      initialize: () => Promise.resolve(),
+      providerReturn: () => null,
+      forgetProviderToken: () => undefined,
+      discardUnreadAnswer: () => undefined,
+    };
+    // `getSession` because the probe asks it first, and only a full answer
+    // goes on to `getSessionOwner`. Absent, the probe throws a `TypeError` it
+    // swallows into `'unreachable'`, the owner read and the rotation read never
+    // happen, and the silencing described above is no longer what this fixture
+    // does.
+    const me: Pick<MeApiService, 'getSession' | 'getSessionOwner'> = {
+      getSession: () =>
+        of({
+          kind: 'full',
+          expiresAtUtc: '2026-10-17T08:00:00Z',
+          erasure: null,
+        }),
+      getSessionOwner: () =>
+        of({
+          budgetId: '3f5b0a91-7c24-4a1e-9d3b-6e8f0c2a5471',
+          email: 'visitor@budgetoid.app',
+        }),
+    };
+    const rotationApi: Pick<KeyRotationApiService, 'getRotationState'> = {
+      getRotationState: () => of<KeyRotationStateDto>({ rotation: null }),
+    };
+    const oAuth: Pick<OAuthService, 'getIdToken'> = {
+      getIdToken: () => '',
+    };
+    const router: Pick<Router, 'navigate' | 'navigateByUrl'> = {
+      navigate: () => Promise.resolve(true),
+      navigateByUrl: () => Promise.resolve(true),
+    };
+
+    TestBed.configureTestingModule({
+      providers: [
+        ...appConfig.providers,
+        provideHttpClientTesting(),
+        { provide: ConfigurationService, useValue: configuration },
+        { provide: AuthService, useValue: auth },
+        { provide: MeApiService, useValue: me },
+        { provide: KeyRotationApiService, useValue: rotationApi },
+        { provide: OAuthService, useValue: oAuth },
+        { provide: Router, useValue: router },
+      ],
+      rethrowApplicationErrors: false,
+    });
+
+    httpMock = TestBed.inject(HttpTestingController);
+  });
+
+  afterEach(() => {
+    httpMock.verify();
+    childInjector?.destroy();
+    childInjector = undefined;
+    // Destroys the environment injector, which is what removes the window
+    // listeners — left installed they would answer the next file's events.
+    TestBed.resetTestingModule();
+    vi.restoreAllMocks();
+    Reflect.deleteProperty(zoneGlobal(), ZONE_UNCAUGHT_FLAG);
+    Reflect.set(zoneGlobal(), ZONE_REJECTION_HANDLER, originalRejectionHandler);
+  });
+
+  it('tells zone.js not to print an uncaught error itself', async () => {
+    // Arrange — zone.js prints an error escaping a zone task with
+    // `console.error('Unhandled Promise rejection:', message, …, error)`
+    // unless this flag is set on the `Zone` constructor, and that print
+    // bypasses every handler registered here.
+
+    // Act
+    await TestBed.inject(ApplicationInitStatus).donePromise;
+
+    // Assert
+    expect(Reflect.get(zoneGlobal(), ZONE_UNCAUGHT_FLAG)).toBe(true);
+  });
+
+  it('sets zone’s flags when the environment is created, before any app initializer', () => {
+    // Arrange — the module above has already run its initializers, so the
+    // flag it set is cleared here. A child environment injector runs its
+    // environment initializers on creation and never runs app initializers:
+    // a flag set by an app initializer stays unset below, and an error thrown
+    // between the two phases would be printed by zone.js whole.
+    // The rejection handler is put back to zone.js's own for the same reason.
+    const parent = TestBed.inject(EnvironmentInjector);
+    Reflect.deleteProperty(zoneGlobal(), ZONE_UNCAUGHT_FLAG);
+    Reflect.set(zoneGlobal(), ZONE_REJECTION_HANDLER, originalRejectionHandler);
+
+    // Act
+    childInjector = createEnvironmentInjector(
+      [provideFailureLogging()],
+      parent,
+    );
+
+    // Assert — no `ApplicationInitStatus` is touched. The handler is only
+    // checked for being replaced; what it prints is the next case's subject.
+    expect(Reflect.get(zoneGlobal(), ZONE_UNCAUGHT_FLAG)).toBe(true);
+    const handler: unknown = Reflect.get(zoneGlobal(), ZONE_REJECTION_HANDLER);
+    expect(typeof handler).toBe('function');
+    expect(handler).not.toBe(originalRejectionHandler);
+  });
+
+  // The response row is what proves the handler projects the value it was
+  // handed: a handler printing a fixed `Error` of its own would still answer
+  // the plain-error row.
+  const rootRejections: readonly {
+    readonly label: string;
+    readonly rejection: () => unknown;
+    readonly projection: FailureProjection;
+  }[] = [
+    {
+      label: 'a failed response',
+      rejection: () => new HttpErrorResponse({ status: 418, url: EMAIL }),
+      projection: { kind: 'http', status: 418 },
+    },
+    {
+      label: 'a plain error',
+      rejection: () => new Error(EMAIL),
+      projection: { kind: 'error' },
+    },
+  ];
+
+  it.each(rootRejections)(
+    'routes a rejection nobody handles outside Angular’s zone through the funnel, once: $label',
+    async ({ rejection, projection }) => {
+      // Arrange — outside Angular's zone nothing claims the rejection, so
+      // zone.js hands it to its own unhandled-rejection handler. Its default
+      // re-dispatches a `PromiseRejectionEvent` built without the `promise`
+      // member the constructor requires, swallows the throw, and the
+      // rejection disappears without a line. The precondition is that
+      // default being there to replace: the runner's `PromiseRejectionEvent`
+      // is what makes zone.js install it.
+      expect(typeof originalRejectionHandler).toBe('function');
+      await TestBed.inject(ApplicationInitStatus).donePromise;
+      spies.error.mockClear();
+      const reason = rejection();
+
+      // Act
+      // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- an `HttpErrorResponse` is not an `Error`, and it is what an awaited request rejects with.
+      void Zone.root.run(() => Promise.reject(reason));
+      await new Promise<void>((resolve) => setTimeout(resolve));
+
+      // Assert
+      expectOneErrorLine(spies, 'Unhandled rejection', projection);
+    },
+  );
+
+  it('a rejection inside Angular’s zone still prints once', async () => {
+    // Arrange — Angular's zone claims the rejection, so zone.js's own handler
+    // never sees it; a handler that printed too would make this two lines.
+    // `bootstrap()` is what subscribes the zone's `onError` to the
+    // `ErrorHandler`, and TestBed never calls it, so the subscription is
+    // restated here exactly as bootstrap makes it.
+    await TestBed.inject(ApplicationInitStatus).donePromise;
+    const zone = TestBed.inject(NgZone);
+    const errorHandler = TestBed.inject(ErrorHandler);
+    const subscription = zone.runOutsideAngular(() =>
+      zone.onError.subscribe({
+        next: (error: unknown) => errorHandler.handleError(error),
+      }),
+    );
+    spies.error.mockClear();
+
+    // Act
+    try {
+      // `void`, not a handler: the rejection going unhandled is the subject.
+      void zone.run(() => Promise.reject(new Error(EMAIL)));
+      await new Promise<void>((resolve) => setTimeout(resolve));
+    } finally {
+      subscription.unsubscribe();
+    }
+
+    // Assert
+    expectOneErrorLine(spies, 'Unhandled error', { kind: 'error' });
+  });
+
+  it('routes an unhandled rejection through the funnel and claims it', async () => {
+    // Arrange — the rejection half of `provideBrowserGlobalErrorListeners()`,
+    // which listens for `unhandledrejection` and hands `event.reason` on. A
+    // funnel that registered only an `error` listener leaves this one
+    // unclaimed, and the browser prints the reason, message and all.
+    await TestBed.inject(ApplicationInitStatus).donePromise;
+    spies.error.mockClear();
+    const event = new PromiseRejectionEvent('unhandledrejection', {
+      cancelable: true,
+      // Never settles: a rejected promise here would be a real unhandled
+      // rejection in the runner rather than the synthetic one under test.
+      promise: new Promise<never>(() => undefined),
+      reason: new Error(EMAIL),
+    });
+
+    // Act
+    window.dispatchEvent(event);
+
+    // Assert
+    expect(event.defaultPrevented).toBe(true);
+    expectOneErrorLine(spies, 'Unhandled error', { kind: 'error' });
+  });
+
+  it('resolves the ErrorHandler to the failure funnel', () => {
+    // Act
+    const handler = TestBed.inject(ErrorHandler);
+
+    // Assert
+    expect(handler).toBeInstanceOf(FailureErrorHandler);
+  });
+
+  it('resolves the OAuth library’s logger to the failure funnel', () => {
+    // Act
+    const logger = TestBed.inject(OAuthLogger);
+
+    // Assert
+    expect(logger).toBeInstanceOf(FailureOAuthLogger);
+  });
+
+  it('routes an uncaught window error through the funnel and claims it', async () => {
+    // Arrange — what the browser raises for an exception nobody caught. Left
+    // unclaimed it is printed by the browser itself, message and all, and no
+    // handler of ours ever sees it.
+    await TestBed.inject(ApplicationInitStatus).donePromise;
+    spies.error.mockClear();
+    const event = new ErrorEvent('error', {
+      cancelable: true,
+      error: new Error(EMAIL),
+      message: EMAIL,
+    });
+
+    // Act
+    window.dispatchEvent(event);
+
+    // Assert — claimed, so the browser prints nothing of its own, and the one
+    // line is the projection.
+    expect(event.defaultPrevented).toBe(true);
+    expectOneErrorLine(spies, 'Unhandled error', { kind: 'error' });
+  });
+});

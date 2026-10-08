@@ -13,8 +13,8 @@ through `psql`. The order between them is load-bearing rather than tidy — the 
 tables, so the schema has to exist first — and that order lived entirely in prose.
 
 [ADR 0005](0005-isolate-budget-owned-rows-with-row-level-security.md) put the `budget_isolation`
-policies into that same script, and doing so changed what forgetting the second step costs. **The
-grant matrix is fail-closed**: a privilege nobody granted announces itself as `42501` at the first
+policies into that same script, and doing so changed what forgetting the second step costs. **A
+missing grant is fail-closed**: a privilege nobody granted announces itself as `42501` at the first
 statement that needs it, so a deploy that migrated and skipped provisioning broke a feature loudly
 and was repaired within the hour. **Row-level security is fail-open.** A migrated table with no
 enforced policy is readable and writable by the application role across every tenant, nothing raises,
@@ -46,11 +46,16 @@ and must never become a migration.
 ## Decision
 
 **One tool performs the whole database step, not two mechanisms coordinated by YAML.**
-`BudgetoidApp/Tools/DbProvision` calls `DeploymentDatabaseProvisioning.ProvisionAsync`, which
-validates the role password, logs the pending migration count, migrates, applies the grants and the
-policies through `DatabaseProvisioning.ApplyGrantsAsync`, and then verifies row-level security
-coverage. The ordering that used to live in the runbook now lives inside one method, in the layer that
-already owns the grants: the logic sits in `Infrastructure` beside `DatabaseProvisioning`, and the
+`BudgetoidApp/Tools/DbProvision` calls `DeploymentDatabaseProvisioning.ProvisionAsync`, which logs
+the pending migration count, migrates, applies the grants and the policies through
+`DatabaseProvisioning.ApplyGrantsAsync`, and then verifies row-level security coverage and the
+application role's reach; it leaves the role credential-free. The reach check refuses what it reads
+of the reach a re-run of the grant script cannot take back — an *extra* grant is fail-open too —
+and the tool runs it once more after
+binding the role to its identity; its argument is
+[ADR 0026](0026-verify-at-deploy-the-reach-the-grant-script-cannot-take-back.md). The ordering
+that used to live in the runbook now lives inside one method, in the layer that already owns the
+grants: the logic sits in `Infrastructure` beside `DatabaseProvisioning`, and the
 console project is a shim that reads two environment variables, calls the method, and maps an
 exception to an exit code. It has no logic of its own, which is why nothing tests it directly —
 `tests/IntegrationTests/DeploymentProvisioningTests.cs` tests the method the shim calls.
@@ -67,18 +72,22 @@ asserting that `__EFMigrationsHistory` does not exist after a rejected password 
 migration attempt leaves, and therefore the strongest available statement that nothing ran.
 
 **Coverage is verified rather than assumed, and the subject of the check is derived from the live
-schema.** `VerifyRowLevelSecurityCoverageAsync` reads every ordinary table in `public` carrying a
-`budget_id` column, together with `relrowsecurity` and its policy count, in one catalog query. The
-`budget_id` column *is* the definition of budget-owned, so a hardcoded list of the five tables that
-exist today would keep passing on the day someone adds a sixth — which is the only day the check
-matters. Both halves of the verdict are needed and each fails on its own: a table can carry its policy
-in `pg_policy` while row-level security is switched off for it, in which case the policy is never
-enforced. The test for that case is separate from the missing-policy one for exactly that reason. The
-assertion is **exactly one** policy per table rather than at least one, because these policies are
-permissive and permissive policies OR together, so a second policy can only widen what the first
-allows. A discovery query that matched nothing is treated as a third failure — a plain
-`InvalidOperationException` saying the database is not migrated — because otherwise every check below
-it would pass with nothing in it, against a database with no policies at all.
+schema.** `VerifyRowLevelSecurityCoverageAsync` reads every ordinary table in `public` through
+`RowLevelSecurityCoverage`, which is the same discovery and classification `RlsCoverageTests` runs.
+Sharing it is the one place this repository does not prefer deliberate restatement: a second
+*executed* list of which tables must be policed has no adjudicator when the two disagree, and the one
+that loses stops noticing a table. That is not hypothetical — the verifier used to find its own
+subjects by looking for a `budget_id` column, so it could not see `users` at all and reported full
+coverage on a schema where every person's row was reachable by a session that named somebody else.
+A table is required to carry the isolation policy its own ownership calls for, and every table that
+owes none is excused by a written-down exemption rather than by the shape of a query. Each failure
+below fails on its own: row-level security switched off (the policy stays in `pg_policy` and is never
+enforced), a policy count other than **exactly one** — permissive policies OR together, so a second
+can only widen what the first allows — a policy whose *name* is not the one that table owes, a policy
+binding neither `budgetoid_app` nor `public`, and a table carrying neither ownership column, which is
+refused rather than waved through because "we forgot" and "it needs nothing" produce the identical
+catalog. A schema with no table needing a policy at all is a plain `InvalidOperationException` saying
+the database is not migrated, because otherwise every check would pass with nothing in it.
 
 **A coverage failure throws `RowLevelSecurityCoverageException`, carrying the offending table names in
 both a property and the message.** It derives from `InvalidOperationException` so anything already
@@ -206,7 +215,8 @@ remember the database half.
   out — a rebaseline window, open while the production database holds no data, which suspends the
   guard and nothing else.
   `Migrations_KeepTheBaselineFrozen` holds that line in the suite: it pins the first migration id
-  to the literal `20260728195844_InitialCreate` and deliberately not the count, so additive
+  to a literal — the one written in that test, deliberately not repeated here so the two cannot
+  disagree — and deliberately not the count, so additive
   migrations pass and only a regenerated or back-dated baseline fails. The assertion that
   `GetMigrations()` returns ids in apply order is what makes "first" mean "earliest", so a
   back-dated migration lands at index 0 and fails on the id rather than slipping in ahead of the
@@ -221,7 +231,9 @@ remember the database half.
   the database migrated, the deploy red, and the new application code undeployed. That is the right
   order of events — the still-running previous code has no queries against a table it does not know
   about — but the recovery is to add the policy to `app-role-grants.sql` and re-run, not to reach for
-  the database.
+  the database. A reach refusal aborts at the same point and is the exception to that recovery: it
+  names only what the script cannot take back, so its fix is the statement the refusal carries, run
+  on the admin connection.
 - **Rotating the application role's password has a window.** `azd provision` writes the container's
   connection string before the tool re-passwords the role, so a genuinely new value leaves a minute or
   two in which a cold-start replica presents the new password to a role that still has the old one — a
@@ -244,5 +256,6 @@ remember the database half.
   superseded.
 - **The tool's log is the pipeline's only window into the step.** A run that reported nothing would
   read identically to a run that did nothing, so the pending-migration count, the role being
-  provisioned, and the tables verified are all printed, and the tests assert that a supplied log
-  delegate is actually called. The message wording is not a contract; the trace existing is.
+  provisioned, the tables verified, and the counts the reach check read are all printed, and the
+  tests assert that a supplied log delegate is actually called. The message wording is not a
+  contract; the trace existing is.

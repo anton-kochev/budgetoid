@@ -1,5 +1,6 @@
 using Domain.CategoryGroups;
 using Domain.Common;
+using TestSupport;
 
 namespace UnitTests;
 
@@ -60,10 +61,14 @@ public sealed class CategoryGroupOrderingTests
         await Assert.That(last.Position).IsEqualTo(1);
     }
 
-    private static CategoryGroup CreateCategoryGroup(string name, int position) =>
+    // The label seals a name and its index; nothing in this file reads either back. Ordering is over
+    // Position and Id, both values this server can still read, so sealing the name took no capability
+    // away from the rule under test - only from the way a fixture spells one.
+    private static CategoryGroup CreateCategoryGroup(string label, int position) =>
         CategoryGroup.Create(
             Guid.CreateVersion7(),
-            name,
+            Guid.CreateVersion7(),
+            SealedNarrative.Indexed(label),
             null,
             position,
             new DateTime(2026, 7, 14, 10, 0, 0, DateTimeKind.Utc));

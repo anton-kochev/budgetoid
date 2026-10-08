@@ -1,7 +1,14 @@
 # ADR 0010 — Serve the app from a custom domain
 
-- **Status:** Accepted — **not yet implemented.** The deployment still answers on its generated Azure
-  hostnames; nothing below is live. `DEPLOYMENT.md` Step 6 is the cutover.
+- **Status:** Accepted — **not yet implemented, and not a cutover.** There is no production
+  environment: `rg-budgetoid-prod` does not exist and the generated hostnames this decision argues
+  about answer nothing. The domain is registered, its Cloudflare nameservers are live, and the zone
+  is empty. The records below are bound while bringing the next environment **up**, never moved onto
+  a running one afterwards, because `passkey-relying-party-id` is frozen at `budgetoid.app` in
+  `DEPLOYMENT.md` Step 2 and an environment stood up on a generated hostname first would register
+  passkeys against a relying party id about to be abandoned. No migration repairs those. That cost
+  belongs to passkeys rather than to the argument below, which is why it is stated here and not in
+  the *Consequences* section.
 - **Date:** 2026-07-31
 - **Area:** Deployment / DNS (domain registration, authoritative DNS, Azure Static Web Apps and Azure
   Container Apps custom domains, Google OAuth client configuration)
